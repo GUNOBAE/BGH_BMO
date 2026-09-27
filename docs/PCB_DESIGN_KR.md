@@ -62,7 +62,10 @@ PCBWay의 협찬으로 PCB 제조와 SMD 부품 실장을 의뢰했습니다. �
 
 ## 설계 및 제조 파일
 
-현재 확인한 작업 압축파일에는 다음 자료가 들어 있습니다. 여기에는 설계 이력 폴더와 백업도 섞여 있으므로, **제조에 사용한 최종본과 일치하는지 확인한 뒤** 정리된 원본 파일을 저장소에 올리고 이 표의 다운로드 링크를 연결하겠습니다.
+제공받은 KiCad 프로젝트와 Gerber ZIP을 비교해 두 압축파일의 제조 데이터가 일치함을 확인했습니다. 작업 이력과 잠금 파일을 제외한 자료를 아래에서 내려받을 수 있습니다. 실제 PCBWay에 제출한 파일과의 최종 대조 및 실물 검증은 기판을 받은 뒤 진행합니다.
+
+- **[KiCad 설계·BOM·실장 좌표·STEP 묶음 다운로드](../hardware/pcb/BMO_pad_pcv_source.zip)**
+- **[제조용 Gerber·드릴 파일 다운로드](../hardware/pcb/BMO_PAD_GBR.Zip)**
 
 | 파일 | 용도 |
 |---|---|
@@ -71,10 +74,10 @@ PCBWay의 협찬으로 PCB 제조와 SMD 부품 실장을 의뢰했습니다. �
 | `BMO_pad_pcv.kicad_pro` | KiCad 프로젝트 설정 |
 | `BMO_pad_pcv.csv` | 부품 목록(BOM) |
 | `BMO_pad_pcv-all-poss.csv` | 부품 실장 위치·회전·면 정보 |
-| `gerber/BMO_PAD.Zip` 및 `gerber/` | 제조용 Gerber와 드릴 파일 묶음 |
+| `BMO_PAD_GBR.Zip` | 제조용 Gerber 10종, 드릴 파일 2종 등의 묶음 |
 | `BMO_pad_pcv.step` | PCB 3D 형상 |
 
-`*.kicad_prl`, `.history/`, `_restore_backup_*`는 개인 작업 환경과 복구 이력이므로 배포 자료에서 제외할 예정입니다. 재제조할 때는 **회로도·PCB·BOM·실장 좌표·Gerber가 같은 리비전**인지 확인해야 합니다.
+`*.kicad_prl`, `.history/`, `_restore_backup_*`, `*.lck`는 개인 작업 환경과 복구 이력이므로 배포용 묶음에서 제외했습니다. 재제조할 때는 **회로도·PCB·BOM·실장 좌표·Gerber가 같은 리비전**인지 확인해야 합니다.
 
 > **추가하면 좋은 이미지:** KiCad PCB 3D 뷰 앞·뒷면, 회로도 PDF. 실물을 받아 기판 리비전 표기가 보이는 확대 사진도 곁들이면 파일과 기판을 대조하기 쉽습니다.
 
