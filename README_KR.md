@@ -60,7 +60,11 @@ BMO에 화면, 물리 버튼, 팔, 카메라와 오디오를 통합하고 음성
 - 주요 기구 부품 모델링 및 출력 완료
 - 팔다리는 최종 조립 중 일부 치수 수정 가능
 
-<!-- 모델 정면·내부 CAD 이미지와 출력물 사진을 이 위치에 추가 -->
+<p align="center">
+  <img src="docs/images/bmo-fusion-assembly.png" alt="Fusion 360에서 설계한 BMO 본체와 전면 패널" width="650" />
+  <br />
+  <sub>Fusion 360 본체 설계 화면 · 출력물 사진은 최종 조립 후 추가</sub>
+</p>
 
 ### 하드웨어 구성
 
