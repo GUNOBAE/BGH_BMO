@@ -17,6 +17,7 @@
 - [제조 및 실장](#제조-및-실장)
 - [설계 및 제조 파일](#설계-및-제조-파일)
 - [수령 후 조립과 검증](#수령-후-조립과-검증)
+- [레퍼런스](#레퍼런스)
 
 ## 역할과 연결
 
@@ -66,7 +67,7 @@ PCBWay의 협찬으로 PCB 제조와 SMD 부품 실장을 의뢰했습니다. �
 | 직접 납땜 | 오른팔·왼팔 서보 헤더 `J2`, `J3` | 각 1개 |
 | 직접 납땜 | 서보 전원 커넥터 `J4` | 1개 |
 
-부품 목록의 `DNP` 표시는 업체 SMT에서 제외하고 직접 장착할 부품을 뜻합니다. 실제 업체 생산 BOM·실장 좌표 파일과 KiCad 내보내기 파일이 같은 버전인지 최종 자료를 업로드할 때 확인하겠습니다.
+부품 목록의 `DNP` 표시는 업체 SMT에서 제외하고 직접 장착할 부품을 뜻합니다. 실제 업체 생산 BOM·실장 좌표 파일과 KiCad 내보내기 파일이 같은 버전인지 최종 자료를 실물 수령 후 업체 생산 자료와 다시 대조하겠습니다.
 
 > **추가하면 좋은 사진:** 도착 직후 기판 앞·뒷면 사진과 SMD 실장부 확대 사진. 직접 납땜한 뒤에는 같은 각도로 한 번 더 촬영해 실장 전후를 비교하면 좋습니다.
 
@@ -79,7 +80,8 @@ PCBWay의 협찬으로 PCB 제조와 SMD 부품 실장을 의뢰했습니다. �
 
 | 파일 | 용도 |
 |---|---|
-| `BMO_pad_pcv.kicad_sch` | 편집 가능한 KiCad 회로도 |\n| [`BMO_pad_pcv_schematic.pdf`](../hardware/pcb/BMO_pad_pcv_schematic.pdf) | 전체 회로도 열람용 PDF |
+| `BMO_pad_pcv.kicad_sch` | 편집 가능한 KiCad 회로도 |
+| [`BMO_pad_pcv_schematic.pdf`](../hardware/pcb/BMO_pad_pcv_schematic.pdf) | 전체 회로도 열람용 PDF |
 | `BMO_pad_pcv.kicad_pcb` | 편집 가능한 KiCad PCB 레이아웃 |
 | `BMO_pad_pcv.kicad_pro` | KiCad 프로젝트 설정 |
 | `BMO_pad_pcv.csv` | 부품 목록(BOM) |
@@ -89,7 +91,7 @@ PCBWay의 협찬으로 PCB 제조와 SMD 부품 실장을 의뢰했습니다. �
 
 `*.kicad_prl`, `.history/`, `_restore_backup_*`, `*.lck`는 개인 작업 환경과 복구 이력이므로 배포용 묶음에서 제외했습니다. 재제조할 때는 **회로도·PCB·BOM·실장 좌표·Gerber가 같은 리비전**인지 확인해야 합니다.
 
-> **추가하면 좋은 이미지:** KiCad PCB 3D 뷰 앞·뒷면, 회로도 PDF. 실물을 받아 기판 리비전 표기가 보이는 확대 사진도 곁들이면 파일과 기판을 대조하기 쉽습니다.
+> **추가하면 좋은 사진:** 실물을 받아 기판 리비전 표기가 보이게 찍은 확대 사진. 설계 파일과 수령품을 대조하기 쉽습니다.
 
 ## 수령 후 조립과 검증
 
@@ -105,3 +107,7 @@ PCBWay의 협찬으로 PCB 제조와 SMD 부품 실장을 의뢰했습니다. �
 시험 중 발견한 문제와 수정은 메인 문서의 [Troubleshooting & Design Changes](../README_KR.md#troubleshooting--design-changes)에 기록하겠습니다.
 
 > **추가하면 좋은 사진·영상:** 납땜 완료된 기판, Pi와 PCB의 USB 연결 및 서보 전원 배선, 버튼 반응과 양팔 서보 동작을 보여주는 짧은 영상. 테스트 결과 표는 실제 측정한 뒤 채웁니다.
+
+## 레퍼런스
+
+- **MPU-6050 센서:** InvenSense, [*MPU-6000/MPU-6050 Product Specification*, Revision 3.4 (2013-08-19)](https://product.tdk.com/system/files/dam/doc/product/sensor/mortion-inertial/imu/data_sheet/mpu-6000-datasheet1.pdf). `U1`의 핀 배치, I²C 인터페이스, 전원 및 PCB 설계 조건을 확인할 때 참고한 제조사 문서입니다.
