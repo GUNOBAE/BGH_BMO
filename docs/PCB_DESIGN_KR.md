@@ -8,7 +8,7 @@
 |:---:|:---:|
 | <img src="images/pcb-top.png" alt="버튼 일곱 개가 배치된 PCB 전면 3D 뷰" width="460"> | <img src="images/pcb-bottom.png" alt="MPU-6050과 커패시터가 배치된 PCB 후면 3D 뷰" width="460"> |
 
-*KiCad 3D 뷰의 설계 이미지입니다. 실물 기판 사진은 수령 후 추가합니다.*
+*KiCad에서 내보낸 PCB 설계 이미지입니다. 실물 기판 사진은 수령 후 추가합니다.*
 
 ## 목차
 
@@ -44,7 +44,11 @@
 | GP9 | MPU-6050 인터럽트(INT) |
 | GP10 / GP11 | 오른팔 / 왼팔 서보 신호 |
 
-> **추가하면 좋은 이미지:** KiCad 회로도에서 `RP2040-Zero ↔ MPU-6050`, 버튼 7개, 서보·외부 전원 부분을 각각 읽을 수 있게 잘라낸 이미지. 전체 회로도 한 장도 내려받을 수 있게 두면 편합니다.
+### 회로도
+
+[![RP2040-Zero, MPU-6050, 버튼 7개, 서보 및 전원 커넥터의 전체 회로도](images/pcb-schematic.png)](../hardware/pcb/BMO_pad_pcv_schematic.pdf)
+
+이미지를 누르면 [원본 회로도 PDF](../hardware/pcb/BMO_pad_pcv_schematic.pdf)를 열어 확대해서 볼 수 있습니다. 회로를 수정하려면 아래의 KiCad 원본 파일을 사용하세요.
 
 ## 제조 및 실장
 
@@ -73,7 +77,7 @@ PCBWay의 협찬으로 PCB 제조와 SMD 부품 실장을 의뢰했습니다. �
 
 | 파일 | 용도 |
 |---|---|
-| `BMO_pad_pcv.kicad_sch` | 편집 가능한 KiCad 회로도 |
+| `BMO_pad_pcv.kicad_sch` | 편집 가능한 KiCad 회로도 |\n| [`BMO_pad_pcv_schematic.pdf`](../hardware/pcb/BMO_pad_pcv_schematic.pdf) | 전체 회로도 열람용 PDF |
 | `BMO_pad_pcv.kicad_pcb` | 편집 가능한 KiCad PCB 레이아웃 |
 | `BMO_pad_pcv.kicad_pro` | KiCad 프로젝트 설정 |
 | `BMO_pad_pcv.csv` | 부품 목록(BOM) |
