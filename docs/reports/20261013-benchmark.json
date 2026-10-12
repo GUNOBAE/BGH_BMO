@@ -1,0 +1,17 @@
+{
+  "measurement": "mock_conversation_host_overhead",
+  "mock_only": true,
+  "network_calls": 0,
+  "hardware_operations": 0,
+  "python": "3.13.5",
+  "architecture": "aarch64",
+  "iterations": 200,
+  "latency_ms": {
+    "median": 0.0514,
+    "p95": 0.0519,
+    "max": 0.0647
+  },
+  "traced_peak_bytes": 29224,
+  "retained_messages": 16,
+  "limitations": "Includes tracemalloc overhead; excludes recording, cloud, synthesis, playback, display and motors."
+}

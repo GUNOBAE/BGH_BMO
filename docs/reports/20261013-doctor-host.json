@@ -1,0 +1,647 @@
+{
+  "audio": {
+    "capture": {
+      "hardware": [
+        {
+          "card": 4,
+          "card_id": "Device",
+          "card_name": "USB PnP Sound Device",
+          "device": 0,
+          "device_name": "USB Audio [USB Audio]",
+          "alsa_name": "hw:CARD=Device,DEV=0"
+        }
+      ],
+      "pcm": [
+        {
+          "name": "null",
+          "description": "Discard all samples (playback) or generate zero samples (capture)"
+        },
+        {
+          "name": "default",
+          "description": "Default Audio Device"
+        },
+        {
+          "name": "sysdefault",
+          "description": "Default Audio Device"
+        },
+        {
+          "name": "default:CARD=RP2040Zero",
+          "description": "Default Audio Device"
+        },
+        {
+          "name": "sysdefault:CARD=RP2040Zero",
+          "description": "Default Audio Device"
+        },
+        {
+          "name": "hw:CARD=Device,DEV=0",
+          "description": "USB PnP Sound Device, USB Audio Direct hardware device without any conversions"
+        },
+        {
+          "name": "plughw:CARD=Device,DEV=0",
+          "description": "USB PnP Sound Device, USB Audio Hardware device with all software conversions"
+        },
+        {
+          "name": "default:CARD=Device",
+          "description": "USB PnP Sound Device, USB Audio Default Audio Device"
+        },
+        {
+          "name": "sysdefault:CARD=Device",
+          "description": "USB PnP Sound Device, USB Audio Default Audio Device"
+        },
+        {
+          "name": "front:CARD=Device,DEV=0",
+          "description": "USB PnP Sound Device, USB Audio Front output / input"
+        },
+        {
+          "name": "dsnoop:CARD=Device,DEV=0",
+          "description": "USB PnP Sound Device, USB Audio Direct sample snooping device"
+        }
+      ],
+      "errors": []
+    },
+    "playback": {
+      "hardware": [
+        {
+          "card": 0,
+          "card_id": "vc4hdmi0",
+          "card_name": "vc4-hdmi-0",
+          "device": 0,
+          "device_name": "MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]",
+          "alsa_name": "hw:CARD=vc4hdmi0,DEV=0"
+        },
+        {
+          "card": 1,
+          "card_id": "vc4hdmi1",
+          "card_name": "vc4-hdmi-1",
+          "device": 0,
+          "device_name": "MAI PCM i2s-hifi-0 [MAI PCM i2s-hifi-0]",
+          "alsa_name": "hw:CARD=vc4hdmi1,DEV=0"
+        },
+        {
+          "card": 2,
+          "card_id": "MAX98357A",
+          "card_name": "MAX98357A",
+          "device": 0,
+          "device_name": "1f000a0000.i2s-HiFi HiFi-0 [1f000a0000.i2s-HiFi HiFi-0]",
+          "alsa_name": "hw:CARD=MAX98357A,DEV=0"
+        }
+      ],
+      "pcm": [
+        {
+          "name": "null",
+          "description": "Discard all samples (playback) or generate zero samples (capture)"
+        },
+        {
+          "name": "default",
+          "description": "Default Audio Device"
+        },
+        {
+          "name": "sysdefault",
+          "description": "Default Audio Device"
+        },
+        {
+          "name": "hw:CARD=vc4hdmi0,DEV=0",
+          "description": "vc4-hdmi-0, MAI PCM i2s-hifi-0 Direct hardware device without any conversions"
+        },
+        {
+          "name": "plughw:CARD=vc4hdmi0,DEV=0",
+          "description": "vc4-hdmi-0, MAI PCM i2s-hifi-0 Hardware device with all software conversions"
+        },
+        {
+          "name": "default:CARD=vc4hdmi0",
+          "description": "vc4-hdmi-0, MAI PCM i2s-hifi-0 Default Audio Device"
+        },
+        {
+          "name": "sysdefault:CARD=vc4hdmi0",
+          "description": "vc4-hdmi-0, MAI PCM i2s-hifi-0 Default Audio Device"
+        },
+        {
+          "name": "hdmi:CARD=vc4hdmi0,DEV=0",
+          "description": "vc4-hdmi-0, MAI PCM i2s-hifi-0 HDMI Audio Output"
+        },
+        {
+          "name": "dmix:CARD=vc4hdmi0,DEV=0",
+          "description": "vc4-hdmi-0, MAI PCM i2s-hifi-0 Direct sample mixing device"
+        },
+        {
+          "name": "hw:CARD=vc4hdmi1,DEV=0",
+          "description": "vc4-hdmi-1, MAI PCM i2s-hifi-0 Direct hardware device without any conversions"
+        },
+        {
+          "name": "plughw:CARD=vc4hdmi1,DEV=0",
+          "description": "vc4-hdmi-1, MAI PCM i2s-hifi-0 Hardware device with all software conversions"
+        },
+        {
+          "name": "default:CARD=vc4hdmi1",
+          "description": "vc4-hdmi-1, MAI PCM i2s-hifi-0 Default Audio Device"
+        },
+        {
+          "name": "sysdefault:CARD=vc4hdmi1",
+          "description": "vc4-hdmi-1, MAI PCM i2s-hifi-0 Default Audio Device"
+        },
+        {
+          "name": "hdmi:CARD=vc4hdmi1,DEV=0",
+          "description": "vc4-hdmi-1, MAI PCM i2s-hifi-0 HDMI Audio Output"
+        },
+        {
+          "name": "dmix:CARD=vc4hdmi1,DEV=0",
+          "description": "vc4-hdmi-1, MAI PCM i2s-hifi-0 Direct sample mixing device"
+        },
+        {
+          "name": "hw:CARD=MAX98357A,DEV=0",
+          "description": "MAX98357A, 1f000a0000.i2s-HiFi HiFi-0 Direct hardware device without any conversions"
+        },
+        {
+          "name": "plughw:CARD=MAX98357A,DEV=0",
+          "description": "MAX98357A, 1f000a0000.i2s-HiFi HiFi-0 Hardware device with all software conversions"
+        },
+        {
+          "name": "default:CARD=MAX98357A",
+          "description": "MAX98357A, 1f000a0000.i2s-HiFi HiFi-0 Default Audio Device"
+        },
+        {
+          "name": "sysdefault:CARD=MAX98357A",
+          "description": "MAX98357A, 1f000a0000.i2s-HiFi HiFi-0 Default Audio Device"
+        },
+        {
+          "name": "dmix:CARD=MAX98357A,DEV=0",
+          "description": "MAX98357A, 1f000a0000.i2s-HiFi HiFi-0 Direct sample mixing device"
+        },
+        {
+          "name": "default:CARD=RP2040Zero",
+          "description": "Default Audio Device"
+        },
+        {
+          "name": "sysdefault:CARD=RP2040Zero",
+          "description": "Default Audio Device"
+        }
+      ],
+      "errors": []
+    }
+  },
+  "hardware": {
+    "schema_version": 1,
+    "mode": "read_only_inventory",
+    "platform": {
+      "model": {
+        "status": "observed",
+        "path": "/proc/device-tree/model",
+        "value": "Raspberry Pi 5 Model B Rev 1.0",
+        "truncated": false
+      },
+      "os_release": {
+        "status": "observed",
+        "path": "/etc/os-release",
+        "truncated": false,
+        "fields": {
+          "PRETTY_NAME": "Debian GNU/Linux 13 (trixie)",
+          "VERSION_ID": "13",
+          "ID": "debian"
+        }
+      },
+      "machine": "aarch64",
+      "kernel_release": "6.18.50+rpt-rpi-2712",
+      "python": "3.13.5"
+    },
+    "audio": {
+      "proc_cards": {
+        "status": "observed",
+        "path": "/proc/asound/cards",
+        "value": " 0 [vc4hdmi0       ]: vc4-hdmi - vc4-hdmi-0\n                      vc4-hdmi-0\n 1 [vc4hdmi1       ]: vc4-hdmi - vc4-hdmi-1\n                      vc4-hdmi-1\n 2 [MAX98357A      ]: simple-card - MAX98357A\n                      MAX98357A\n 3 [RP2040Zero     ]: USB-Audio - RP2040-Zero\n                      Waveshare Electronics RP2040-Zero at usb-xhci-hcd.1-2.2, full speed\n 4 [Device         ]: USB-Audio - USB PnP Sound Device\n                      C-Media Electronics Inc. USB PnP Sound Device at usb-xhci-hcd.1-2.3, full speed",
+        "truncated": false
+      },
+      "sysfs": {
+        "status": "observed",
+        "path": "/sys/class/sound",
+        "entries": [
+          "card0",
+          "card1",
+          "card2",
+          "card3",
+          "card4"
+        ],
+        "cards": [
+          {
+            "name": "card0",
+            "id": {
+              "status": "observed",
+              "path": "/sys/class/sound/card0/id",
+              "value": "vc4hdmi0",
+              "truncated": false
+            }
+          },
+          {
+            "name": "card1",
+            "id": {
+              "status": "observed",
+              "path": "/sys/class/sound/card1/id",
+              "value": "vc4hdmi1",
+              "truncated": false
+            }
+          },
+          {
+            "name": "card2",
+            "id": {
+              "status": "observed",
+              "path": "/sys/class/sound/card2/id",
+              "value": "MAX98357A",
+              "truncated": false
+            }
+          },
+          {
+            "name": "card3",
+            "id": {
+              "status": "observed",
+              "path": "/sys/class/sound/card3/id",
+              "value": "RP2040Zero",
+              "truncated": false
+            }
+          },
+          {
+            "name": "card4",
+            "id": {
+              "status": "observed",
+              "path": "/sys/class/sound/card4/id",
+              "value": "Device",
+              "truncated": false
+            }
+          }
+        ]
+      },
+      "device_nodes": {
+        "status": "observed",
+        "path": "/dev/snd",
+        "entries": [
+          "controlC0",
+          "controlC1",
+          "controlC2",
+          "controlC3",
+          "controlC4",
+          "pcmC0D0p",
+          "pcmC1D0p",
+          "pcmC2D0p",
+          "pcmC4D0c"
+        ]
+      },
+      "capture_test": "not_performed",
+      "playback_test": "not_performed"
+    },
+    "controller": {
+      "sysfs": {
+        "status": "observed",
+        "path": "/sys/class/tty",
+        "entries": [
+          "ttyACM0"
+        ]
+      },
+      "device_nodes": {
+        "status": "observed",
+        "path": "/dev",
+        "entries": [
+          "ttyACM0"
+        ]
+      },
+      "port_opened": false,
+      "identity_verified": false,
+      "note": "A tty name alone does not identify a safe controller data port."
+    },
+    "camera": {
+      "sysfs": {
+        "status": "observed",
+        "path": "/sys/class/video4linux",
+        "entries": [
+          "video0",
+          "video1",
+          "video19",
+          "video2",
+          "video20",
+          "video21",
+          "video22",
+          "video23",
+          "video24",
+          "video25",
+          "video26",
+          "video27",
+          "video28",
+          "video29",
+          "video3",
+          "video30",
+          "video31",
+          "video32",
+          "video33",
+          "video34",
+          "video35",
+          "video4",
+          "video5",
+          "video6",
+          "video7"
+        ],
+        "devices": [
+          {
+            "name": "video0",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video0/name",
+              "value": "rp1-cfe-csi2_ch0",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video1",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video1/name",
+              "value": "rp1-cfe-embedded",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video19",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video19/name",
+              "value": "rpi-hevc-dec",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video2",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video2/name",
+              "value": "rp1-cfe-csi2_ch2",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video20",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video20/name",
+              "value": "pispbe-input",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video21",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video21/name",
+              "value": "pispbe-tdn_input",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video22",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video22/name",
+              "value": "pispbe-stitch_input",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video23",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video23/name",
+              "value": "pispbe-output0",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video24",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video24/name",
+              "value": "pispbe-output1",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video25",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video25/name",
+              "value": "pispbe-tdn_output",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video26",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video26/name",
+              "value": "pispbe-stitch_output",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video27",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video27/name",
+              "value": "pispbe-config",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video28",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video28/name",
+              "value": "pispbe-input",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video29",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video29/name",
+              "value": "pispbe-tdn_input",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video3",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video3/name",
+              "value": "rp1-cfe-csi2_ch3",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video30",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video30/name",
+              "value": "pispbe-stitch_input",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video31",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video31/name",
+              "value": "pispbe-output0",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video32",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video32/name",
+              "value": "pispbe-output1",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video33",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video33/name",
+              "value": "pispbe-tdn_output",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video34",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video34/name",
+              "value": "pispbe-stitch_output",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video35",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video35/name",
+              "value": "pispbe-config",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video4",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video4/name",
+              "value": "rp1-cfe-fe_image0",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video5",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video5/name",
+              "value": "rp1-cfe-fe_image1",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video6",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video6/name",
+              "value": "rp1-cfe-fe_stats",
+              "truncated": false
+            }
+          },
+          {
+            "name": "video7",
+            "description": {
+              "status": "observed",
+              "path": "/sys/class/video4linux/video7/name",
+              "value": "rp1-cfe-fe_config",
+              "truncated": false
+            }
+          }
+        ]
+      },
+      "device_nodes": {
+        "status": "observed",
+        "path": "/dev",
+        "entries": [
+          "video0",
+          "video1",
+          "video19",
+          "video2",
+          "video20",
+          "video21",
+          "video22",
+          "video23",
+          "video24",
+          "video25",
+          "video26",
+          "video27",
+          "video28",
+          "video29",
+          "video3",
+          "video30",
+          "video31",
+          "video32",
+          "video33",
+          "video34",
+          "video35",
+          "video4",
+          "video5",
+          "video6",
+          "video7"
+        ]
+      },
+      "capture_test": "not_performed",
+      "note": "V4L2 entries can be codecs or ISP nodes; they do not prove camera presence."
+    },
+    "arms": {
+      "backend": "denied",
+      "movement_test": "not_performed"
+    },
+    "imu": {
+      "sample_test": "not_performed",
+      "health": "unverified"
+    },
+    "tools": {
+      "arecord": {
+        "status": "available",
+        "path": "/usr/bin/arecord",
+        "executed": false
+      },
+      "aplay": {
+        "status": "available",
+        "path": "/usr/bin/aplay",
+        "executed": false
+      },
+      "rpicam-hello": {
+        "status": "available",
+        "path": "/usr/bin/rpicam-hello",
+        "executed": false
+      },
+      "libcamera-hello": {
+        "status": "unavailable",
+        "path": null,
+        "executed": false
+      },
+      "v4l2-ctl": {
+        "status": "available",
+        "path": "/usr/bin/v4l2-ctl",
+        "executed": false
+      },
+      "lsusb": {
+        "status": "available",
+        "path": "/usr/bin/lsusb",
+        "executed": false
+      }
+    },
+    "limitations": [
+      "Passive inventory cannot verify wiring, signal quality, device health, or permissions to operate.",
+      "Missing paths and executables describe the current process view, not the whole host.",
+      "No audio, serial, camera, IMU, GPIO, servo, or power operation was performed."
+    ]
+  }
+}

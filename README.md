@@ -1,8 +1,10 @@
 # Project Outline: BGH_BMO
 
-**BGH_BMO** is a custom, scaled-up, on-device AI companion robot inspired by the character BMO from *Adventure Time*.  
+**BGH_BMO** is a custom, scaled-up AI companion robot inspired by the character BMO from *Adventure Time*.
 
-After watching [brenpoly's be-more-agent](https://github.com/brenpoly/be-more-agent), I decided to build my own version with significant engineering improvements. Instead of directly reusing mesh assets, the original chassis was re-engineered into solid CAD geometry to accommodate a larger **7-inch display** and an optimized internal layout. Rather than relying on cloud APIs or high-power computing, this build leverages a **Raspberry Pi 5 (8GB)** paired with the **Raspberry Pi AI HAT+ (Hailo-10H NPU)** for efficient, low-latency edge inference.
+After watching [brenpoly's be-more-agent](https://github.com/brenpoly/be-more-agent), I decided to build my own version. The chassis was re-engineered into solid CAD geometry to accommodate a **7-inch display** and an optimized internal layout, using a **Raspberry Pi 5 (8GB)** as the host. The current conversational implementation uses cloud GPT after earlier local-AI experiments.
+
+**Software update — 2026-10-13:** English/Korean conversation, push-to-talk STT/TTS, safe device discovery, configuration, logging, tests and hardware extension contracts are implemented on the development branch. Live cloud and physical audio remain unverified; arm movement is disabled. Start with the [English software guide](software/README.md), [Korean guide](software/README_KR.md), [architecture](docs/architecture.md) or [development report](docs/reports/20261013-development-report.md). The BOM below includes historical hardware choices rather than a newly verified deployment inventory.
 
 ---
 
@@ -12,14 +14,14 @@ This project serves as a hands-on physical computing sandbox to master end-to-en
 
 * **Custom PCB Design & PCBA (KiCad):** Designing a custom front-panel controller using KiCad, routing an onboard MPU6050 IMU chip, and ordering full SMT assembly (PCBA) through PCBWay.
 * **Hybrid 3D Modeling (Blender & CAD):** Using Blender to preprocess, repair, and clean complex STL mesh geometries that are otherwise difficult to manipulate natively in solid CAD software.
-* **On-Device Physical AI:** Deploying local LLM/VLM pipelines directly onto the Hailo-10H NPU to enable natural, conversational human-robot interaction without cloud dependencies.
+* **Conversational AI:** Evaluating earlier local-AI experiments and implementing bounded cloud GPT conversations with English and Korean support.
 * **Edge System Integration:** Orchestrating power delivery (UPS/18650), I2S digital audio, camera vision, dual-servo arm actuation, and sensor processing into a unified embedded enclosure.
 
 ---
 
 ## ✨ Key Features & Improvements over Original
 
-* **NPU Acceleration**: Replaced high-load cloud/CPU pipelines with an on-device VLM/LLM architecture running on the **Hailo-10H AI accelerator (40 TOPS)**.
+* **Cloud conversation software**: Added GPT text and push-to-talk speech pipelines with offline tests; live cloud and hardware performance remain to be verified.
 * **135% Scaled Housing**: Redesigned 3D printable shell accommodating a **7-inch DSI capacitive touch display** (upgraded from 5-inch).
 * **Integrated SMT Controller PCB**: Replaced the bulky Adafruit Feather board with a **custom RP2040-Zero carrier board** featuring an onboard MPU6050 IMU (SMT assembled) to drive 7 tactile buttons, dual-arm SG90S micro servos, and orientation tracking.
 * **Personal Hub Expansion**: Designed to serve as an edge computing hub, local portfolio host, and a platform for physical computing.

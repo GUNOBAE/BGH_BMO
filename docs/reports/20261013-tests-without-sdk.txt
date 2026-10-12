@@ -1,0 +1,125 @@
+test_cleanup_failure_after_success_is_typed_and_sanitized (test_app.AppTests.test_cleanup_failure_after_success_is_typed_and_sanitized) ... ok
+test_cleanup_failure_preserves_primary_error_and_interrupt (test_app.AppTests.test_cleanup_failure_preserves_primary_error_and_interrupt) ... ok
+test_default_stt_auto_detection_and_korean_hint (test_app.AppTests.test_default_stt_auto_detection_and_korean_hint) ... ok
+test_face_failure_does_not_break_conversation (test_app.AppTests.test_face_failure_does_not_break_conversation) ... ok
+test_muting_skips_cloud_speech_and_configured_device_passed (test_app.AppTests.test_muting_skips_cloud_speech_and_configured_device_passed) ... ok
+test_record_deleted_after_transcription_failure_and_interrupt (test_app.AppTests.test_record_deleted_after_transcription_failure_and_interrupt) ... ok
+test_cleanup_failure_safe_and_preserves_original_interrupt (test_audio.AudioTests.test_cleanup_failure_safe_and_preserves_original_interrupt) ... ok
+test_discovery_failures_are_reported_without_raw_stderr (test_audio.AudioTests.test_discovery_failures_are_reported_without_raw_stderr) ... ok
+test_discovery_is_json_read_only_and_never_selects_devices (test_audio.AudioTests.test_discovery_is_json_read_only_and_never_selects_devices) ... ok
+test_download_deadline_is_checked_before_and_after_network_reads (test_audio.AudioTests.test_download_deadline_is_checked_before_and_after_network_reads) ... ok
+test_download_invalid_chunk_and_storage_failure_are_typed (test_audio.AudioTests.test_download_invalid_chunk_and_storage_failure_are_typed) ... ok
+test_download_size_cap_is_enforced_before_disk_write_and_cleanup (test_audio.AudioTests.test_download_size_cap_is_enforced_before_disk_write_and_cleanup) ... ok
+test_empty_or_invalid_speech_makes_no_cloud_request (test_audio.AudioTests.test_empty_or_invalid_speech_makes_no_cloud_request) ... ok
+test_failed_or_interrupted_synthesis_cleans_partial_file (test_audio.AudioTests.test_failed_or_interrupted_synthesis_cleans_partial_file) ... ok
+test_failed_stream_context_entry_and_exit_cleanup (test_audio.AudioTests.test_failed_stream_context_entry_and_exit_cleanup) ... ok
+test_invalid_duration_and_device_never_start_recording (test_audio.AudioTests.test_invalid_duration_and_device_never_start_recording) ... ok
+test_invalid_synthesis_never_plays_and_cleans_file (test_audio.AudioTests.test_invalid_synthesis_never_plays_and_cleans_file) ... ok
+test_legacy_tts_omits_unsupported_instructions_and_uses_alsa_default (test_audio.AudioTests.test_legacy_tts_omits_unsupported_instructions_and_uses_alsa_default) ... ok
+test_playback_failure_or_interrupt_cleans_file (test_audio.AudioTests.test_playback_failure_or_interrupt_cleans_file) ... ok
+test_process_timeout_kills_and_reaps_child_without_using_hardware (test_audio.AudioTests.test_process_timeout_kills_and_reaps_child_without_using_hardware) ... ok
+test_public_speech_settings_validation_matches_speak (test_audio.AudioTests.test_public_speech_settings_validation_matches_speak) ... ok
+test_record_checks_pcm_format_and_expected_duration (test_audio.AudioTests.test_record_checks_pcm_format_and_expected_duration) ... ok
+test_record_failure_and_interrupt_delete_temporary_files (test_audio.AudioTests.test_record_failure_and_interrupt_delete_temporary_files) ... ok
+test_record_preserves_alsa_default_without_selecting_a_card (test_audio.AudioTests.test_record_preserves_alsa_default_without_selecting_a_card) ... ok
+test_record_uses_configured_device_and_retains_owned_valid_file (test_audio.AudioTests.test_record_uses_configured_device_and_retains_owned_valid_file) ... ok
+test_speak_passes_config_and_cleans_validated_wav (test_audio.AudioTests.test_speak_passes_config_and_cleans_validated_wav) ... ok
+test_stream_connection_error_uses_cloud_classification_and_cleans_file (test_audio.AudioTests.test_stream_connection_error_uses_cloud_classification_and_cleans_file) ... ok
+test_temporary_storage_failure_is_sanitized (test_audio.AudioTests.test_temporary_storage_failure_is_sanitized) ... ok
+test_transcribe_passes_model_language_and_closes_input (test_audio.AudioTests.test_transcribe_passes_model_language_and_closes_input) ... ok
+test_transcribe_validates_before_any_cloud_request (test_audio.AudioTests.test_transcribe_validates_before_any_cloud_request) ... ok
+test_transcription_errors_are_sanitized_with_no_retries (test_audio.AudioTests.test_transcription_errors_are_sanitized_with_no_retries) ... ok
+test_wav_extensible_pcm_is_validated (test_audio.AudioTests.test_wav_extensible_pcm_is_validated) ... ok
+test_wav_rejects_empty_truncated_wrong_size_and_invalid_pcm (test_audio.AudioTests.test_wav_rejects_empty_truncated_wrong_size_and_invalid_pcm) ... ok
+test_wav_streaming_header_is_only_allowed_explicitly (test_audio.AudioTests.test_wav_streaming_header_is_only_allowed_explicitly) ... ok
+test_invalid_count (test_benchmark.BenchmarkTests.test_invalid_count) ... ok
+test_offline_report_and_history_bound (test_benchmark.BenchmarkTests.test_offline_report_and_history_bound) ... ok
+test_cli_overrides_invalid_matching_environment_before_validation (test_cli.CliTests.test_cli_overrides_invalid_matching_environment_before_validation) ... {"time": "2026-10-12T16:35:20.560369+00:00", "level": "INFO", "event": "ready", "mode": "text", "language": "ko"}
+{"time": "2026-10-12T16:35:20.560508+00:00", "level": "INFO", "event": "shutdown"}
+ok
+test_client_closes_when_initialization_or_ready_output_fails (test_cli.CliTests.test_client_closes_when_initialization_or_ready_output_fails) ... {"time": "2026-10-12T16:35:20.561615+00:00", "level": "INFO", "event": "shutdown"}
+{"time": "2026-10-12T16:35:20.562183+00:00", "level": "INFO", "event": "shutdown"}
+ok
+test_doctor_no_client_and_no_cloud_config_requirement (test_cli.CliTests.test_doctor_no_client_and_no_cloud_config_requirement) ... ok
+test_eof_closes_client (test_cli.CliTests.test_eof_closes_client) ... {"time": "2026-10-12T16:35:20.563913+00:00", "level": "INFO", "event": "ready", "mode": "text", "language": "en"}
+{"time": "2026-10-12T16:35:20.564038+00:00", "level": "INFO", "event": "shutdown"}
+ok
+test_invalid_seconds_fails_before_client (test_cli.CliTests.test_invalid_seconds_fails_before_client) ... ok
+test_missing_key_is_useful_and_no_traceback (test_cli.CliTests.test_missing_key_is_useful_and_no_traceback) ... {"time": "2026-10-12T16:35:20.565441+00:00", "level": "INFO", "event": "startup_failed", "code": "missing_key"}
+ok
+test_repeat_after_playback_failure_never_repeats_chat_or_capture (test_cli.CliTests.test_repeat_after_playback_failure_never_repeats_chat_or_capture) ... {"time": "2026-10-12T16:35:20.566517+00:00", "level": "INFO", "event": "ready", "mode": "voice", "language": "en"}
+{"time": "2026-10-12T16:35:20.566639+00:00", "level": "INFO", "event": "stage", "stage": "chat", "outcome": "ok", "duration_ms": 0.031}
+{"time": "2026-10-12T16:35:20.566718+00:00", "level": "INFO", "event": "stage", "stage": "speech", "outcome": "error", "duration_ms": 0.025}
+{"time": "2026-10-12T16:35:20.566762+00:00", "level": "INFO", "event": "stage", "stage": "turn", "outcome": "error", "duration_ms": 0.19}
+{"time": "2026-10-12T16:35:20.566808+00:00", "level": "INFO", "event": "turn_failed", "code": "audio_error"}
+{"time": "2026-10-12T16:35:20.566863+00:00", "level": "INFO", "event": "stage", "stage": "speech", "outcome": "ok", "duration_ms": 0.017}
+{"time": "2026-10-12T16:35:20.566899+00:00", "level": "INFO", "event": "conversation_reset"}
+{"time": "2026-10-12T16:35:20.566986+00:00", "level": "INFO", "event": "shutdown"}
+ok
+test_text_mode_no_audio_reset_and_close (test_cli.CliTests.test_text_mode_no_audio_reset_and_close) ... {"time": "2026-10-12T16:35:20.568020+00:00", "level": "INFO", "event": "ready", "mode": "text", "language": "en"}
+{"time": "2026-10-12T16:35:20.568112+00:00", "level": "INFO", "event": "stage", "stage": "chat", "outcome": "ok", "duration_ms": 0.032}
+{"time": "2026-10-12T16:35:20.568156+00:00", "level": "INFO", "event": "stage", "stage": "turn", "outcome": "ok", "duration_ms": 0.085}
+{"time": "2026-10-12T16:35:20.568191+00:00", "level": "INFO", "event": "conversation_reset"}
+{"time": "2026-10-12T16:35:20.568253+00:00", "level": "INFO", "event": "stage", "stage": "chat", "outcome": "ok", "duration_ms": 0.024}
+{"time": "2026-10-12T16:35:20.568292+00:00", "level": "INFO", "event": "stage", "stage": "turn", "outcome": "ok", "duration_ms": 0.066}
+{"time": "2026-10-12T16:35:20.568381+00:00", "level": "INFO", "event": "shutdown"}
+ok
+test_turn_failure_is_sanitized_and_next_turn_recovers (test_cli.CliTests.test_turn_failure_is_sanitized_and_next_turn_recovers) ... ok
+test_voice_unknown_command_does_not_record (test_cli.CliTests.test_voice_unknown_command_does_not_record) ... {"time": "2026-10-12T16:35:20.570909+00:00", "level": "INFO", "event": "ready", "mode": "voice", "language": "en"}
+{"time": "2026-10-12T16:35:20.571057+00:00", "level": "INFO", "event": "shutdown"}
+ok
+test_cancel_propagates (test_cloud.CloudTests.test_cancel_propagates) ... ok
+test_client_transport_configuration (test_cloud.CloudTests.test_client_transport_configuration) ... ok
+test_key_missing_no_sdk_or_cloud (test_cloud.CloudTests.test_key_missing_no_sdk_or_cloud) ... ok
+test_sanitizes_status_failures (test_cloud.CloudTests.test_sanitizes_status_failures) ... ok
+test_sdk_alone_retries (test_cloud.CloudTests.test_sdk_alone_retries) ... ok
+test_all_settings_can_be_loaded_and_whitespace_is_normalized (test_config.ConfigTests.test_all_settings_can_be_loaded_and_whitespace_is_normalized) ... ok
+test_defaults_are_cost_bounded_english_and_have_no_secret (test_config.ConfigTests.test_defaults_are_cost_bounded_english_and_have_no_secret) ... ok
+test_explicit_mapping_does_not_read_process_environment (test_config.ConfigTests.test_explicit_mapping_does_not_read_process_environment) ... ok
+test_invalid_mapping_type_and_direct_dataclass_overrides_are_validated (test_config.ConfigTests.test_invalid_mapping_type_and_direct_dataclass_overrides_are_validated) ... ok
+test_invalid_values_fail_without_exposing_raw_input (test_config.ConfigTests.test_invalid_values_fail_without_exposing_raw_input) ... ok
+test_legacy_voice_compatibility_is_validated_before_cloud_startup (test_config.ConfigTests.test_legacy_voice_compatibility_is_validated_before_cloud_startup) ... ok
+test_optional_empty_settings_become_none (test_config.ConfigTests.test_optional_empty_settings_become_none) ... ok
+test_blank_and_oversized_input_do_not_call_api (test_core.BrainTests.test_blank_and_oversized_input_do_not_call_api) ... ok
+test_conversation_uses_stateless_responses_and_local_complete_turns (test_core.BrainTests.test_conversation_uses_stateless_responses_and_local_complete_turns) ... ok
+test_default_model_and_explicit_model_override_environment (test_core.BrainTests.test_default_model_and_explicit_model_override_environment) ... ok
+test_empty_and_incomplete_responses_preserve_history (test_core.BrainTests.test_empty_and_incomplete_responses_preserve_history) ... ok
+test_failed_request_preserves_history_even_when_candidate_trimmed (test_core.BrainTests.test_failed_request_preserves_history_even_when_candidate_trimmed) ... ok
+test_history_and_outbound_character_budgets_drop_whole_turns (test_core.BrainTests.test_history_and_outbound_character_budgets_drop_whole_turns) ... ok
+test_invalid_constructor_budgets_and_languages (test_core.BrainTests.test_invalid_constructor_budgets_and_languages) ... ok
+test_language_instructions_keep_english_default_with_korean_support (test_core.BrainTests.test_language_instructions_keep_english_default_with_korean_support) ... ok
+test_reset_makes_next_request_start_without_previous_context (test_core.BrainTests.test_reset_makes_next_request_start_without_previous_context) ... ok
+test_turn_larger_than_history_budget_is_answered_without_partial_retention (test_core.BrainTests.test_turn_larger_than_history_budget_is_answered_without_partial_retention) ... ok
+test_fallback_model_truncation_and_permission_errors (test_diagnostics.InventoryTests.test_fallback_model_truncation_and_permission_errors) ... ok
+test_hidden_device_nodes_are_not_reported_as_missing_hardware (test_diagnostics.InventoryTests.test_hidden_device_nodes_are_not_reported_as_missing_hardware) ... ok
+test_inventory_observes_kernel_metadata_without_opening_devices (test_diagnostics.InventoryTests.test_inventory_observes_kernel_metadata_without_opening_devices) ... ok
+test_arms_always_fail_closed_even_with_environment_opt_in (test_hardware.HardwareSafetyTests.test_arms_always_fail_closed_even_with_environment_opt_in) ... ok
+test_face_states_do_not_touch_devices (test_hardware.HardwareSafetyTests.test_face_states_do_not_touch_devices) ... ok
+test_fragmented_frames_crlf_and_malformed_recovery (test_hardware.TelemetryFramingTests.test_fragmented_frames_crlf_and_malformed_recovery) ... ok
+test_maximum_frame_accepts_fragmented_crlf_without_growing_unbounded (test_hardware.TelemetryFramingTests.test_maximum_frame_accepts_fragmented_crlf_without_growing_unbounded) ... ok
+test_oversized_frame_tail_is_never_accepted_and_buffer_stays_bounded (test_hardware.TelemetryFramingTests.test_oversized_frame_tail_is_never_accepted_and_buffer_stays_bounded) ... ok
+test_truncated_stream_is_dropped_before_next_connection (test_hardware.TelemetryFramingTests.test_truncated_stream_is_dropped_before_next_connection) ... ok
+test_buttons_are_bounded_consumed_once_and_expire (test_hardware.TelemetryFreshnessTests.test_buttons_are_bounded_consumed_once_and_expire) ... ok
+test_duplicates_backwards_packets_and_wrap (test_hardware.TelemetryFreshnessTests.test_duplicates_backwards_packets_and_wrap) ... ok
+test_freshness_uses_host_arrival_not_controller_clock_or_heartbeat (test_hardware.TelemetryFreshnessTests.test_freshness_uses_host_arrival_not_controller_clock_or_heartbeat) ... ok
+test_invalid_configuration_and_clock_are_rejected (test_hardware.TelemetryFreshnessTests.test_invalid_configuration_and_clock_are_rejected) ... ok
+test_known_schema_is_typed_with_explicit_units (test_hardware.TelemetrySchemaTests.test_known_schema_is_typed_with_explicit_units) ... ok
+test_malformed_and_nonfinite_values_are_rejected (test_hardware.TelemetrySchemaTests.test_malformed_and_nonfinite_values_are_rejected) ... ok
+test_unsupported_version_unknown_fields_and_commands_are_rejected (test_hardware.TelemetrySchemaTests.test_unsupported_version_unknown_fields_and_commands_are_rejected) ... ok
+test_connection_timeout_retries_are_bounded (test_sdk_contract.SDKContractTests.test_connection_timeout_retries_are_bounded) ... skipped 'SDK contract tests require requirements.txt; all standard-library tests still run'
+test_incomplete_response_rolls_back (test_sdk_contract.SDKContractTests.test_incomplete_response_rolls_back) ... skipped 'SDK contract tests require requirements.txt; all standard-library tests still run'
+test_responses_schema_and_local_bilingual_context (test_sdk_contract.SDKContractTests.test_responses_schema_and_local_bilingual_context) ... skipped 'SDK contract tests require requirements.txt; all standard-library tests still run'
+test_transcription_multipart_and_tts_stream_use_real_sdk (test_sdk_contract.SDKContractTests.test_transcription_multipart_and_tts_stream_use_real_sdk) ... skipped 'SDK contract tests require requirements.txt; all standard-library tests still run'
+test_transient_failure_sdk_retries_once_and_auth_never_retries (test_sdk_contract.SDKContractTests.test_transient_failure_sdk_retries_once_and_auth_never_retries) ... skipped 'SDK contract tests require requirements.txt; all standard-library tests still run'
+test_file_permissions_and_payload_loggers (test_telemetry.TelemetryTests.test_file_permissions_and_payload_loggers) ... {"time": "2026-10-12T16:35:20.582325+00:00", "level": "INFO", "event": "ready", "mode": "text"}
+ok
+test_log_rotation_keeps_private_permissions (test_telemetry.TelemetryTests.test_log_rotation_keeps_private_permissions) ... {"time": "2026-10-12T16:35:20.582795+00:00", "level": "INFO", "event": "ready"}
+{"time": "2026-10-12T16:35:20.582938+00:00", "level": "INFO", "event": "shutdown"}
+ok
+test_sdk_debug_override_cannot_propagate_payload (test_telemetry.TelemetryTests.test_sdk_debug_override_cannot_propagate_payload) ... ok
+test_structured_failure_timing_contains_no_exception (test_telemetry.TelemetryTests.test_structured_failure_timing_contains_no_exception) ... ok
+
+----------------------------------------------------------------------
+Ran 93 tests in 0.571s
+
+OK (skipped=5)
