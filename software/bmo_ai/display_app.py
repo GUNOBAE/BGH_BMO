@@ -22,7 +22,7 @@ def _desktop_window():
     return Window.from_display_module()
 
 
-def run_display(options, pygame, *, window_factory=None, output_fn=print):
+def run_display(options, pygame, *, window_factory=None, output_fn=print, session=None):
     """Own this process's display only; tests may supply an entirely fake SDL."""
     if pygame.display.get_init():
         raise DisplayAppError("Run the face app in a separate process with its own display.")
@@ -47,6 +47,8 @@ def run_display(options, pygame, *, window_factory=None, output_fn=print):
         previous_cursor = pygame.mouse.get_visible()
         pygame.mouse.set_visible(False)
         renderer = PygameFace(surface, pygame_module=pygame)
+        if getattr(renderer, "missing_states", ()):
+            output_fn("Face assets missing or unreadable; using idle/color fallback.")
         clock = pygame.time.Clock()
         keys = {
             pygame.K_1: FaceState.IDLE,
@@ -68,21 +70,29 @@ def run_display(options, pygame, *, window_factory=None, output_fn=print):
                         return 0
                     if options.dev and event.key in keys:
                         renderer.set_state(keys[event.key])
+                if session is not None:
+                    session.handle_event(event, pygame)
+            if session is not None and session.update(renderer):
+                return 0
             renderer.render(dt)
             pygame.display.flip()
     finally:
         try:
-            if renderer is not None:
-                renderer.close()
+            if session is not None:
+                session.close()
         finally:
             try:
-                if previous_cursor is not None:
-                    pygame.mouse.set_visible(previous_cursor)
+                if renderer is not None:
+                    renderer.close()
             finally:
-                pygame.display.quit()
+                try:
+                    if previous_cursor is not None:
+                        pygame.mouse.set_visible(previous_cursor)
+                finally:
+                    pygame.display.quit()
 
 
-def main(argv=None, *, pygame_module=None, window_factory=None, output_fn=print):
+def main(argv=None, *, pygame_module=None, window_factory=None, output_fn=print, session=None):
     parser = argparse.ArgumentParser(description="Manual BMO face display; no audio or cloud.")
     parser.add_argument("--dev", action="store_true", help="enable state keys 1 through 5")
     parser.add_argument("--windowed", action="store_true", help="use an 800x480 desktop window")
@@ -104,7 +114,7 @@ def main(argv=None, *, pygame_module=None, window_factory=None, output_fn=print)
         if pygame_module is None:
             import pygame as pygame_module
         return run_display(options, pygame_module, window_factory=window_factory,
-                           output_fn=output_fn)
+                           output_fn=output_fn, session=session)
     except KeyboardInterrupt:
         return 0
     except ImportError:

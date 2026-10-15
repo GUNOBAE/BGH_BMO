@@ -77,10 +77,24 @@ def _device_args(device: str | None) -> list[str]:
     return ["-D", device]
 
 
-def _run(command: list[str], *, timeout: float, error_type: type[AudioError]) -> None:
+def _run(command: list[str], *, timeout: float, error_type: type[AudioError], on_start=None) -> None:
     """subprocess.run kills and reaps its child on timeout; never print raw stderr."""
     try:
-        subprocess.run(command, check=True, timeout=timeout, capture_output=True)
+        if on_start is None:
+            subprocess.run(command, check=True, timeout=timeout, capture_output=True)
+        else:
+            # A successful spawn marks the playback operation's start. It does
+            # not prove that a device emitted sound or measure acoustic latency.
+            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+                try:
+                    on_start()
+                    process.communicate(timeout=timeout)
+                except BaseException:
+                    process.kill()
+                    process.communicate()
+                    raise
+                if process.returncode:
+                    raise subprocess.CalledProcessError(process.returncode, command)
     except FileNotFoundError:
         raise error_type("ALSA tools are unavailable; install alsa-utils before using voice mode.", "tool_unavailable") from None
     except subprocess.TimeoutExpired:
@@ -300,11 +314,14 @@ def speak(
     client, text: str, voice: str = "coral", device: str | None = None,
     model: str = "gpt-4o-mini-tts", instructions: str | None = DEFAULT_SPEECH_INSTRUCTIONS,
     download_timeout: float = 60.0,
+    *, on_playback_start=None, cancel_check=None,
 ) -> None:
     """Download validated WAV speech and play it with bounded ALSA execution.
 
     Text is never truncated or logged. Instructions apply to GPT TTS models;
     legacy tts-1/tts-1-hd requests omit unsupported instructions.
+    Optional on_playback_start runs only after validated synthesis and successful
+    player process creation; it is an operation boundary, not acoustic proof.
     """
     if not isinstance(text, str):
         raise AudioValidationError("Speech input must be text.", "invalid_speech_text")
@@ -321,6 +338,8 @@ def speak(
     ):
         raise AudioValidationError("Speech download timeout must be a finite number from above zero to 300 seconds.", "invalid_download_timeout")
     device_args = _device_args(device)
+    if cancel_check is not None:
+        cancel_check()
     path = _new_wav(AudioSynthesisError)
     succeeded = False
     try:
@@ -338,7 +357,11 @@ def speak(
         info = _wav_info(path, allow_streaming_header=True)
         if info["duration_seconds"] > 300:
             raise AudioValidationError("Synthesized speech exceeds the five-minute playback limit.", "speech_audio_too_long")
-        _run(["aplay", "-q", *device_args, str(path)], timeout=info["duration_seconds"] + 10, error_type=AudioPlaybackError)
+        if cancel_check is not None:
+            cancel_check()
+        playback_options = {} if on_playback_start is None else {"on_start": on_playback_start}
+        _run(["aplay", "-q", *device_args, str(path)], timeout=info["duration_seconds"] + 10,
+             error_type=AudioPlaybackError, **playback_options)
         succeeded = True
     finally:
         _discard(path, suppress=not succeeded)

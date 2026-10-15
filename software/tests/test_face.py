@@ -309,6 +309,11 @@ class FaceTests(unittest.TestCase):
             show(FaceState.THINKING)
             return "mock reply"
 
+        def play(*args, on_playback_start, **kwargs):
+            self.assertEqual(renderer.state, FaceState.THINKING)
+            on_playback_start()
+            show(FaceState.SPEAKING)
+
         brain = SimpleNamespace(ask=Mock(side_effect=answer))
         client = object()
         app = ConversationApp(brain, client, BMOConfig(), face=renderer)
@@ -317,7 +322,7 @@ class FaceTests(unittest.TestCase):
         with patch("bmo_ai.app.audio.record_wav", side_effect=record) as record_mock, patch(
             "bmo_ai.app.audio.transcribe", return_value="mock input"
         ) as transcribe_mock, patch(
-            "bmo_ai.app.audio.speak", side_effect=lambda *args, **kwargs: show(FaceState.SPEAKING)
+            "bmo_ai.app.audio.speak", side_effect=play
         ) as speak_mock:
             self.assertEqual(app.voice_input(), "mock input")
             self.assertFalse(recording.exists())

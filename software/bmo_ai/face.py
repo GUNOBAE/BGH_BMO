@@ -44,6 +44,7 @@ class PygameFace:
                     # Keep the legacy skip-corrupt-frame / idle-fallback policy.
                     continue
             self._frames[state] = frames
+        self.missing_states = tuple(state for state in FaceState if not self._frames[state])
         if not self._frames[FaceState.IDLE]:
             fallback = self._pygame.Surface(self._size)
             fallback.fill(FALLBACK_COLOR)

@@ -7,12 +7,21 @@ from .telemetry import LOGGER, event, measure
 
 
 class ConversationApp:
-    def __init__(self, brain, client, config, *, face=None, muted=False):
+    def __init__(self, brain, client, config, *, face=None, muted=False, voice=None,
+                 cancel_check=None):
         self.brain = brain
         self.client = client
         self.config = config
         self.face = face or NullFace()
         self.muted = muted
+        # Optional injected voice owns listen() and speak(text, on_playback_start=).
+        # Constructing the app never initializes a device or SDK client.
+        self.voice = voice
+        self.cancel_check = cancel_check
+
+    def _check_cancelled(self):
+        if self.cancel_check is not None:
+            self.cancel_check()
 
     def _state(self, state):
         try:
@@ -22,23 +31,45 @@ class ConversationApp:
 
     def answer(self, message):
         self._state(FaceState.THINKING)
+        self._check_cancelled()
         with measure("chat"):
-            return self.brain.ask(message)
+            answer = self.brain.ask(message)
+        self._check_cancelled()
+        return answer
 
     def playback(self, answer):
         if self.muted or not answer:
             return
-        self._state(FaceState.SPEAKING)
-        with measure("speech"):
-            audio.speak(self.client, answer, voice=self.config.voice,
-                        device=self.config.speaker_device, model=self.config.tts_model)
+        self._state(FaceState.THINKING)
+        try:
+            self._check_cancelled()
+            with measure("speech"):
+                def started():
+                    self._check_cancelled()
+                    self._state(FaceState.SPEAKING)
+                    self._check_cancelled()
+
+                if self.voice is not None:
+                    self.voice.speak(answer, on_playback_start=started)
+                else:
+                    audio.speak(self.client, answer, voice=self.config.voice,
+                                device=self.config.speaker_device, model=self.config.tts_model,
+                                on_playback_start=started, cancel_check=self.cancel_check)
+        finally:
+            self.idle()
 
     def voice_input(self):
         self._state(FaceState.LISTENING)
+        self._check_cancelled()
+        if self.voice is not None:
+            message = self.voice.listen()
+            self._check_cancelled()
+            return message
         with measure("record"):
             path = audio.record_wav(self.config.seconds, self.config.mic_device)
         primary_failure = False
         try:
+            self._check_cancelled()
             with measure("transcribe"):
                 language = "ko" if self.config.language == "ko" else None
                 return audio.transcribe(self.client, path, model=self.config.stt_model,
