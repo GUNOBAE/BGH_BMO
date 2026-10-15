@@ -214,5 +214,63 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
+# BMO: local credentials and environment variants (keep the public template).
+.env.*
+!.env.example
+.aws/
+.ssh/
+.config/gh/
+.git-credentials
+.netrc
+secrets.json
+credentials.json
+secrets/
+*.key
+*.pem
+id_rsa
+id_ed25519
+
+# Original backups, model weights, recordings and private runtime state.
+BMO_backups/
+backups/
+backup/
+snapshot/
+models/
+voices/
+*.onnx
+*.onnx.json
+*.gguf
+*.ggml
+recordings/
+captures/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.pcm
+memory.json
+memory_*.json
+conversation_history.json
+conversation_history.jsonl
+conversations.json
+conversations.jsonl
+personal_settings.json
+/software/logs/
+
+# Local operating records retained in place; prepare redacted copies for sharing.
+/AGENTS.md
+/PROJECT_STATUS.md
+/NEXT_TASKS.md
+/docs/face-renderer-stage2.md
+/docs/face-display-stage3.md
+/docs/reports/20261015-stage2-verification.json
+/docs/reports/20261015-stage3-environment.json
+
+# Preserve source assets locally until their separate license scope is confirmed.
+# The upstream code notice remains eligible for explicit inclusion.
+/software/assets/faces/**/*.png
+/software/assets/faces/PROVENANCE.json
+
 # Streamlit
 .streamlit/secrets.toml

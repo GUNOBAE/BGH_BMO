@@ -1,0 +1,8 @@
+test_all_13_original_pngs_decode_and_match_provenance (__main__.OffscreenFaceChecks.test_all_13_original_pngs_decode_and_match_provenance) ... ok
+test_every_active_frame_matches_source_pixels_at_two_sizes (__main__.OffscreenFaceChecks.test_every_active_frame_matches_source_pixels_at_two_sizes) ... ok
+test_missing_assets_fallback_and_close_keep_surface_owned_by_caller (__main__.OffscreenFaceChecks.test_missing_assets_fallback_and_close_keep_surface_owned_by_caller) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.968s
+
+OK
