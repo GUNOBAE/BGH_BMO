@@ -1,10 +1,10 @@
 # Offline conversation integration status
 
-Status: SOFTWARE VERIFIED — first implementation checkpoint (2026-10-16 KST).
+Status: COMPLETED — authorized software scope (2026-10-16 KST), not physical BMO completion.
 
 - Start commit: `a51d6063288a033a42b108632a421c9c65581d8b`.
-- Inspected code: working changes based on that commit; final report will name
-  the committed implementation checkpoint rather than predict its own hash.
+- Inspected implementation checkpoint:
+  `cb9128e68936e1f45c3f8d07689e6fb5ab0df8c8`.
 - Target branch: `feature/bmo-robust-conversation`; local and remote matched at start.
 - Initial tracked/untracked changes: none. Ignored operating documents and local
   assets remain in place; ignored does not imply deleted or uploaded.
@@ -79,14 +79,20 @@ baseline tests. The original 130-test run also passed before implementation.
 
 Remote read initially failed inside the restricted network environment; the
 authorized read with network access succeeded and confirmed the start SHA.
-No implementation blocker is currently known. Commit/push is pending at this
-checkpoint; the remote was re-read and still matches the start SHA. No reset,
-rebase, pull or fetch was performed.
+No implementation blocker remains. The implementation checkpoint was committed
+and pushed with `git push origin HEAD:refs/heads/feature/bmo-robust-conversation`.
+`git ls-remote origin refs/heads/feature/bmo-robust-conversation` then returned
+`cb9128e68936e1f45c3f8d07689e6fb5ab0df8c8`, matching the local code checkpoint.
+The remote had also been checked against the start SHA immediately before push.
+The checkpoint named here is the inspected code, not a prediction of the hash of
+this final report update. The runner's final response records the final local and
+remote SHA after syncing this report. No reset, rebase, pull or fetch was performed.
 
 Publication review selected exactly 14 Python/Markdown files. Current file
 contents passed UTF-8/type/symlink checks and limited credential, private-key,
-personal-path and email patterns. Staged contents and allowlist will be checked
-again before commit. This is a bounded pattern/manual review, not a guarantee of
+personal-path and email patterns. The exact staged allowlist, staged bytes versus
+reviewed working files, sensitive patterns and `git diff --cached --check` all
+passed before the implementation commit. This is a bounded pattern/manual review, not a guarantee of
 secret absence or a new full-history audit; no assets, raw logs or local operating
 documents are selected. Existing exclusion rules are unchanged.
 
