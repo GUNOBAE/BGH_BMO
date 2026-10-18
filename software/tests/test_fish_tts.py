@@ -5,9 +5,12 @@ import tempfile
 import unittest
 import wave
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from bmo_ai.config import BMOConfig, ConfigError
+from bmo_ai.app import ConversationApp
+from bmo_ai.audio import AudioSynthesisError
+from bmo_ai.__main__ import main
 from bmo_ai.audio import AudioValidationError
 from bmo_ai import fish_tts
 
@@ -68,6 +71,25 @@ class FishTTSSettingsTests(unittest.TestCase):
             self.assertEqual(player.call_count, 1)
             self.assertEqual(player.call_args.args[0][0], "aplay")
             self.assertFalse(destination.exists())
+
+
+    def test_fish_payment_error_and_no_automatic_paid_fallback(self):
+        self.assertEqual(fish_tts._error_for_http_status(402).code, "fish_balance")
+        app = ConversationApp(Mock(), Mock(), BMOConfig(tts_provider="fish"))
+        with patch("bmo_ai.fish_tts.speak", side_effect=AudioSynthesisError(
+            "Fish unavailable", "fish_balance"
+        )) as fish, patch("bmo_ai.app.audio.speak") as other_provider:
+            with self.assertRaises(AudioSynthesisError):
+                app.playback("Hello!")
+        fish.assert_called_once()
+        other_provider.assert_not_called()
+
+    def test_missing_fish_key_fails_before_gpt_client_startup(self):
+        factory = Mock()
+        with patch.dict(os.environ, {"FISH_API_KEY": ""}), patch("bmo_ai.__main__.configure_logging"):
+            result = main(["--tts-provider", "fish"], client_factory=factory, output_fn=Mock())
+        self.assertEqual(result, 2)
+        factory.assert_not_called()
 
 
 if __name__ == "__main__":
