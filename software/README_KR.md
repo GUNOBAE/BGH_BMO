@@ -105,3 +105,60 @@ USB 캡처 `Device`, MAX98357A 재생 장치를 관측했습니다. 다음은 �
 오디오 복구: [audio](../docs/audio.md).
 하드웨어 계약과 IMU 한계: [hardware](../docs/hardware.md).
 완료·실패·미검증 및 커밋: [개발 보고서](../docs/reports/20261013-development-report.md).
+
+## 선택형 Fish Audio — Aaron BMO 목소리 (2026-10-19)
+
+기본값은 이전과 동일하게 OpenAI의 coral 목소리입니다. GPT 텍스트 응답과
+OpenAI STT는 바꾸지 않고, **BMO의 응답을 읽는 TTS만** Fish Audio로
+선택적으로 변경할 수 있습니다. 별도 브랜치 \`feature/bmo-fish-aaron-tts\`에서
+개발 중이며, 실물 Raspberry Pi 및 Fish API 키를 사용하는 통합 테스트는
+아직 수행하지 않았습니다.
+
+- Fish 공개 BMO 음성: https://fish.audio/m/106f41ea392c4cc48c6eee76f69ff17e/
+- Aaron의 voice reference ID: \`106f41ea392c4cc48c6eee76f69ff17e\`
+- \`s2.1-pro-free\`: 개발자 무료, Fair Use 적용. Fish의 2026-10 공지에서 **2026-11-30까지** 무료.
+- \`s2.1-pro\`: $15/100만 UTF-8 바이트 (영어 ASCII는 약 100만 글자).
+- \`drama-3\`: **2026-11-12까지 $10/100만 글자**, 이후 정가 $50/100만 글자.
+- 공개 웹 Aaron 샘플은 Drama 3로 렌더링됨. S2.1 무료 버전과 느낌이
+  다를 수 있으며 이 reference_id를 해당 계정에서 호출 가능한지 **검증 필요**.
+- 비용은 Fish API와 OpenAI API에서 각각 청구됩니다. 단, 한 답변에 TTS는
+  Fish 또는 OpenAI 중 **하나만** 사용하며 자동 유료 fallback은 없습니다.
+- Fish API 가격과 Creator 웹 구독 크레딧은 별도 체계입니다.
+
+[Fish API 키 발급](https://fish.audio/app/api-keys) 후, 키를 복붙해
+명령줄 기록에 남기는 대신 다음처럼 안전하게 입력합니다.
+
+\`\`\`bash
+cd /home/bgh/BGH_BMO/software
+read -rsp 'Fish Audio API key: ' FISH_API_KEY; echo
+export FISH_API_KEY
+# 기존 OPENAI_API_KEY 또한 환경변수로 필요함
+.venv/bin/python -m bmo_ai --tts-provider fish --fish-model s2.1-pro-free \
+  --mic-device 'plughw:CARD=Device,DEV=0' \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+\`\`\`
+
+위 호출은 실제 Fish 요청이므로 현재 무료 모델 정책 및 계정 접근
+가능 여부를 Fish 대시보드에서 먼저 확인하세요. 유료 Drama 3를
+검증하려면 \`--fish-model drama-3\`를 명시합니다. \`--text\`와
+\`--mute\`는 TTS를 호출하지 않습니다. 한 번에 많은 요청을 보내거나
+응답을 무한 반복하지 마세요. \`/repeat\`은 매번 별도 Fish 생성
+요청이므로 비용을 다시 낼 수 있습니다.
+
+현재 REST JSON → Fish PCM WAV → 기존 오디오 검증/ALSA aplay 경로를
+사용합니다. 기존 마이크·스피커 장치나 시스템 설정을 자동으로 변경하지
+않습니다. WAV가 잘못되거나 Fish가 오류를 반환하면 발성을 중단하며,
+다른 유료 공급자에게 말없이 우회하지 않습니다.
+
+시연 추정 단가(실측이 아닌 가정): 영어 150바이트 답변, 사용자 음성 5초,
+GPT-4.1-mini 입력 1,200/출력 100 토큰. GPT $0.00064 + STT $0.00025
++ Fish S2.1 유료 $0.00225 = 턴당 약 $0.00314. Drama 3 할인기간이면
+약 $0.00239, 정가라면 약 $0.00839. 이 값에는 세금, 환전 수수료,
+재시도/반복, 다른 도구 API, 오디오 플랫폼 무료/유료 조건 변화가
+반영되어 있지 않습니다. 실제 금액은 각 대시보드에서 검증해야 합니다.
+
+가격 근거:
+- https://docs.fish.audio/developer-guide/models-pricing/pricing-and-rate-limits
+- https://fish.audio/blog/fish-audio-drama-3/
+- https://fish.audio/ar/blog/s2-1-pro-free-api/?articleLocale=en
+- https://developers.openai.com/api/docs/pricing
