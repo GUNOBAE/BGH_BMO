@@ -7,6 +7,7 @@ does not read dotenv files, probe hardware, or modify the operating system.
 from dataclasses import dataclass, fields
 import math
 import os
+import re
 from typing import Mapping
 
 
@@ -20,6 +21,9 @@ class BMOConfig:
     stt_model: str = "gpt-4o-mini-transcribe"
     tts_model: str = "gpt-4o-mini-tts"
     voice: str = "coral"
+    tts_provider: str = "openai"
+    fish_model: str = "s2.1-pro-free"
+    fish_voice_id: str = "106f41ea392c4cc48c6eee76f69ff17e"
     language: str = "en"
     seconds: int = 5
     mic_device: str | None = None
@@ -47,6 +51,12 @@ class BMOConfig:
             if error.code == "invalid_model":
                 raise ConfigError("BMO_TTS_MODEL must be a valid speech model identifier") from None
             raise ConfigError("BMO_VOICE must be a supported built-in voice for BMO_TTS_MODEL") from None
+        if not isinstance(self.tts_provider, str) or self.tts_provider not in ("openai", "fish"):
+            raise ConfigError("BMO_TTS_PROVIDER must be openai or fish")
+        if not isinstance(self.fish_model, str) or self.fish_model not in ("s2.1-pro-free", "s2.1-pro", "drama-3"):
+            raise ConfigError("BMO_FISH_MODEL must be s2.1-pro-free, s2.1-pro, or drama-3")
+        if not isinstance(self.fish_voice_id, str) or not re.fullmatch(r"[a-f0-9]{32}", self.fish_voice_id):
+            raise ConfigError("BMO_FISH_VOICE_ID must be a 32-character lowercase hex voice ID")
         if self.language not in ("en", "ko", "auto"):
             raise ConfigError("BMO_LANGUAGE must be en, ko, or auto")
         if self.log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
@@ -119,7 +129,7 @@ class BMOConfig:
                 values[name] = raw or None
             elif name == "log_level":
                 values[name] = raw.upper()
-            elif name == "language":
+            elif name in ("language", "tts_provider"):
                 values[name] = raw.lower()
             else:
                 values[name] = raw
