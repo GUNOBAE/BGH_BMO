@@ -51,6 +51,14 @@ class ConversationApp:
 
                 if self.voice is not None:
                     self.voice.speak(answer, on_playback_start=started)
+                elif self.config.tts_provider == "fish":
+                    from .fish_tts import speak as fish_speak
+                    fish_speak(answer, device=self.config.speaker_device,
+                               model=self.config.fish_model,
+                               reference_id=self.config.fish_voice_id,
+                               timeout=self.config.timeout,
+                               on_playback_start=started,
+                               cancel_check=self.cancel_check)
                 else:
                     audio.speak(self.client, answer, voice=self.config.voice,
                                 device=self.config.speaker_device, model=self.config.tts_model,
