@@ -170,3 +170,46 @@ TTS, retries/timeouts, authentication errors and bilingual request text.
 See [architecture](../docs/architecture.md), [hardware contracts](../docs/hardware.md),
 and the [development report](../docs/reports/20261013-development-report.md) for
 verified results and remaining physical checks.
+
+## Optional Fish Audio BMO voice (Aaron)
+
+This experimental branch keeps the OpenAI chat and transcription services but
+can replace **only** speech output with Fish Audio. OpenAI remains the default.
+The public BMO voice by Aaron Hinojosa uses reference ID
+`106f41ea392c4cc48c6eee76f69ff17e`.
+The voice page is https://fish.audio/m/106f41ea392c4cc48c6eee76f69ff17e/.
+
+```bash
+# Set OPENAI_API_KEY first as described above.
+read -rsp 'Fish Audio API key: ' FISH_API_KEY; echo
+export FISH_API_KEY
+.venv/bin/python -m bmo_ai --tts-provider fish --fish-model s2.1-pro-free \
+  --mic-device 'plughw:CARD=Device,DEV=0' \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+# Explicit paid choice (charges may apply):
+# .venv/bin/python -m bmo_ai --tts-provider fish --fish-model drama-3
+```
+
+`BMO_TTS_PROVIDER` is `openai` or `fish`, and `BMO_FISH_MODEL` is
+`s2.1-pro-free`, `s2.1-pro`, or `drama-3`. The defaults are OpenAI voice
+and free Fish model if Fish is chosen. `BMO_FISH_VOICE_ID` can override Aaron.
+Missing Fish credentials are rejected before cloud chat in voice mode.
+`--text` and `--mute` do not require a Fish key.
+
+Fish S2.1 Pro Free has a fair-use policy and a published free-access window
+through November 30, 2026, not a lifetime guarantee. The Fish page's BMO demo
+runs Drama 3; output with S2.1 Pro Free may sound different or the model may
+require account-specific permission. Fish lists S2.1 Pro at $15/million UTF-8
+bytes and Drama 3 at $10/million characters during October 13–November 12,
+2026 ($50 regular). OpenAI chat/STT are billed separately. Only one TTS
+provider is called per reply, never both and never an automatic paid fallback.
+Replay still sends a fresh TTS request. API usage is not the same as website
+subscription credits.
+
+The Fish adapter requests PCM WAV, validates length/format, plays through the
+unchanged ALSA path, and deletes its temporary file. No Fish credentials,
+prompts or provider responses enter application event logs. **Live Fish API,
+reference-ID availability and Raspberry Pi playback remain unverified.**
+
+Docs: https://docs.fish.audio/developer-guide/models-pricing/pricing-and-rate-limits
+and https://fish.audio/blog/fish-audio-drama-3/ .
