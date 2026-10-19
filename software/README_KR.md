@@ -162,3 +162,43 @@ GPT-4.1-mini 입력 1,200/출력 100 토큰. GPT $0.00064 + STT $0.00025
 - https://fish.audio/blog/fish-audio-drama-3/
 - https://fish.audio/ar/blog/s2-1-pro-free-api/?articleLocale=en
 - https://developers.openai.com/api/docs/pricing
+### Aaron BMO 목소리 A/B 비교 — 무료 vs Drama 3
+
+완성된 BMO 대화 앱과 별도로, 동일한 Aaron 음성과 영어 대사를 Fish
+S2.1 무료 모델·Drama 3에 넣고 결과 WAV 파일을 나란히 들어볼 수
+있습니다. 비교 도구는 GPT, STT, 마이크, Pi 스피커를 사용하지 않습니다.
+
+```bash
+cd /home/bgh/BGH_BMO/software
+# 비용 0원, 네트워크 요청 없이 미리 확인
+.venv/bin/python -m bmo_ai.fish_compare
+
+# Fish Audio API 키를 안전하게 입력
+read -rsp 'Fish Audio key: ' FISH_API_KEY; echo
+export FISH_API_KEY
+
+# 무료 Aaron 음성 테스트: 인사 대사 한 번
+.venv/bin/python -m bmo_ai.fish_compare --mode free --sample hello
+
+# 동일 대사 무료 vs 유료 Drama 3 비교: 유료 요청 명시적 허용
+.venv/bin/python -m bmo_ai.fish_compare --mode compare --sample hello --confirm-paid
+
+# 감정 4종 비교: 무료 네 번 + 유료 네 번, 총 8개 WAV 생성
+.venv/bin/python -m bmo_ai.fish_compare --mode compare --sample all --confirm-paid
+```
+
+결과는 `software/fish_aaron_tests/bmo-aaron-*/report.html`에서 열어 볼
+수 있습니다. WAV·HTML·JSON이 함께 저장됩니다. Pi에서 실행했다면
+비교 폴더를 PC로 복사해 웹 브라우저에서 HTML을 열면 됩니다.
+
+기본값은 API 호출 없는 `plan`입니다. `compare`와 `--confirm-paid`를
+동시에 지정해야만 Drama 3를 호출합니다. 유료 예상액 0.05달러를 넘으면
+차단하지만 이는 **실제 결제 한도가 아니라 사전 추정액 기준**입니다.
+무료 모델이 실패하면 유료 호출도 중단합니다. 자동 재시도·유료 fallback
+없음. 무료 기간이 종료된 2026년 11월 30일 이후에는 정책을 확인하고
+`--reviewed-free-terms` 옵션을 명시해야 요청이 진행됩니다.
+
+판단 기준: Aaron 원본과의 음색 유사도, 행복·슬픔·분노의 연기,
+발음 정확도, 목소리 일관성, 유료 모델의 가격 대비 개선 정도.
+코드·모의 테스트는 완료했지만 실제 Fish 계정으로 생성된 비교 음성은
+아직 검증되지 않았습니다.
