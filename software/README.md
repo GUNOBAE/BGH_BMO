@@ -213,3 +213,24 @@ reference-ID availability and Raspberry Pi playback remain unverified.**
 
 Docs: https://docs.fish.audio/developer-guide/models-pricing/pricing-and-rate-limits
 and https://fish.audio/blog/fish-audio-drama-3/ .
+### Head-to-head Aaron audition: free S2.1 versus paid Drama 3
+
+This standalone audition calls Fish Audio only — never GPT, STT, mic or speakers.
+It saves local WAV files and an HTML page for same-text side-by-side listening.
+
+```bash
+cd /home/bgh/BGH_BMO/software
+.venv/bin/python -m bmo_ai.fish_compare   # plan: no network or key
+read -rsp 'Fish Audio key: ' FISH_API_KEY; echo
+export FISH_API_KEY
+.venv/bin/python -m bmo_ai.fish_compare --mode free --sample hello
+.venv/bin/python -m bmo_ai.fish_compare --mode compare --sample hello --confirm-paid
+.venv/bin/python -m bmo_ai.fish_compare --mode compare --sample all --confirm-paid
+```
+
+Open `fish_aaron_tests/bmo-aaron-*/report.html` in a browser. Saved WAV and
+JSON metadata stay local and are gitignored. Paid requests require explicit
+`--mode compare --confirm-paid`. The default 0.05 USD estimated paid limit
+is not a provider-side billing ceiling. Failed free requests never trigger a
+paid request. The free tier must be rechecked after Nov 30, 2026;
+`--reviewed-free-terms` acknowledges that review.
