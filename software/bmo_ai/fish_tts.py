@@ -38,27 +38,25 @@ def _error_for_http_status(status: int) -> audio.AudioSynthesisError:
     return audio.AudioSynthesisError(message, code)
 
 
-def speak(
+def synthesize_wav(
     text: str,
     *,
-    device: str | None = None,
     model: str = "s2.1-pro-free",
     reference_id: str = AARON_BMO_VOICE_ID,
     timeout: float = 30.0,
     download_timeout: float = 60.0,
-    on_playback_start=None,
     cancel_check=None,
-) -> None:
-    """Synthesize once via Fish Audio, validate PCM WAV, then play via ALSA.
+):
+    """Call Fish once and return a validated temporary WAV path.
 
-    The exact requested model is sent in the HTTP header: an omitted/unknown
-    model silently falls back to a *paid* Fish model according to their docs.
-    No automatic OpenAI TTS fallback, synthesis retry, or key logging.
+    The caller owns the returned file and MUST delete it. HTTP requests never
+    retry or switch providers. The explicit model header prevents accidental
+    use of Fish's paid default when requesting the free model.
     """
     if not isinstance(text, str):
         raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
     if not text.strip():
-        return
+        raise audio.AudioValidationError("Speech input must not be empty.", "invalid_speech_text")
     if len(text) > audio.MAX_SPEECH_CHARACTERS:
         raise audio.AudioValidationError("Speech input exceeds 4096 characters.", "speech_text_too_long")
     if model not in FISH_MODELS:
@@ -68,7 +66,6 @@ def speak(
     for duration in (timeout, download_timeout):
         if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 0 < duration <= 300:
             raise audio.AudioValidationError("Fish Audio timeouts must be finite values between 0 and 300 seconds.", "invalid_fish_timeout")
-    device_args = audio._device_args(device)
     key = os.environ.get("FISH_API_KEY", "").strip()
     if not key or key == "YOUR_KEY_HERE" or key.startswith("YOUR_FISH"):
         raise audio.AudioSynthesisError("Set FISH_API_KEY before selecting Fish Audio.", "missing_fish_key")
@@ -120,9 +117,44 @@ def speak(
             raise audio.AudioValidationError("Synthesized speech exceeds five minutes.", "speech_audio_too_long")
         if cancel_check is not None:
             cancel_check()
+        succeeded = True
+        return path
+    finally:
+        if not succeeded:
+            audio._discard(path, suppress=True)
+
+
+def speak(
+    text: str,
+    *,
+    device: str | None = None,
+    model: str = "s2.1-pro-free",
+    reference_id: str = AARON_BMO_VOICE_ID,
+    timeout: float = 30.0,
+    download_timeout: float = 60.0,
+    on_playback_start=None,
+    cancel_check=None,
+) -> None:
+    """Synthesize via Fish, validate WAV and play once through existing ALSA."""
+    if not isinstance(text, str):
+        raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
+    if not text.strip():
+        return
+    device_args = audio._device_args(device)
+    path = synthesize_wav(
+        text, model=model, reference_id=reference_id,
+        timeout=timeout, download_timeout=download_timeout,
+        cancel_check=cancel_check,
+    )
+    succeeded = False
+    try:
+        info = audio._wav_info(path, allow_streaming_header=True)
+        if cancel_check is not None:
+            cancel_check()
         playback_options = {} if on_playback_start is None else {"on_start": on_playback_start}
         audio._run(
-            ["aplay", "-q", *device_args, str(path)], timeout=info["duration_seconds"] + 10,
+            ["aplay", "-q", *device_args, str(path)],
+            timeout=info["duration_seconds"] + 10,
             error_type=audio.AudioPlaybackError, **playback_options,
         )
         succeeded = True
