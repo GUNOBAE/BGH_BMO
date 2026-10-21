@@ -26,6 +26,7 @@ class BMOConfig:
     fish_voice_id: str = "106f41ea392c4cc48c6eee76f69ff17e"
     fish_gain: float = 0.30
     fish_name_mode: str = "beemo"
+    fish_delivery: str = "soft"
     language: str = "en"
     seconds: int = 5
     mic_device: str | None = None
@@ -63,6 +64,8 @@ class BMOConfig:
             raise ConfigError("BMO_FISH_GAIN must be a number above 0 and at most 1")
         if self.fish_name_mode not in ("beemo", "bee-mo", "literal"):
             raise ConfigError("BMO_FISH_NAME_MODE must be beemo, bee-mo or literal")
+        if not isinstance(self.fish_delivery, str) or self.fish_delivery not in ("soft", "plain"):
+            raise ConfigError("BMO_FISH_DELIVERY must be soft or plain")
         if self.language not in ("en", "ko", "auto"):
             raise ConfigError("BMO_LANGUAGE must be en, ko, or auto")
         if self.log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
@@ -135,7 +138,7 @@ class BMOConfig:
                 values[name] = raw or None
             elif name == "log_level":
                 values[name] = raw.upper()
-            elif name in ("language", "tts_provider"):
+            elif name in ("language", "tts_provider", "fish_delivery"):
                 values[name] = raw.lower()
             else:
                 values[name] = raw
