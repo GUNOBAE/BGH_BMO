@@ -136,11 +136,19 @@ env -i PATH=/usr/bin:/bin HOME=/tmp LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 env -i PATH=/usr/bin:/bin HOME=/tmp LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
   ../.venv/bin/python -B checks/check_integration_browser.py \
   --face /home/bgh/Downloads/BMO_Screen_v13_2.html --chromium /usr/bin/chromium
+env -i PATH=/usr/bin:/bin HOME=/tmp LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
+  ../.venv/bin/python -B checks/check_integration_end_to_end.py \
+  --face /home/bgh/Downloads/BMO_Screen_v13_2.html --chromium /usr/bin/chromium
 ```
 
 후자는 승인 원본 자체를 Chromium headless로 읽어 API·SVG·입 전환과 adapter를
 검사한다. 승인 파일은 Git에 없으므로 새 checkout의 CI에 원본 검증까지 있다고
 가정하지 않는다. 무음/종료/취소 때 closed와 감정 유지, 지연 이벤트 폐기,
 소유 child 취소·회수, 연결 복귀를 테스트하되 실물 검수는 사용자에게 남긴다.
+
+마지막 E2E 명령은 실제 `--simulate` launcher·자체 서버·승인 iframe을 함께 띄워
+한 턴과 반복·취소·다음 턴·종료를 확인한다. 상태 관측용 150ms fixture 지연을
+사용하므로 API·가청·실물 지연 측정으로 해석하지 않는다. launcher 검사는
+중복 실행 lock을 사용하므로 다른 수동 launcher를 정상 종료한 뒤 실행한다.
 
 최신 결과와 미실행 항목은 `docs/reports/INTEGRATION_STAGE1_LATEST_KR.md`를 따른다.
