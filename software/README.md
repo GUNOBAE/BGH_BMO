@@ -170,3 +170,118 @@ TTS, retries/timeouts, authentication errors and bilingual request text.
 See [architecture](../docs/architecture.md), [hardware contracts](../docs/hardware.md),
 and the [development report](../docs/reports/20261013-development-report.md) for
 verified results and remaining physical checks.
+
+## Optional Fish Audio BMO voice (Aaron)
+
+This experimental branch keeps the OpenAI chat and transcription services but
+can replace **only** speech output with Fish Audio. OpenAI remains the default.
+The public BMO voice by Aaron Hinojosa uses reference ID
+`106f41ea392c4cc48c6eee76f69ff17e`.
+The voice page is https://fish.audio/m/106f41ea392c4cc48c6eee76f69ff17e/.
+
+```bash
+# Set OPENAI_API_KEY first as described above.
+read -rsp 'Fish Audio API key: ' FISH_API_KEY; echo
+export FISH_API_KEY
+.venv/bin/python -m bmo_ai --tts-provider fish --fish-model s2.1-pro-free \
+  --mic-device 'plughw:CARD=Device,DEV=0' \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+# Explicit paid choice (charges may apply):
+# .venv/bin/python -m bmo_ai --tts-provider fish --fish-model drama-3
+```
+
+`BMO_TTS_PROVIDER` is `openai` or `fish`, and `BMO_FISH_MODEL` is
+`s2.1-pro-free`, `s2.1-pro`, or `drama-3`. The defaults are OpenAI voice
+and free Fish model if Fish is chosen. `BMO_FISH_VOICE_ID` can override Aaron.
+Missing Fish credentials are rejected before cloud chat in voice mode.
+`--text` and `--mute` do not require a Fish key.
+
+Fish S2.1 Pro Free has a fair-use policy and a published free-access window
+through November 30, 2026, not a lifetime guarantee. The Fish page's BMO demo
+runs Drama 3; output with S2.1 Pro Free may sound different or the model may
+require account-specific permission. Fish lists S2.1 Pro at $15/million UTF-8
+bytes and Drama 3 at $10/million characters during October 13–November 12,
+2026 ($50 regular). OpenAI chat/STT are billed separately. Only one TTS
+provider is called per reply, never both and never an automatic paid fallback.
+Replay still sends a fresh TTS request. API usage is not the same as website
+subscription credits.
+
+The Fish adapter requests PCM WAV, validates length/format, plays through the
+unchanged ALSA path, and deletes its temporary file. No Fish credentials,
+prompts or provider responses enter application event logs. **Live Fish API,
+reference-ID availability and Raspberry Pi playback remain unverified.**
+
+Docs: https://docs.fish.audio/developer-guide/models-pricing/pricing-and-rate-limits
+and https://fish.audio/blog/fish-audio-drama-3/ .
+### Head-to-head Aaron audition: free S2.1 versus paid Drama 3
+
+This standalone audition calls Fish Audio only — never GPT, STT, mic or speakers.
+It saves local WAV files and an HTML page for same-text side-by-side listening.
+
+```bash
+cd /home/bgh/BGH_BMO/software
+.venv/bin/python -m bmo_ai.fish_compare   # plan: no network or key
+read -rsp 'Fish Audio key: ' FISH_API_KEY; echo
+export FISH_API_KEY
+.venv/bin/python -m bmo_ai.fish_compare --mode free --sample hello
+.venv/bin/python -m bmo_ai.fish_compare --mode compare --sample hello --confirm-paid
+.venv/bin/python -m bmo_ai.fish_compare --mode compare --sample all --confirm-paid
+```
+
+Open `fish_aaron_tests/bmo-aaron-*/report.html` in a browser. Saved WAV and
+JSON metadata stay local and are gitignored. Paid requests require explicit
+`--mode compare --confirm-paid`. The default 0.05 USD estimated paid limit
+is not a provider-side billing ceiling. Failed free requests never trigger a
+paid request. The free tier must be rechecked after Nov 30, 2026;
+`--reviewed-free-terms` acknowledges that review.
+
+### Lower Fish playback volume and audition alternative BMO voices
+
+Raw `aplay -D plughw:CARD=MAX98357A,DEV=0` may bypass desktop
+system-mixer volume. This branch now uses `BMO_FISH_GAIN=0.30` in the BMO
+chat app (or `--fish-gain 0.30`) to locally attenuate temporary speech PCM
+without changing any system mixer, ALSA, PipeWire or boot settings. Test
+`--speaker-device default` only after confirming it routes to the same
+MAX98357A output; it may then honor PipeWire's default-sink volume.
+
+Preview downloaded WAV safely:
+```bash
+.venv/bin/python -m bmo_ai.safe_playback path/to/hello_free.wav --device default --gain 0.25
+# If desktop routing is not configured, explicit known device at 25% software gain:
+.venv/bin/python -m bmo_ai.safe_playback path/to/hello_free.wav --device 'plughw:CARD=MAX98357A,DEV=0' --gain 0.25
+```
+
+Public voices: Aaron (106f41ea...), Studio Coille (323847d4...), Nikkooo
+(1ac90ca2...), and optional Zaccharie (35da7094...). Generate only S2.1
+Free at a time using the same spoken line, with separate gentle directions.
+
+```bash
+.venv/bin/python -m bmo_ai.fish_voice_lab --profile all     # plan only
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile aaron_soft
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile coille_playful
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile all
+```
+
+Output: `software/fish_voice_trials/bmo-voices-*/listen.html`. No paid
+Drama 3 option here; no hidden fallback. Actual Pi system routing must be
+verified with `aplay -L`, `wpctl status` or the available equivalent.
+
+### Aaron Soft is the preferred baseline (listening feedback Oct 21, 2026)
+
+The user liked both `soft_beemo` and `soft_bee_mo`. The third
+`playful_beemo` test pronounced the name well but sounded unnaturally
+over-bright, so it is **not** selected. Keep the same Aaron voice across moods.
+
+The Fish conversation path now defaults to `BMO_FISH_DELIVERY=soft`
+and `BMO_FISH_NAME_MODE=beemo`. The exact same gentle, warm, slightly
+lower-pitch direction used in the approved audition is added only to
+the outgoing Fish TTS text. GPT transcripts and visible BMO text are
+unchanged. `--fish-name-mode bee-mo` selects the other approved name
+spelling, and `--fish-delivery plain` removes the direction if needed.
+No extra provider call, voice switching or paid fallback.
+
+```bash
+.venv/bin/python -m bmo_ai --tts-provider fish --fish-model s2.1-pro-free \
+  --fish-delivery soft --fish-name-mode beemo --fish-gain 0.25 \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+```

@@ -21,6 +21,11 @@ def parser():
     result.add_argument("--speaker-device", help="ALSA output name; uses existing default when omitted")
     result.add_argument("--language", choices=("en", "ko", "auto"), help="Reply language preference (default en)")
     result.add_argument("--mute", action="store_true", help="Skip speech synthesis and playback")
+    result.add_argument("--tts-provider", choices=("openai", "fish"), help="Which service speaks BMO replies")
+    result.add_argument("--fish-model", choices=("s2.1-pro-free", "s2.1-pro", "drama-3"), help="Fish speech engine")
+    result.add_argument("--fish-gain", type=float, help="Fish playback software gain 0..1 (default 0.30)")
+    result.add_argument("--fish-name-mode", choices=("beemo", "bee-mo", "literal"), help="How Fish pronounces the BMO name")
+    result.add_argument("--fish-delivery", choices=("soft", "plain"), help="Fish voice style (default: soft)")
     result.add_argument("--log-file", help="Optional rotating JSON event log (no transcript or audio)")
     return result
 
@@ -54,12 +59,17 @@ def main(argv=None, *, client_factory=create_client, input_fn=input, output_fn=p
         return 0
     try:
         settings = {key: value for key, value in os.environ.items() if key.startswith("BMO_")}
-        for field in ("seconds", "mic_device", "speaker_device", "language", "log_file"):
+        for field in ("seconds", "mic_device", "speaker_device", "language", "log_file", "tts_provider", "fish_model", "fish_gain", "fish_name_mode", "fish_delivery"):
             if getattr(args, field) is not None:
                 settings[f"BMO_{field.upper()}"] = str(getattr(args, field))
         config = BMOConfig.from_env(settings)
     except (ConfigError, ValueError) as error:
         arguments.error(str(error))
+    if config.tts_provider == "fish" and not (args.text or args.mute):
+        key = os.environ.get("FISH_API_KEY", "").strip()
+        if not key or key == "YOUR_KEY_HERE" or key.startswith("YOUR_FISH"):
+            output_fn("Set FISH_API_KEY before selecting Fish Audio voice mode.")
+            return 2
     try:
         configure_logging(config.log_level, config.log_file)
     except OSError:
