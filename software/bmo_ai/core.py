@@ -52,6 +52,7 @@ class BMOBrain:
         max_input_chars=4000,
         max_history_chars=16000,
         max_output_tokens=180,
+        reasoning_effort=None,
     ):
         for name, value in (
             ("max_turns", max_turns),
@@ -67,8 +68,12 @@ class BMOBrain:
         selected_model = model if model is not None else os.getenv("BMO_CHAT_MODEL", "gpt-4.1-mini")
         if not isinstance(selected_model, str) or not selected_model.strip():
             raise ValueError("model must be a nonempty string")
+        if reasoning_effort is not None:
+            if selected_model.strip() != "gpt-6-luna" or reasoning_effort not in ("none", "low"):
+                raise ValueError("reasoning_effort is only supported for gpt-6-luna (none or low) in this experiment")
         self.client = client
         self.model = selected_model.strip()
+        self.reasoning_effort = reasoning_effort
         self.max_turns = max_turns
         self.language = language
         self.max_input_chars = max_input_chars
@@ -106,13 +111,16 @@ class BMOBrain:
             self.history, self.max_turns - 1, self.max_history_chars - len(message)
         )
         candidate = previous + [{"role": "user", "content": message}]
-        response = call_cloud(lambda: self.client.responses.create(
-            model=self.model,
-            instructions=SYSTEM_PROMPT + "\n" + LANGUAGE_INSTRUCTIONS[self.language],
-            input=candidate,
-            max_output_tokens=self.max_output_tokens,
-            store=False,
-        ))
+        request = {
+            "model": self.model,
+            "instructions": SYSTEM_PROMPT + "\n" + LANGUAGE_INSTRUCTIONS[self.language],
+            "input": candidate,
+            "max_output_tokens": self.max_output_tokens,
+            "store": False,
+        }
+        if self.reasoning_effort is not None:
+            request["reasoning"] = {"effort": self.reasoning_effort}
+        response = call_cloud(lambda: self.client.responses.create(**request))
         # Require the API completion marker even if partial text is present.
         # Injectable clients should return the same status as the SDK contract.
         status = getattr(response, "status", None)

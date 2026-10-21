@@ -17,6 +17,12 @@ def parser():
     mode.add_argument("--list-audio", action="store_true", help="List ALSA devices without recording or playback")
     mode.add_argument("--benchmark", action="store_true", help="Offline mock timing; no API or hardware operations")
     result.add_argument("--seconds", type=int, help="Recording length, 1-20 seconds")
+    result.add_argument("--chat-model", choices=("gpt-4.1-mini", "gpt-6-luna"),
+                        help="GPT brain model for controlled speech A/B (default unchanged)")
+    result.add_argument("--reasoning-effort", choices=("none", "low"),
+                        help="Explicit GPT-6 Luna reasoning; omit for GPT-4.1 mini")
+    result.add_argument("--max-output-tokens", type=int,
+                        help="Includes hidden reasoning and visible reply tokens; try 320 for Luna")
     result.add_argument("--mic-device", help="ALSA microphone name; uses existing default when omitted")
     result.add_argument("--speaker-device", help="ALSA output name; uses existing default when omitted")
     result.add_argument("--language", choices=("en", "ko", "auto"), help="Reply language preference (default en)")
@@ -60,7 +66,7 @@ def main(argv=None, *, client_factory=create_client, input_fn=input, output_fn=p
         return 0
     try:
         settings = {key: value for key, value in os.environ.items() if key.startswith("BMO_")}
-        for field in ("seconds", "mic_device", "speaker_device", "language", "log_file", "tts_provider", "fish_model", "fish_gain", "fish_name_mode", "fish_delivery"):
+        for field in ("seconds", "chat_model", "reasoning_effort", "max_output_tokens", "mic_device", "speaker_device", "language", "log_file", "tts_provider", "fish_model", "fish_gain", "fish_name_mode", "fish_delivery"):
             if getattr(args, field) is not None:
                 settings[f"BMO_{field.upper()}"] = str(getattr(args, field))
         if args.offline_voice:
@@ -102,14 +108,17 @@ def main(argv=None, *, client_factory=create_client, input_fn=input, output_fn=p
         brain = BMOBrain(client, model=config.chat_model, max_turns=config.max_turns,
                          language=config.language, max_input_chars=config.max_input_chars,
                          max_history_chars=config.max_history_chars,
-                         max_output_tokens=config.max_output_tokens)
+                         max_output_tokens=config.max_output_tokens,
+                         reasoning_effort=config.reasoning_effort)
         from .app import ConversationApp
         app = ConversationApp(brain, client, config, muted=args.mute or args.text)
         last_answer = None
         output_fn("BMO ready. /quit exits; /reset clears local conversation; /repeat repeats the last reply.")
         if not args.text and not args.mute:
             output_fn("Voice replies use an AI-generated voice.")
-        event("ready", mode="text" if args.text else "voice", language=config.language)
+        event("ready", mode="text" if args.text else "voice",
+              language=config.language, chat_model=config.chat_model,
+              reasoning_effort=config.reasoning_effort or "unset")
         while True:
             app.idle()
             try:
