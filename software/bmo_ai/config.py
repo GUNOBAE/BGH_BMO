@@ -18,6 +18,7 @@ class ConfigError(ValueError):
 @dataclass(frozen=True)
 class BMOConfig:
     chat_model: str = "gpt-4.1-mini"
+    reasoning_effort: str | None = None  # None keeps existing GPT request unchanged.
     stt_model: str = "gpt-4o-mini-transcribe"
     tts_model: str = "gpt-4o-mini-tts"
     voice: str = "coral"
@@ -48,6 +49,11 @@ class BMOConfig:
             value = getattr(self, name)
             if not isinstance(value, str) or not value or any(char.isspace() for char in value):
                 raise ConfigError(f"BMO_{name.upper()} must be a nonempty name without whitespace")
+        # This opt-in experiment only enables verified Luna none/low modes.
+        # Explicitly reject accidental reasoning arguments on GPT-4.1-mini.
+        if self.reasoning_effort is not None:
+            if self.chat_model != "gpt-6-luna" or self.reasoning_effort not in ("none", "low"):
+                raise ConfigError("BMO_REASONING_EFFORT requires gpt-6-luna and none or low")
         # Use the same built-in/legacy voice rules as playback, before a paid
         # chat request can succeed with an unusable synthesis configuration.
         from .audio import AudioValidationError, validate_speech_settings
@@ -150,6 +156,8 @@ class BMOConfig:
                     values[name] = float(raw)
                 except ValueError:
                     raise ConfigError(f"{variable} must be a number") from None
+            elif name == "reasoning_effort":
+                values[name] = raw.lower() if raw else None
             elif name in optional_names:
                 values[name] = raw or None
             elif name == "log_level":
