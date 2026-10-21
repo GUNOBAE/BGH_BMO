@@ -22,6 +22,13 @@ MAX_LOCAL_CHARS = 2048
 MAX_LOCAL_SECONDS = 120
 
 
+def is_english_text(text: str) -> bool:
+    """Avoid sending unsupported Korean/non-Latin letters into English Piper."""
+    return isinstance(text, str) and all(
+        not char.isalpha() or ord(char) < 128 for char in text
+    )
+
+
 def resolved_paths(binary: str = DEFAULT_BINARY, model: str = DEFAULT_MODEL):
     """Expand documented local paths without probing or modifying user files."""
     if not isinstance(binary, str) or not binary.strip() or not isinstance(model, str) or not model.strip():
