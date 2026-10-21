@@ -234,3 +234,34 @@ JSON metadata stay local and are gitignored. Paid requests require explicit
 is not a provider-side billing ceiling. Failed free requests never trigger a
 paid request. The free tier must be rechecked after Nov 30, 2026;
 `--reviewed-free-terms` acknowledges that review.
+
+### Lower Fish playback volume and audition alternative BMO voices
+
+Raw `aplay -D plughw:CARD=MAX98357A,DEV=0` may bypass desktop
+system-mixer volume. This branch now uses `BMO_FISH_GAIN=0.30` in the BMO
+chat app (or `--fish-gain 0.30`) to locally attenuate temporary speech PCM
+without changing any system mixer, ALSA, PipeWire or boot settings. Test
+`--speaker-device default` only after confirming it routes to the same
+MAX98357A output; it may then honor PipeWire's default-sink volume.
+
+Preview downloaded WAV safely:
+```bash
+.venv/bin/python -m bmo_ai.safe_playback path/to/hello_free.wav --device default --gain 0.25
+# If desktop routing is not configured, explicit known device at 25% software gain:
+.venv/bin/python -m bmo_ai.safe_playback path/to/hello_free.wav --device 'plughw:CARD=MAX98357A,DEV=0' --gain 0.25
+```
+
+Public voices: Aaron (106f41ea...), Studio Coille (323847d4...), Nikkooo
+(1ac90ca2...), and optional Zaccharie (35da7094...). Generate only S2.1
+Free at a time using the same spoken line, with separate gentle directions.
+
+```bash
+.venv/bin/python -m bmo_ai.fish_voice_lab --profile all     # plan only
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile aaron_soft
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile coille_playful
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile all
+```
+
+Output: `software/fish_voice_trials/bmo-voices-*/listen.html`. No paid
+Drama 3 option here; no hidden fallback. Actual Pi system routing must be
+verified with `aplay -L`, `wpctl status` or the available equivalent.
