@@ -276,3 +276,6 @@ personal_settings.json
 .streamlit/secrets.toml
 # Generated local Fish Aaron A/B WAV files and audition reports.
 /software/fish_aaron_tests/
+
+# Generated WAV auditions / reports never belong in Git.
+/software/fish_voice_trials/
