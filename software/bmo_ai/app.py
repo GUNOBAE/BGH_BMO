@@ -1,4 +1,12 @@
 """One explicit, half-duplex conversational turn with optional face adapter."""
+
+OFFLINE_NOTICE_EN = (
+    "Beemo is here. The online service is unavailable, "
+    "so I cannot understand new questions right now."
+)
+OFFLINE_KOREAN_UNSUPPORTED_EN = (
+    "Beemo is still here. My local voice only supports English for now."
+)
 from pathlib import Path
 
 from . import audio
@@ -37,6 +45,33 @@ class ConversationApp:
         self._check_cancelled()
         return answer
 
+    def _speak_local(self, text, *, on_playback_start):
+        """Use Piper only if the user enabled local fallback."""
+        from . import local_piper
+        local_piper.speak(
+            text, binary=self.config.local_piper_binary,
+            model=self.config.local_piper_model,
+            name_mode=self.config.fish_name_mode,
+            device=self.config.speaker_device,
+            gain=self.config.fish_gain,
+            on_playback_start=on_playback_start,
+            cancel_check=self.cancel_check,
+        )
+
+    def offline_notice(self):
+        """Announce cloud unavailability, not an offline chat reply."""
+        if self.muted or not self.config.offline_voice:
+            return
+        self._state(FaceState.THINKING)
+        try:
+            def started():
+                self._check_cancelled()
+                self._state(FaceState.SPEAKING)
+            self._speak_local(OFFLINE_NOTICE_EN, on_playback_start=started)
+            event("offline_voice_notice")
+        finally:
+            self.idle()
+
     def playback(self, answer):
         if self.muted or not answer:
             return
@@ -53,15 +88,25 @@ class ConversationApp:
                     self.voice.speak(answer, on_playback_start=started)
                 elif self.config.tts_provider == "fish":
                     from .fish_tts import speak as fish_speak
-                    fish_speak(answer, device=self.config.speaker_device,
-                               model=self.config.fish_model,
-                               reference_id=self.config.fish_voice_id,
-                               timeout=self.config.timeout,
-                               gain=self.config.fish_gain,
-                               name_mode=self.config.fish_name_mode,
-                               delivery=self.config.fish_delivery,
-                               on_playback_start=started,
-                               cancel_check=self.cancel_check)
+                    try:
+                        fish_speak(answer, device=self.config.speaker_device,
+                                   model=self.config.fish_model,
+                                   reference_id=self.config.fish_voice_id,
+                                   timeout=self.config.timeout,
+                                   gain=self.config.fish_gain,
+                                   name_mode=self.config.fish_name_mode,
+                                   delivery=self.config.fish_delivery,
+                                   on_playback_start=started,
+                                   cancel_check=self.cancel_check)
+                    except audio.AudioSynthesisError as fish_error:
+                        if not self.config.offline_voice:
+                            raise
+                        event("fish_tts_local_fallback", code=fish_error.code)
+                        from .local_piper import is_english_text
+                        fallback_text = (
+                            answer if is_english_text(answer) else OFFLINE_KOREAN_UNSUPPORTED_EN
+                        )
+                        self._speak_local(fallback_text, on_playback_start=started)
                 else:
                     audio.speak(self.client, answer, voice=self.config.voice,
                                 device=self.config.speaker_device, model=self.config.tts_model,

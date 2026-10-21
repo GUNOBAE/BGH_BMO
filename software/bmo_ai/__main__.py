@@ -26,6 +26,7 @@ def parser():
     result.add_argument("--fish-gain", type=float, help="Fish playback software gain 0..1 (default 0.30)")
     result.add_argument("--fish-name-mode", choices=("beemo", "bee-mo", "literal"), help="How Fish pronounces the BMO name")
     result.add_argument("--fish-delivery", choices=("soft", "plain"), help="Fish voice style (default: soft)")
+    result.add_argument("--offline-voice", action="store_true", help="Use local Piper BMO if cloud voice/connection fails")
     result.add_argument("--log-file", help="Optional rotating JSON event log (no transcript or audio)")
     return result
 
@@ -62,14 +63,28 @@ def main(argv=None, *, client_factory=create_client, input_fn=input, output_fn=p
         for field in ("seconds", "mic_device", "speaker_device", "language", "log_file", "tts_provider", "fish_model", "fish_gain", "fish_name_mode", "fish_delivery"):
             if getattr(args, field) is not None:
                 settings[f"BMO_{field.upper()}"] = str(getattr(args, field))
+        if args.offline_voice:
+            settings["BMO_OFFLINE_VOICE"] = "true"
         config = BMOConfig.from_env(settings)
     except (ConfigError, ValueError) as error:
         arguments.error(str(error))
     if config.tts_provider == "fish" and not (args.text or args.mute):
         key = os.environ.get("FISH_API_KEY", "").strip()
         if not key or key == "YOUR_KEY_HERE" or key.startswith("YOUR_FISH"):
-            output_fn("Set FISH_API_KEY before selecting Fish Audio voice mode.")
-            return 2
+            if not config.offline_voice:
+                output_fn("Set FISH_API_KEY before selecting Fish Audio voice mode.")
+                return 2
+            output_fn("Fish key missing: local Piper will handle speech if available.")
+    if config.offline_voice and not (args.text or args.mute):
+        from .local_piper import check_local_voice
+        condition = check_local_voice(
+            binary=config.local_piper_binary, model=config.local_piper_model
+        )
+        if not all(condition.values()):
+            output_fn(
+                "Offline voice enabled, but Piper files are missing; "
+                "cloud conversation can still operate."
+            )
     try:
         configure_logging(config.log_level, config.log_file)
     except OSError:
@@ -138,6 +153,14 @@ def main(argv=None, *, client_factory=create_client, input_fn=input, output_fn=p
                 code, message = public_error(error)
                 event("turn_failed", code=code)
                 output_fn("[error] " + message)
+                if config.offline_voice and not (args.text or args.mute) and code in (
+                    "connection", "timeout", "server", "rate_limit"
+                ):
+                    try:
+                        app.offline_notice()
+                    except Exception:
+                        event("offline_voice_notice_failed")
+                        output_fn("Offline Piper notice failed; check the local voice installation.")
     finally:
         if app is not None:
             app.idle()
