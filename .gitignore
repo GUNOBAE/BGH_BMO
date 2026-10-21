@@ -282,3 +282,6 @@ personal_settings.json
 
 # Short Aaron-only pronunciation tests (local generated audio).
 /software/fish_name_trials/
+
+# Action Lab generated model benchmark data (local and potentially billable).
+/software/model_lab_results/
