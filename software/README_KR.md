@@ -328,3 +328,49 @@ PC로 옮기거나 위의 안전 플레이어로 하나씩 들어보면 됩니�
 예전 Aaron 선택 이유는 장난기/감정 연기였으며, Studio Coille는
 음색이 가깝지만 차분했습니다. 이번 샘플은 이 두 장점을 비교하려는
 것이지 둘을 번갈아 쓰려는 설계가 아닙니다.
+
+## Aaron 2번 피드백 반영: "BMO" 발음 수정 (2026-10-21)
+
+실제 6개 샘플 청취 결과 2번 Aaron Soft를 1순위로 유지합니다.
+Coille는 억양 하강/느린 말투, Nikkooo는 차가움, Zaccharie는 지나친
+톤 다운으로 이번 단계에서 제외합니다. 새로운 유료 모델이나 성우를
+자동으로 전환하지 않습니다.
+
+**중요: 화면/대화에는 BMO를 그대로 표시합니다.** Fish TTS 요청
+경계에서만 영어 단어로 독립한 `BMO`를 `Beemo`로 치환합니다.
+Fish의 공개 원작 BMO 샘플에도 "Beemo"라는 발음 표기가 쓰이고 있습니다.
+이번 표기가 Aaron에서 실제로 "비모"로 들리는지는 음성으로 검증할
+것이며, 발음이 이상하다면 `--fish-name-mode bee-mo`를 선택할 수
+있습니다. 기존 방식은 `--fish-name-mode literal`입니다.
+한글 조사와 붙어 있는 `BMO는` 등은 아직 변경하지 않습니다.
+
+일상 대화용 선택 예시:
+```bash
+cd /home/bgh/BGH_BMO/software
+.venv/bin/python -m bmo_ai --tts-provider fish --fish-model s2.1-pro-free \
+  --fish-name-mode beemo --fish-gain 0.25 \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+```
+
+### Aaron 발음 및 감정만 좁혀서 다시 테스트하기
+
+이미 비교한 여섯 커뮤니티 음성을 전부 재생성할 필요 없습니다. Aaron
+한 목소리만 사용합니다. 무료 Fish S2.1 Pro 모델로 3개 대사를 합성:
+1. `soft_beemo`: 기존 2번 Aaron Soft의 지시는 그대로, BMO→Beemo
+2. `soft_bee_mo`: 나머지는 똑같고 이름만 Bee-mo
+3. `playful_beemo`: Beemo로 발음하고 과장 없이 약간 생기 있게
+
+```bash
+cd /home/bgh/BGH_BMO/software
+.venv/bin/python -m bmo_ai.fish_aaron_refine
+# PLAN ONLY -> 0원, Fish 호출 없음
+
+# 키가 현재 셸에 export돼 있다면:
+.venv/bin/python -m bmo_ai.fish_aaron_refine --mode free --variant all
+```
+
+생성 폴더는 `fish_name_trials/aaron-name-*/listen.html`입니다.
+브라우저에서 들어보거나 Pi 스피커로 들을 때 이전에 만든
+`bmo_ai.safe_playback`을 이용해 25% 소프트웨어 게인을 적용하세요.
+모든 샘플은 같은 Aaron Voice ID이며, 유료 Drama 3 요청이 불가능합니다.
+실제 결제 조건/음색은 계정과 무료 정책에 따라 다를 수 있습니다.
