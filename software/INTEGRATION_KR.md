@@ -99,6 +99,28 @@ GPT 호출을 하지 않는다. 한국어·클라우드 실패에는 기존 고�
 문맥은 변하지 않는다. `/reset`과 앱 종료는 캐시를 정리한다. 음성을 장기 보관하는
 DB가 아니며 강제 종료·시스템 장애 뒤의 정리는 정상 종료와 구분한다.
 
+## Action v0는 모의 경로만 연결
+
+`--simulate` 앱의 터미널에서 다음을 입력한다. 쉘 명령이 아닌 앱 입력이다.
+
+```text
+/actions-demo
+/action {"action":"play_song","arguments":{"song_id":"demo_song"},"request_id":"manual-song-001"}
+```
+
+다섯 demo는 left/right arm, photo, demo_song, demo_game의 원본 Action v0 계약을
+검사한 뒤 Mock 결과만 출력한다. 결과의 request_id/action/status/code/message/
+simulated/executed 7개 필드를 보존하며 정상도 `status=simulated`, `code=mock_only`,
+`executed=false`다. 팔·사진·노래·게임은 실제 실행하지 않는다. live LLM tool이나
+실제 adapter를 추가하지 않았다. `--live`에서는 이 명령의 실행을 거부한다.
+
+논리 요청의 request_id는 호출자가 안정적으로 전달한다. 같은 요청의 재시도는
+같은 ID, 새 요청은 새 ID를 사용한다. `/actions-demo`의 고정 ID도 재실행 시
+duplicate다. 같은 ID의 다른 내용은 conflict, 잘못된 입력과 용량 초과는 rejected로
+구분한다. `/reset`은 음성·문맥만 초기화하며 Mock ledger를 재생성하지 않는다.
+ledger는 launcher 프로세스 메모리에만 있고 재시작을 넘는 영속 중복 보장은 없다.
+정확한 원본 계약과 출처는 `docs/action-system-v0.md`를 따른다.
+
 Python/ALSA만 음성을 출력하며 browser의 playAudio/playBlob/media play를 쓰지
 않는다. gain은 최종 WAV에 한 번 적용하고 해당 WAV의 envelope로 입 cue를 만든다.
 입 움직임은 음량 기반이며 음소 분석이 아니다. `on_start`는 player 프로세스 시작

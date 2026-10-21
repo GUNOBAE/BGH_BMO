@@ -114,6 +114,33 @@ class IntegrationLauncherTests(unittest.TestCase):
         self.assertIn("No successful voice is cached", result.stdout)
         self.assertNotIn("Unknown command", result.stdout)
 
+    def test_mock_action_demo_keeps_logical_ids_and_ledger_across_dialogue_reset(self):
+        result = self.launch("--simulate", "--no-web",
+                             stdin="/actions-demo\n/actions-demo\n/reset\n/actions-demo\n/quit\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        actions = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+        self.assertEqual(len(actions), 15)
+        self.assertTrue(all(item["executed"] is False for item in actions))
+        self.assertTrue(all(item["status"] == "simulated" and item["code"] == "mock_only"
+                            for item in actions[:5]))
+        self.assertTrue(all(item["status"] == "duplicate" for item in actions[5:]))
+        self.assertEqual([item["request_id"] for item in actions[:5]],
+                         [item["request_id"] for item in actions[10:]])
+
+    def test_explicit_action_json_rejects_invalid_input_and_preserves_request_identity(self):
+        request = {"action": "play_song", "arguments": {"song_id": "demo_song"},
+                   "request_id": "cli-song-001"}
+        result = self.launch("--simulate", "--no-web", stdin=(
+            "/action not-json\n/action []\n/action " + json.dumps(request) + "\n/quit\n"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("structured JSON request", result.stdout)
+        actions = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(actions[0]["status"], "rejected")
+        self.assertEqual(actions[1]["request_id"], request["request_id"])
+        self.assertEqual(actions[1]["code"], "mock_only")
+        self.assertTrue(all(item["executed"] is False for item in actions))
+
 
 if __name__ == "__main__":
     unittest.main()

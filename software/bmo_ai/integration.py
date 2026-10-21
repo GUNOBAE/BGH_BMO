@@ -51,6 +51,7 @@ def main(argv=None):
     from .cloud import CloudError, create_client
     from .integration_session import IntegrationSession, SimulatedClient
     from .integration_face import FaceServer
+    from .integration_actions import MockActionHost, demo_requests
 
     # One manual launcher per user; no daemon/service or automatic start install.
     lock_path = Path(f"/tmp/bmo-integration-{os.getuid()}.lock")
@@ -71,11 +72,13 @@ def main(argv=None):
     try:
         client = SimulatedClient() if args.simulate else create_client(config)
         session = IntegrationSession(config, client, simulate=args.simulate)
+        mock_actions = MockActionHost(simulate=True) if args.simulate else None
         if not args.no_web:
             server = FaceServer(args.face_file, snapshot=session.browser_snapshot, port=args.port)
             server.start()
             print("Face: " + server.url, flush=True)
-        print("Commands: Enter=question, /cancel, /repeat, /reset, /emotion NAME, /quit", flush=True)
+        print("Commands: Enter=question, /cancel, /repeat, /reset, /emotion NAME, "
+              "/actions-demo (simulate), /action JSON (simulate), /quit", flush=True)
         if args.turns:
             for index in range(args.turns):
                 session.start(f"Synthetic question {index + 1}")
@@ -113,6 +116,24 @@ def main(argv=None):
                     session.set_emotion(command.split(maxsplit=1)[1])
                 except ValueError:
                     print("Emotion: neutral, happy, angry, sad, crying, surprised")
+            elif command == "/actions-demo":
+                if mock_actions is None:
+                    print("Actions require --simulate; nothing was executed.")
+                else:
+                    for request in demo_requests():
+                        print(json.dumps(mock_actions.dispatch_request(request),
+                                         ensure_ascii=False, sort_keys=True), flush=True)
+            elif command == "/action" or command.startswith("/action "):
+                if mock_actions is None:
+                    print("Actions require --simulate; nothing was executed.")
+                else:
+                    try:
+                        request = json.loads(command.partition(" ")[2])
+                    except json.JSONDecodeError:
+                        print("Use /action followed by a structured JSON request.")
+                    else:
+                        print(json.dumps(mock_actions.dispatch_request(request),
+                                         ensure_ascii=False, sort_keys=True), flush=True)
             elif command.startswith("/"):
                 print("Unknown command.")
             elif not session.start(command or "A synthetic question"):
