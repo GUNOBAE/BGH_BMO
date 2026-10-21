@@ -95,6 +95,8 @@ def play_wav(path: Path | str, *, device=None, gain=DEFAULT_GAIN,
         if cancel_check is not None:
             cancel_check()
         options = {} if on_playback_start is None else {"on_start": on_playback_start}
+        if cancel_check is not None:
+            options["cancel_check"] = cancel_check
         audio._run(
             ["aplay", "-q", *device_args, str(temp if temp is not None else path)],
             timeout=info["duration_seconds"] + 10,

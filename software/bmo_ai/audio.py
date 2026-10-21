@@ -77,15 +77,59 @@ def _device_args(device: str | None) -> list[str]:
     return ["-D", device]
 
 
-def _run(command: list[str], *, timeout: float, error_type: type[AudioError], on_start=None) -> None:
-    """subprocess.run kills and reaps its child on timeout; never print raw stderr."""
+def _stop_owned(process) -> None:
+    """Terminate and reap this child only, escalating if it ignores SIGTERM."""
     try:
-        if on_start is None:
-            subprocess.run(command, check=True, timeout=timeout, capture_output=True)
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+
+
+def _run(command: list[str], *, timeout: float, error_type: type[AudioError],
+         on_start=None, cancel_check=None, env=None) -> None:
+    """Run one owned child; cooperative cancellation also stops active playback.
+
+    A start callback marks process creation, not measured acoustic output. The
+    cancellable path polls at 20 ms and never signals unrelated processes.
+    """
+    try:
+        options = {} if env is None else {"env": env}
+        if cancel_check is not None:
+            cancel_check()
+            with subprocess.Popen(command, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, **options) as process:
+                try:
+                    cancel_check()
+                    if on_start is not None:
+                        on_start()
+                    deadline = time.monotonic() + timeout
+                    while True:
+                        cancel_check()
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, timeout)
+                        try:
+                            process.communicate(timeout=min(0.02, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            pass
+                    cancel_check()
+                except BaseException:
+                    _stop_owned(process)
+                    raise
+                if process.returncode:
+                    raise subprocess.CalledProcessError(process.returncode, command)
+        elif on_start is None:
+            subprocess.run(command, check=True, timeout=timeout, capture_output=True, **options)
         else:
             # A successful spawn marks the playback operation's start. It does
             # not prove that a device emitted sound or measure acoustic latency.
-            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options) as process:
                 try:
                     on_start()
                     process.communicate(timeout=timeout)
@@ -360,6 +404,8 @@ def speak(
         if cancel_check is not None:
             cancel_check()
         playback_options = {} if on_playback_start is None else {"on_start": on_playback_start}
+        if cancel_check is not None:
+            playback_options["cancel_check"] = cancel_check
         _run(["aplay", "-q", *device_args, str(path)], timeout=info["duration_seconds"] + 10,
              error_type=AudioPlaybackError, **playback_options)
         succeeded = True

@@ -282,3 +282,11 @@ personal_settings.json
 
 # Short Aaron-only pronunciation tests (local generated audio).
 /software/fish_name_trials/
+
+# Isolated integration runtime/private inputs are never public source assets.
+/logs/
+/.integration-runtime/
+/.validation/
+/BMO_Screen_v13_2*.html
+/BMO_Screen_v13_2*.zip
+/BMO_Games*.zip

@@ -1,0 +1,3 @@
+# Install inside the isolated integration project's .venv only.
+-r requirements-lock.txt
+playwright==1.64.0
