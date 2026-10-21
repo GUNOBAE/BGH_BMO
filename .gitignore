@@ -279,3 +279,6 @@ personal_settings.json
 
 # Generated WAV auditions / reports never belong in Git.
 /software/fish_voice_trials/
+
+# Short Aaron-only pronunciation tests (local generated audio).
+/software/fish_name_trials/
