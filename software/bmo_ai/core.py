@@ -23,6 +23,14 @@ LANGUAGE_INSTRUCTIONS = {
     "auto": "Respond in the language of the user's latest message; use English when the language is unclear.",
 }
 
+# An explicit host policy replaces the legacy language rule; it is never
+# appended alongside the old automatic Korean-response behavior.
+VOICE_LANGUAGE_INSTRUCTIONS = {
+    "english_voice": "Trusted host language policy: english_voice. Use English by default, even for Korean input; honor an explicit request for another language.",
+    "korean_voice": "Trusted host language policy: korean_voice. Use Korean by default; honor an explicit request for another language.",
+    "auto": "Trusted host language policy: auto. Follow the language of the user's latest message; use English when unclear.",
+}
+
 
 class BrainResponseError(ValueError):
     """The cloud returned no complete reply; the local conversation is unchanged."""
@@ -53,6 +61,8 @@ class BMOBrain:
         max_history_chars=16000,
         max_output_tokens=180,
         reasoning_effort=None,
+        system_prompt=None,
+        language_policy=None,
     ):
         for name, value in (
             ("max_turns", max_turns),
@@ -63,6 +73,14 @@ class BMOBrain:
             _positive_integer(name, value)
         if language not in LANGUAGE_INSTRUCTIONS:
             raise ValueError("language must be en, ko, or auto")
+        if system_prompt is not None and (
+            not isinstance(system_prompt, str) or not system_prompt.strip()
+        ):
+            raise ValueError("system_prompt must be a nonempty string")
+        if language_policy is not None and (
+            not isinstance(language_policy, str) or language_policy not in VOICE_LANGUAGE_INSTRUCTIONS
+        ):
+            raise ValueError("language_policy must be english_voice, korean_voice, or auto")
         if max_input_chars > max_history_chars:
             raise ValueError("max_history_chars must be at least max_input_chars")
         selected_model = model if model is not None else os.getenv("BMO_CHAT_MODEL", "gpt-4.1-mini")
@@ -76,6 +94,8 @@ class BMOBrain:
         self.reasoning_effort = reasoning_effort
         self.max_turns = max_turns
         self.language = language
+        self.system_prompt = SYSTEM_PROMPT if system_prompt is None else system_prompt
+        self.language_policy = language_policy
         self.max_input_chars = max_input_chars
         self.max_history_chars = max_history_chars
         self.max_output_tokens = max_output_tokens
@@ -113,7 +133,10 @@ class BMOBrain:
         candidate = previous + [{"role": "user", "content": message}]
         request = {
             "model": self.model,
-            "instructions": SYSTEM_PROMPT + "\n" + LANGUAGE_INSTRUCTIONS[self.language],
+            "instructions": self.system_prompt + "\n" + (
+                LANGUAGE_INSTRUCTIONS[self.language] if self.language_policy is None
+                else VOICE_LANGUAGE_INSTRUCTIONS[self.language_policy]
+            ),
             "input": candidate,
             "max_output_tokens": self.max_output_tokens,
             "store": False,

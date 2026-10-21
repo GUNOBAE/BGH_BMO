@@ -77,15 +77,59 @@ def _device_args(device: str | None) -> list[str]:
     return ["-D", device]
 
 
-def _run(command: list[str], *, timeout: float, error_type: type[AudioError], on_start=None) -> None:
-    """subprocess.run kills and reaps its child on timeout; never print raw stderr."""
+def _stop_owned(process) -> None:
+    """Terminate and reap this child only, escalating if it ignores SIGTERM."""
     try:
-        if on_start is None:
-            subprocess.run(command, check=True, timeout=timeout, capture_output=True)
+        process.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+
+
+def _run(command: list[str], *, timeout: float, error_type: type[AudioError],
+         on_start=None, cancel_check=None, env=None) -> None:
+    """Run one owned child; cooperative cancellation also stops active playback.
+
+    A start callback marks process creation, not measured acoustic output. The
+    cancellable path polls at 20 ms and never signals unrelated processes.
+    """
+    try:
+        options = {} if env is None else {"env": env}
+        if cancel_check is not None:
+            cancel_check()
+            with subprocess.Popen(command, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, **options) as process:
+                try:
+                    cancel_check()
+                    if on_start is not None:
+                        on_start()
+                    deadline = time.monotonic() + timeout
+                    while True:
+                        cancel_check()
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, timeout)
+                        try:
+                            process.communicate(timeout=min(0.02, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            pass
+                    cancel_check()
+                except BaseException:
+                    _stop_owned(process)
+                    raise
+                if process.returncode:
+                    raise subprocess.CalledProcessError(process.returncode, command)
+        elif on_start is None:
+            subprocess.run(command, check=True, timeout=timeout, capture_output=True, **options)
         else:
             # A successful spawn marks the playback operation's start. It does
             # not prove that a device emitted sound or measure acoustic latency.
-            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options) as process:
                 try:
                     on_start()
                     process.communicate(timeout=timeout)
@@ -197,21 +241,30 @@ def _wav_info(path: Path, *, allow_streaming_header: bool = False) -> dict[str, 
     return {"channels": channels, "sample_rate": rate, "sample_width": width, "frames": pcm // block_align, "duration_seconds": pcm / block_align / rate}
 
 
-def record_wav(seconds: int = 5, device: str | None = None) -> Path:
+def record_wav(seconds: int = 5, device: str | None = None, *,
+               cancel_check=None, env=None) -> Path:
     """Record mono 16-kHz PCM; caller owns the returned temporary file.
 
     Only an explicitly configured ALSA name or the existing default is used.
     No discovered card is selected and no system audio settings are altered.
+    A supplied cancellation check also stops and reaps an active owned capture
+    process. Existing callers retain their original blocking/default-env path.
     """
     if type(seconds) is not int or not 1 <= seconds <= MAX_RECORD_SECONDS:
         raise AudioValidationError("Recording duration must be an integer from 1 to 60 seconds.", "invalid_duration")
     device_args = _device_args(device)
     path = _new_wav(AudioRecordingError)
     try:
+        options = {}
+        if cancel_check is not None:
+            options["cancel_check"] = cancel_check
+        if env is not None:
+            options["env"] = env
         _run(
             ["arecord", "-q", *device_args, "-t", "wav", "-f", "S16_LE", "-r", "16000", "-c", "1", "-d", str(seconds), str(path)],
             timeout=seconds + 10,
             error_type=AudioRecordingError,
+            **options,
         )
         info = _wav_info(path)
         if (info["channels"], info["sample_rate"], info["sample_width"]) != (1, 16000, 2):
@@ -360,6 +413,8 @@ def speak(
         if cancel_check is not None:
             cancel_check()
         playback_options = {} if on_playback_start is None else {"on_start": on_playback_start}
+        if cancel_check is not None:
+            playback_options["cancel_check"] = cancel_check
         _run(["aplay", "-q", *device_args, str(path)], timeout=info["duration_seconds"] + 10,
              error_type=AudioPlaybackError, **playback_options)
         succeeded = True
