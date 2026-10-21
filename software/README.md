@@ -265,3 +265,23 @@ Free at a time using the same spoken line, with separate gentle directions.
 Output: `software/fish_voice_trials/bmo-voices-*/listen.html`. No paid
 Drama 3 option here; no hidden fallback. Actual Pi system routing must be
 verified with `aplay -L`, `wpctl status` or the available equivalent.
+
+### Aaron Soft is the preferred baseline (listening feedback Oct 21, 2026)
+
+The user liked both `soft_beemo` and `soft_bee_mo`. The third
+`playful_beemo` test pronounced the name well but sounded unnaturally
+over-bright, so it is **not** selected. Keep the same Aaron voice across moods.
+
+The Fish conversation path now defaults to `BMO_FISH_DELIVERY=soft`
+and `BMO_FISH_NAME_MODE=beemo`. The exact same gentle, warm, slightly
+lower-pitch direction used in the approved audition is added only to
+the outgoing Fish TTS text. GPT transcripts and visible BMO text are
+unchanged. `--fish-name-mode bee-mo` selects the other approved name
+spelling, and `--fish-delivery plain` removes the direction if needed.
+No extra provider call, voice switching or paid fallback.
+
+```bash
+.venv/bin/python -m bmo_ai --tts-provider fish --fish-model s2.1-pro-free \
+  --fish-delivery soft --fish-name-mode beemo --fish-gain 0.25 \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+```
