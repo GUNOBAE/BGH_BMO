@@ -27,6 +27,9 @@ class BMOConfig:
     fish_gain: float = 0.30
     fish_name_mode: str = "beemo"
     fish_delivery: str = "soft"
+    offline_voice: bool = False
+    local_piper_binary: str = "~/bmo-voice-test/piper/piper"
+    local_piper_model: str = "~/bmo-voice-test/bmo-piper/en_US-bmo_voice.onnx"
     language: str = "en"
     seconds: int = 5
     mic_device: str | None = None
@@ -66,6 +69,12 @@ class BMOConfig:
             raise ConfigError("BMO_FISH_NAME_MODE must be beemo, bee-mo or literal")
         if not isinstance(self.fish_delivery, str) or self.fish_delivery not in ("soft", "plain"):
             raise ConfigError("BMO_FISH_DELIVERY must be soft or plain")
+        if not isinstance(self.offline_voice, bool):
+            raise ConfigError("BMO_OFFLINE_VOICE must be true or false")
+        for name in ("local_piper_binary", "local_piper_model"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip() or len(value) > 1024 or any(ord(ch) < 32 for ch in value):
+                raise ConfigError(f"BMO_{name.upper()} must be a valid local path")
         if self.language not in ("en", "ko", "auto"):
             raise ConfigError("BMO_LANGUAGE must be en, ko, or auto")
         if self.log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
@@ -121,7 +130,14 @@ class BMOConfig:
             if not isinstance(raw, str):
                 raise ConfigError(f"{variable} must be a string")
             raw = raw.strip()
-            if name in integer_names:
+            if name == "offline_voice":
+                if raw.lower() in ("true", "1", "yes", "on"):
+                    values[name] = True
+                elif raw.lower() in ("false", "0", "no", "off"):
+                    values[name] = False
+                else:
+                    raise ConfigError("BMO_OFFLINE_VOICE must be true or false")
+            elif name in integer_names:
                 try:
                     # Disallow formats such as underscores accepted by int().
                     if not raw.isascii() or not raw.isdecimal():
