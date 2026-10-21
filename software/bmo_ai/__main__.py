@@ -71,8 +71,10 @@ def main(argv=None, *, client_factory=create_client, input_fn=input, output_fn=p
     if config.tts_provider == "fish" and not (args.text or args.mute):
         key = os.environ.get("FISH_API_KEY", "").strip()
         if not key or key == "YOUR_KEY_HERE" or key.startswith("YOUR_FISH"):
-            output_fn("Set FISH_API_KEY before selecting Fish Audio voice mode.")
-            return 2
+            if not config.offline_voice:
+                output_fn("Set FISH_API_KEY before selecting Fish Audio voice mode.")
+                return 2
+            output_fn("Fish key missing: local Piper will handle speech if available.")
     if config.offline_voice and not (args.text or args.mute):
         from .local_piper import check_local_voice
         condition = check_local_voice(
