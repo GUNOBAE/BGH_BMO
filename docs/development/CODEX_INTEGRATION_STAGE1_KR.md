@@ -2,7 +2,7 @@
 
 기준일: **2026-10-22 KST**
 
-> **Pi 사전 점검과 보고서 검토가 완료됐다.** [현장 보고서 `0bfb8bd4`](https://github.com/GUNOBAE/BGH_BMO/blob/0bfb8bd4b4d99bffb9ba479eab6b8b7f62ac25b4/docs/reports/PI_PREFLIGHT_LATEST_KR.md)를 기준으로 아래 다음 구현 작업을 준비했다. 동일한 전체 점검을 다시 할 필요는 없다. 이 문서 갱신 자체가 Pi 구현·배포·장치 실행을 시작했다는 뜻은 아니다. 사용자가 후속 구현을 지시할 때 격리된 폴더에서 아래 범위로 진행한다.
+> **Pi 사전 점검과 보고서 검토가 완료됐고, 사용자가 승인 얼굴의 Pi 전달과 자율 개발 진행을 지시했다.** [현장 보고서 `0bfb8bd4`](https://github.com/GUNOBAE/BGH_BMO/blob/0bfb8bd4b4d99bffb9ba479eab6b8b7f62ac25b4/docs/reports/PI_PREFLIGHT_LATEST_KR.md)를 출발점으로 사용한다. 현재 실행 순서·권한·추가 작업 범위는 [야간 통합 작업서](CODEX_OVERNIGHT_INTEGRATION_KR.md)를 따른다. 동일한 전체 점검을 반복하거나 구현 허락을 다시 요청하지 않는다. 문서 업로드와 브랜치 준비는 Pi 코드 실행 완료를 뜻하지 않는다.
 
 ## 목표
 
@@ -28,9 +28,9 @@
 
 격리된 `feature/bmo-integration-v1` 브랜치/작업 디렉터리를 만들거나 기존 동일 목적 작업을 이어간다. 기본 구현 출처 후보는 `feature/bmo-luna-low-voice-ab`의 확인된 `054ced8f894f25f4cd0a178c2b097b5afe2c8576`이며 Fish/Piper/기존 worker를 포함한다. 새 HEAD가 있으면 차이를 검토한다. main에만 있는 최신 문서 변경을 보존하고, 사용 중인 체크아웃을 전환하거나 미커밋 파일을 덮어쓰지 않는다.
 
-`feature/bmo-action-lab`나 모델 benchmark를 상시 앱에 병합하지 않는다. Action v0는 다음 단계에서 연결한다. 기존 독립 브랜치를 삭제·rebase·force-push하지 않는다.
+`feature/bmo-action-lab`나 모델 benchmark를 상시 앱에 병합하지 않는다. Action v0는 얼굴·음성 핵심 구현과 검증을 커밋·업로드한 다음, 야간 작업서의 추가 단계에서 Mock 연결만 진행할 수 있다. 기존 독립 브랜치를 삭제·rebase·force-push하지 않는다.
 
-Pi의 이전 한정 탐색에서는 승인 얼굴을 찾지 못했다. ChatGPT가 보관 중인 승인 원본을 재전달하므로 사용자에게 원본을 다시 찾아 제출하라고 요구하지 않는다. 전달된 경로를 명시적으로 인수하고 다음 해시와 대조한다. 전달 위치 후보는 `/home/bgh/Downloads/BMO_Screen_v13_2.html` 또는 사용자가 지정한 한 경로다. 이미 정한 범위의 전체 파일 검색을 반복하지 않는다.
+Pi의 이전 한정 탐색에서는 승인 얼굴을 찾지 못했으나, 이후 사용자가 Pi에 넣었다고 알렸다. 전달 위치 후보 `/home/bgh/Downloads/BMO_Screen_v13_2.html` 또는 사용자가 지정한 한 경로를 먼저 확인하고 다음 해시와 대조한다. 같은 Downloads 안의 브라우저 중복 파일명은 제한적으로 확인할 수 있다. 파일이 있다고 보고된 것과 해시가 검증된 것은 구분한다. 이미 정한 범위의 전체 파일 검색을 반복하지 않는다.
 
 ```text
 BMO_Screen_v13_2.html
@@ -110,7 +110,7 @@ Piper 원본 `/home/bgh/bmo-voice-test/bmo-piper/en_US-bmo_voice.onnx`와 대응
 | 원본 보존 | 작업 전후 v13.2 SHA-256 동일 |
 | 대화 한 턴 | idle → listening → thinking → playback 중 speaking → idle |
 | 감정 유지 | crying/happy 상태의 듣기·생각에서 감정이 초기화되지 않음 |
-| 입 시작·정지 | player 시작 전 닫힘, 무음/종료/취소 시 닫힘 |
+| 입 시작·정지 | player 시작 전 외부 speaking/cue 진행 없음. thinking의 원본 `hmm`는 허용. 재생 무음 및 idle로 복귀하는 종료/취소 시 닫힘 |
 | 실제 재생 취소 | 소유한 플레이어가 종료·회수되고 입 이벤트도 폐기 |
 | 중복·지연 결과 | 중복 시작 거부, 취소 후 늦은 TTS/입 프레임 무시 |
 | 연결·앱 종료 | browser reconnect와 종료 후 이전 turn 재생 없음, 소유 자원 정리 |
@@ -129,9 +129,9 @@ Piper 원본 `/home/bgh/bmo-voice-test/bmo-piper/en_US-bmo_voice.onnx`와 대응
 
 후속 구현 보고서는 `feature/bmo-integration-v1`의 `docs/reports/INTEGRATION_STAGE1_LATEST_KR.md`에 코드와 함께 커밋·업로드한다. 기존 preflight 보고서는 덮어쓰지 않는다. 사용자에게는 GitHub 보고서/검토용 PR 링크와 결론만 알리고, 보고서 본문을 이 채팅으로 복사하라고 요구하지 않는다. 미업로드 상태는 완료로 표시하지 않는다.
 
-## 이후 구현 단계에서 Codex에게 보낼 짧은 지시
+## 구현 단계에서 Codex에게 보낼 짧은 지시
 
-아래 문구는 현재 점검 지시가 아니다. Pi 보고서 검토 후 구현 작업을 시작할 때 사용한다.
+현재 사용자는 구현을 지시했다. 아래 기술 요약과 함께 [야간 통합 작업서](CODEX_OVERNIGHT_INTEGRATION_KR.md)의 순서·보고 절차를 사용한다.
 
 ```text
 BMO 1차 통합을 시작해.
