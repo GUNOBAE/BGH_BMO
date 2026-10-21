@@ -8,6 +8,7 @@ OFFLINE_KOREAN_UNSUPPORTED_EN = (
     "Beemo is still here. My local voice only supports English for now."
 )
 from pathlib import Path
+import time
 
 from . import audio
 from .hardware import FaceState, NullFace
@@ -26,6 +27,8 @@ class ConversationApp:
         # Constructing the app never initializes a device or SDK client.
         self.voice = voice
         self.cancel_check = cancel_check
+        # Capture-stop clock only; never records or retains raw audio/transcripts.
+        self._record_end_monotonic = None
 
     def _check_cancelled(self):
         if self.cancel_check is not None:
@@ -74,15 +77,32 @@ class ConversationApp:
 
     def playback(self, answer):
         if self.muted or not answer:
+            self._record_end_monotonic = None
             return
         self._state(FaceState.THINKING)
+        tts_request_start = time.perf_counter()
+        playback_source = ["injected" if self.voice is not None else self.config.tts_provider]
         try:
             self._check_cancelled()
             with measure("speech"):
                 def started():
                     self._check_cancelled()
+                    now = time.perf_counter()
+                    # Player-start callback is not acoustic proof of audible sound.
+                    from_record = (
+                        round((now - self._record_end_monotonic) * 1000, 1)
+                        if self._record_end_monotonic is not None else None
+                    )
                     self._state(FaceState.SPEAKING)
                     self._check_cancelled()
+                    event(
+                        "voice_playback_boundary",
+                        chat_model=self.config.chat_model,
+                        reasoning_effort=self.config.reasoning_effort or "unset",
+                        tts_source=playback_source[0],
+                        tts_prepare_ms=round((now - tts_request_start) * 1000, 1),
+                        after_record_end_ms=from_record,
+                    )
 
                 if self.voice is not None:
                     self.voice.speak(answer, on_playback_start=started)
@@ -106,15 +126,18 @@ class ConversationApp:
                         fallback_text = (
                             answer if is_english_text(answer) else OFFLINE_KOREAN_UNSUPPORTED_EN
                         )
+                        playback_source[0] = "piper"
                         self._speak_local(fallback_text, on_playback_start=started)
                 else:
                     audio.speak(self.client, answer, voice=self.config.voice,
                                 device=self.config.speaker_device, model=self.config.tts_model,
                                 on_playback_start=started, cancel_check=self.cancel_check)
         finally:
+            self._record_end_monotonic = None
             self.idle()
 
     def voice_input(self):
+        self._record_end_monotonic = None
         self._state(FaceState.LISTENING)
         self._check_cancelled()
         if self.voice is not None:
@@ -123,6 +146,7 @@ class ConversationApp:
             return message
         with measure("record"):
             path = audio.record_wav(self.config.seconds, self.config.mic_device)
+        self._record_end_monotonic = time.perf_counter()
         primary_failure = False
         try:
             self._check_cancelled()
