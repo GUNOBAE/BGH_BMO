@@ -83,7 +83,9 @@ class IntegrationVoice:
         self._check(cancellation)
         if self.simulate:
             return self.message
-        path = audio.record_wav(self.config.seconds, self.config.mic_device)
+        path = audio.record_wav(self.config.seconds, self.config.mic_device,
+                                cancel_check=lambda: self._check(cancellation),
+                                env=_player_environment())
         try:
             self._check(cancellation)
             language = "ko" if self.config.language == "ko" else None

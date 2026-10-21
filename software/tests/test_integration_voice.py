@@ -197,10 +197,17 @@ class IntegrationVoiceTests(unittest.TestCase):
         with patch.object(audio, "record_wav", return_value=recorded) as record, \
              patch.object(audio, "transcribe", return_value="Synthetic transcript.") as transcribe:
             self.assertEqual(voice.listen(), "Synthetic transcript.")
-        record.assert_called_once_with(self.config.seconds, self.config.mic_device)
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args, (self.config.seconds, self.config.mic_device))
+        record.call_args.kwargs["cancel_check"]()
+        self.assertFalse(any(name.startswith(("OPENAI_", "FISH_"))
+                             for name in record.call_args.kwargs["env"]))
         transcribe.assert_called_once_with(self.client, recorded,
                                            model="gpt-4o-mini-transcribe", language=None)
         self.assertFalse(recorded.exists())
+        voice.close()
+        with self.assertRaises(TurnCancelled):
+            record.call_args.kwargs["cancel_check"]()
 
     def test_player_error_cleans_files_and_next_turn_works(self):
         paths = []

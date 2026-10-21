@@ -241,21 +241,30 @@ def _wav_info(path: Path, *, allow_streaming_header: bool = False) -> dict[str, 
     return {"channels": channels, "sample_rate": rate, "sample_width": width, "frames": pcm // block_align, "duration_seconds": pcm / block_align / rate}
 
 
-def record_wav(seconds: int = 5, device: str | None = None) -> Path:
+def record_wav(seconds: int = 5, device: str | None = None, *,
+               cancel_check=None, env=None) -> Path:
     """Record mono 16-kHz PCM; caller owns the returned temporary file.
 
     Only an explicitly configured ALSA name or the existing default is used.
     No discovered card is selected and no system audio settings are altered.
+    A supplied cancellation check also stops and reaps an active owned capture
+    process. Existing callers retain their original blocking/default-env path.
     """
     if type(seconds) is not int or not 1 <= seconds <= MAX_RECORD_SECONDS:
         raise AudioValidationError("Recording duration must be an integer from 1 to 60 seconds.", "invalid_duration")
     device_args = _device_args(device)
     path = _new_wav(AudioRecordingError)
     try:
+        options = {}
+        if cancel_check is not None:
+            options["cancel_check"] = cancel_check
+        if env is not None:
+            options["env"] = env
         _run(
             ["arecord", "-q", *device_args, "-t", "wav", "-f", "S16_LE", "-r", "16000", "-c", "1", "-d", str(seconds), str(path)],
             timeout=seconds + 10,
             error_type=AudioRecordingError,
+            **options,
         )
         info = _wav_info(path)
         if (info["channels"], info["sample_rate"], info["sample_width"]) != (1, 16000, 2):
