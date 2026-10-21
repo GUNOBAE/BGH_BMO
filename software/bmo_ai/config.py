@@ -25,6 +25,7 @@ class BMOConfig:
     fish_model: str = "s2.1-pro-free"
     fish_voice_id: str = "106f41ea392c4cc48c6eee76f69ff17e"
     fish_gain: float = 0.30
+    fish_name_mode: str = "beemo"
     language: str = "en"
     seconds: int = 5
     mic_device: str | None = None
@@ -60,6 +61,8 @@ class BMOConfig:
             raise ConfigError("BMO_FISH_VOICE_ID must be a 32-character lowercase hex voice ID")
         if isinstance(self.fish_gain, bool) or not isinstance(self.fish_gain, (float, int)) or not math.isfinite(self.fish_gain) or not 0 < self.fish_gain <= 1:
             raise ConfigError("BMO_FISH_GAIN must be a number above 0 and at most 1")
+        if self.fish_name_mode not in ("beemo", "bee-mo", "literal"):
+            raise ConfigError("BMO_FISH_NAME_MODE must be beemo, bee-mo or literal")
         if self.language not in ("en", "ko", "auto"):
             raise ConfigError("BMO_LANGUAGE must be en, ko, or auto")
         if self.log_level not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
