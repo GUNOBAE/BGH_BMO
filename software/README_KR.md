@@ -202,3 +202,40 @@ export FISH_API_KEY
 발음 정확도, 목소리 일관성, 유료 모델의 가격 대비 개선 정도.
 코드·모의 테스트는 완료했지만 실제 Fish 계정으로 생성된 비교 음성은
 아직 검증되지 않았습니다.
+
+### 무료 음성 생성이 "nonempty PCM WAV"로 실패했을 때
+
+2026-10-21 Pi 테스트에서 Fish 서버 응답을 기존 엄격한 PCM 파서가
+거부하는 문제가 확인됐습니다. Fish 공식 호환성 문서에 따르면 WAV에
+RIFF(4294967076)/data(4294967040) 크기를 임시로 기록하는 경우가
+있습니다. Fish 어댑터는 알려진 이 두 값의 조합만 실제 다운로드된
+바이트 길이로 고치고, 이후 동일한 엄격한 PCM 검증을 수행하도록
+수정했습니다. 오프라인 회귀 테스트 통과, 실제 계정 재검증 필요.
+
+브랜치가 원격을 추적하지 않는 Git 설정에서도 작동하는 업데이트 절차:
+
+```bash
+cd /home/bgh/BGH_BMO
+git status --short
+git fetch origin refs/heads/feature/bmo-fish-aaron-tts:refs/remotes/origin/feature/bmo-fish-aaron-tts
+git merge --ff-only refs/remotes/origin/feature/bmo-fish-aaron-tts
+cd software
+.venv/bin/python -m unittest tests.test_fish_wav_header -v
+# 키는 같은 셸에 이미 export돼 있어야 합니다.
+.venv/bin/python -m bmo_ai.fish_compare --mode free --sample hello
+```
+
+비교 프로그램은 **소리를 자동으로 재생하지 않습니다.** WAV가
+정상 생성되면 Pi의 현재 MAX98357A ALSA 장치에서 직접 듣거나,
+`fish_aaron_tests/bmo-aaron-*/report.html`을 PC에서 열어 들을 수 있습니다.
+
+```bash
+wav_file=$(find fish_aaron_tests -type f -name hello_free.wav -print -quit)
+if [ -n "$wav_file" ]; then
+  aplay -q -D 'plughw:CARD=MAX98357A,DEV=0' "$wav_file"
+else
+  echo "No WAV saved yet; check the previous Fish API error"
+fi
+```
+
+출처: https://docs.fish.audio/developer-guide/compat/capabilities
