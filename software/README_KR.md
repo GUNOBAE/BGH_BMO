@@ -239,3 +239,92 @@ fi
 ```
 
 출처: https://docs.fish.audio/developer-guide/compat/capabilities
+
+## Fish BMO 하이톤/볼륨 조정과 무료 후보 비교 (2026-10-21)
+
+### 볼륨: MAX98357A raw ALSA 우회 방지
+
+`aplay -D plughw:CARD=MAX98357A,DEV=0`은 직접 PCM 장치에
+출력하므로 PipeWire/데스크톱 시스템 음량 조절을 우회할 수 있습니다.
+시스템과 연결된 출력은 `default` 또는 `pipewire`일 수 있지만,
+실제 Pi에서 `wpctl status`, `aplay -L`을 읽고 확인해야 합니다.
+ALSA, PipeWire, 시스템 전체 볼륨 및 부팅 설정은 자동 변경하지 않습니다.
+
+BMO Fish 앱은 기본적으로 `BMO_FISH_GAIN=0.30`을 적용해 임시 WAV의
+PCM 진폭을 30%로 줄여서 보냅니다(출력 전력 30%를 뜻하지 않음).
+원본 WAV 파일에는 손대지 않으며 믹서 설정도 바꾸지 않습니다.
+`--fish-gain 0.2` 처럼 BMO 앱의 TTS만 조절할 수 있습니다.
+기존 OpenAI TTS나 YouTube의 재생 상태는 변경되지 않습니다.
+
+시연용 WAV는 이제 직접 `aplay` 하지 말고 안전 재생기를 사용하세요:
+
+```bash
+cd /home/bgh/BGH_BMO/software
+wav_file=$(find fish_aaron_tests -type f -name hello_free.wav -print -quit)
+if [ -n "$wav_file" ]; then
+  # Pi default ALSA가 desktop PipeWire/Pulse에 연결된 경우 시스템 볼륨도 따라감
+  .venv/bin/python -m bmo_ai.safe_playback "$wav_file" --device default --gain 0.25
+
+  # default가 소리 나지 않으면 확인된 I2S 카드로 25% 소프트웨어 출력
+  # .venv/bin/python -m bmo_ai.safe_playback "$wav_file" --device 'plughw:CARD=MAX98357A,DEV=0' --gain 0.25
+fi
+
+# 읽기 전용 상태 확인
+aplay -L | grep -E '^(default|pipewire|pulse)$'
+command -v wpctl >/dev/null && wpctl status
+```
+
+BMO 대화 실행 예시:
+
+```bash
+.venv/bin/python -m bmo_ai --tts-provider fish --fish-model s2.1-pro-free \
+  --fish-gain 0.30 --speaker-device default
+```
+
+시스템 기본값이 실제 BMO 스피커를 가리키는지는 먼저 재생으로 확인.
+`--speaker-device plughw:CARD=MAX98357A,DEV=0`를 쓰더라도
+새 30% 소프트웨어 게인은 적용되지만 시스템 볼륨 노브와는 별개입니다.
+
+### 새로운 무료 BMO 음색 비교: Aaron / Studio Coille / Nikkooo
+
+같은 영어 대사를 4개 공개 BMO 보이스에 넣어 선택하는 별도
+테스터를 추가했습니다. 같은 성우를 감정별로 교체하지 않으며, 한
+목소리에 낮은 에너지의 연기 지시를 추가한 대안도 제공합니다.
+
+Fish 음성 페이지(기본 샘플은 각 사이트에서 별도 청취):
+- Aaron Hinojosa: https://fish.audio/m/106f41ea392c4cc48c6eee76f69ff17e/
+- Studio Coille: https://fish.audio/m/323847d4c5394c678e5909c2206725f6/
+- Nikkooo: https://fish.audio/m/1ac90ca23d4a45a4b78b0dcc780069c7/
+- Zaccharie Jacquat: https://fish.audio/m/35da70940483488a8f95ade873bf5d20/
+
+```bash
+cd /home/bgh/BGH_BMO/software
+# 무료 후보와 Voice IDs 확인; API 호출 0회
+.venv/bin/python -m bmo_ai.fish_voice_lab --profile all
+
+# 이미 FISH_API_KEY가 export됐을 때, 기본 Aaron 원본 무지시 1회
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile aaron_plain
+
+# Aaron을 조금 차분하게, 지나친 감탄/흥분 지시 없이
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile aaron_soft
+
+# 예전에 음색이 좋았던 Coille에 은은한 장난기를 부여
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile coille_playful
+
+# 전체 6개 프로필을 같은 문장으로 비교 (무료 S2.1 전용, 요청 6회)
+.venv/bin/python -m bmo_ai.fish_voice_lab --mode free --profile all
+```
+
+결과: `fish_voice_trials/bmo-voices-*/listen.html`. Pi에서 만든 WAV를
+PC로 옮기거나 위의 안전 플레이어로 하나씩 들어보면 됩니다.
+음색 비교 대사는 동일하고, `*_soft`/`*_playful`에서만 연기 방향 태그가
+추가됩니다. 태그 없는 버전이 기준입니다. 무료 S2.1만 호출할 수
+있으며 Drama 3 유료 호출 기능은 없습니다. 추가 생성도 사용자가
+명시적으로 실행한 경우에만 진행됩니다. 11월 30일 이후 무료 정책은
+반드시 재확인해야 합니다.
+
+`[excited]`를 연속으로 붙이거나 `Yay!!!`같은 강한 감탄을 반복하면
+원작 BMO의 자연스러운 톤에서 멀어질 수 있습니다.
+예전 Aaron 선택 이유는 장난기/감정 연기였으며, Studio Coille는
+음색이 가깝지만 차분했습니다. 이번 샘플은 이 두 장점을 비교하려는
+것이지 둘을 번갈아 쓰려는 설계가 아닙니다.
