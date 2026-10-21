@@ -23,6 +23,7 @@ def parser():
     result.add_argument("--mute", action="store_true", help="Skip speech synthesis and playback")
     result.add_argument("--tts-provider", choices=("openai", "fish"), help="Which service speaks BMO replies")
     result.add_argument("--fish-model", choices=("s2.1-pro-free", "s2.1-pro", "drama-3"), help="Fish speech engine")
+    result.add_argument("--fish-gain", type=float, help="Fish playback software gain 0..1 (default 0.30)")
     result.add_argument("--log-file", help="Optional rotating JSON event log (no transcript or audio)")
     return result
 
@@ -56,7 +57,7 @@ def main(argv=None, *, client_factory=create_client, input_fn=input, output_fn=p
         return 0
     try:
         settings = {key: value for key, value in os.environ.items() if key.startswith("BMO_")}
-        for field in ("seconds", "mic_device", "speaker_device", "language", "log_file", "tts_provider", "fish_model"):
+        for field in ("seconds", "mic_device", "speaker_device", "language", "log_file", "tts_provider", "fish_model", "fish_gain"):
             if getattr(args, field) is not None:
                 settings[f"BMO_{field.upper()}"] = str(getattr(args, field))
         config = BMOConfig.from_env(settings)
