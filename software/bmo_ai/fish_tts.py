@@ -9,6 +9,7 @@ import json
 import math
 import os
 import re
+import struct
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -18,6 +19,40 @@ from . import audio
 FISH_TTS_URL = "https://api.fish.audio/v1/tts"
 FISH_MODELS = frozenset(("s2.1-pro-free", "s2.1-pro", "drama-3"))
 AARON_BMO_VOICE_ID = "106f41ea392c4cc48c6eee76f69ff17e"
+
+
+
+# The Fish WAV transport may use placeholder sizes instead of actual bytes.
+FISH_RIFF_PLACEHOLDER = 4294967076
+FISH_DATA_PLACEHOLDER = 4294967040
+
+
+def _normalize_fish_wav(path):
+    """Patch Fish's documented placeholder chunk sizes, then validate strictly."""
+    length = path.stat().st_size
+    if not 44 <= length <= audio.MAX_AUDIO_BYTES:
+        return
+    with path.open("r+b") as handle:
+        header = handle.read(12)
+        if header[:4] != b"RIFF" or header[8:12] != b"WAVE":
+            return
+        if struct.unpack_from("<I", header, 4)[0] != FISH_RIFF_PLACEHOLDER:
+            return
+        pos = 12
+        while pos + 8 <= length:
+            handle.seek(pos)
+            tag, count = struct.unpack("<4sI", handle.read(8))
+            start = pos + 8
+            if tag == b"data":
+                if count != FISH_DATA_PLACEHOLDER or start >= length:
+                    raise audio.AudioValidationError("Fish WAV has an invalid data header.", "invalid_wav")
+                handle.seek(4)
+                handle.write(struct.pack("<I", length - 8))
+                handle.seek(pos + 4)
+                handle.write(struct.pack("<I", length - start))
+                return
+            pos = start + count + (count % 2)
+    raise audio.AudioValidationError("Fish WAV has an invalid streaming header.", "invalid_wav")
 
 
 def _error_for_http_status(status: int) -> audio.AudioSynthesisError:
@@ -112,6 +147,7 @@ def synthesize_wav(
             raise audio.AudioSynthesisError("Fish Audio timed out. Check network.", "fish_timeout") from None
         except OSError:
             raise audio.AudioSynthesisError("Fish Audio connection failed. Check network.", "fish_connection") from None
+        _normalize_fish_wav(path)
         info = audio._wav_info(path, allow_streaming_header=True)
         if info["duration_seconds"] > 300:
             raise audio.AudioValidationError("Synthesized speech exceeds five minutes.", "speech_audio_too_long")
