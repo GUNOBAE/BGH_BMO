@@ -374,3 +374,42 @@ cd /home/bgh/BGH_BMO/software
 `bmo_ai.safe_playback`을 이용해 25% 소프트웨어 게인을 적용하세요.
 모든 샘플은 같은 Aaron Voice ID이며, 유료 Drama 3 요청이 불가능합니다.
 실제 결제 조건/음색은 계정과 무료 정책에 따라 다를 수 있습니다.
+
+## Aaron Soft 최종 후보 선정 — 사용자 청취 평가 (2026-10-21)
+
+사용자가 여섯 후보 중 Aaron Soft를 선택했으며, 추가 발음 테스트 결과
+`soft_beemo`와 `soft_bee_mo`를 모두 좋게 평가했습니다.
+`playful_beemo`는 발음은 자연스러웠지만 지나치게 밝아
+기본값에서 제외합니다. Coille / Nikkooo / Zaccharie 및
+원본 Aaron의 고음 문제를 다시 기본값으로 되돌리지 않습니다.
+
+**중요한 실제 대화 개선:** 이전에는 이 Soft 톤이 WAV 테스트에만
+있었습니다. 이제 Fish 실시간 `speak()`에도 청취 때 사용한 바로
+그 Aaron Soft 지시를 기본값 `BMO_FISH_DELIVERY=soft`로 적용합니다.
+기존 GPT 답변 텍스트·대화기록·화면에 노출되는 문장은 수정하지 않고,
+**Fish API로 전송하는 발화에서만** 스타일을 붙이고 독립된 영어
+`BMO`를 `Beemo`로 바꿉니다. 사용자가 평가한 1번과 일치합니다.
+
+2번과 같은 이름 발음을 원하면 `--fish-name-mode bee-mo`를
+사용하세요. 지나친 감정 톤을 되돌리지 않고 스타일만 일시적으로
+해제하려면 `--fish-delivery plain`을 사용합니다.
+이번 변경은 모델 변경·추가 API 호출이나 자동 유료 fallback이
+아닙니다.
+
+```bash
+cd /home/bgh/BGH_BMO/software
+
+# 확인된 MAX98357A 직접 출력: BMO만 25% 소프트웨어 게인
+.venv/bin/python -m bmo_ai --tts-provider fish \
+  --fish-model s2.1-pro-free \
+  --fish-delivery soft --fish-name-mode beemo --fish-gain 0.25 \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+
+# 2번 발음과 비교하려면 --fish-name-mode bee-mo
+# 원래 상태로 되돌리려면 --fish-delivery plain
+```
+
+다음 품질 검증은 새 TTS 모델을 더 찾는 일이 아니라 실제 대화에서
+인사, 질문, 차분한 대화, 감정 표현의 연속성과 발음이 자연스러운지
+보는 것입니다. 실제 Fish 호출은 별도로 사용량에 따라 과금될
+수 있으며 무료 서비스 보장 시점은 2026-11-30까지의 발표 기준입니다.
