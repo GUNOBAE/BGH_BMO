@@ -16,7 +16,7 @@
 
 - 제품 사용 설명: [BMO 작동 구조](../BMO_OPERATION_PLAN_KR.md)
 - 실제 첫 개발 작업: [Codex 1차 통합 작업서](CODEX_INTEGRATION_STAGE1_KR.md)
-- 말투·언어·행동 정직성: [대화·음성 운용 규칙 v1](https://github.com/GUNOBAE/BGH_BMO/blob/c28ab396df6eff77693f8b7d7bd6e63bc21c633e/docs/voice-policy-v1/README_KR.md)
+- 말투·언어·행동 정직성: [대화·음성 운용 규칙 v1](https://github.com/GUNOBAE/BGH_BMO/blob/707c66b8876130be75ad216fa10aaabf2bdcdb56/docs/voice-policy-v1/README_KR.md)
 
 이 문서는 확인 가능한 이전 대화의 최신 결정, GitHub 실제 코드/PR, 최종 얼굴·게임 파일을 대조했다. 모든 과거 대화 원문이나 Pi의 현재 디스크·프로세스를 실시간으로 확인한 것은 아니다. **이번 변경은 문서 정리이며, 로봇의 실행 코드 배포나 실물 통합 완료를 뜻하지 않는다.**
 
@@ -193,7 +193,7 @@ IMU 이상은 별도 작업으로 추적한다. 자동 들림/기울임 반응�
 | `feature/bmo-gpt-benchmark-v1` | `b32bd2a7` | draft PR #8. 모델 비교 자료, 상시 앱 구성 요소 아님 |
 | `feature/bmo-cloud-ai-mvp` | `24fead9e` | draft PR #1. 초기 기반의 역사 자료 |
 | `docs/bmo-cross-chat-handoff-20261021` | `e7a71db4` | draft PR #6. Piper·음성 선택 근거. 구형 얼굴/모델 문구는 최신 결정으로 갱신 |
-| `docs/bmo-voice-policy-v1-20261022` | `c28ab396`에서 정책 3파일 확인 | 별도 프롬프트와 20개 검수 사례. 다른 세션 갱신 중일 수 있어 적용 전 HEAD 확인 |
+| `docs/bmo-voice-policy-v1-20261022` | `707c66b8`, draft PR #10 | 정책·별도 프롬프트·20개 검수 사례·인수인계 4파일. 적용 전 HEAD 확인 |
 | `docs/bmo-product-plan-kr` | `ee8c0715` | PR #3 closed/unmerged, 대체된 미승인 초안. 뒤집힌 버튼 배치나 임의 콘텐츠 수 제한 재사용 금지 |
 
 robust → Fish → Piper → Luna는 순차 계보다. Actions는 Piper에서 따로 갈라졌다. **Piper와 main은 분기했고 main에만 문서 4커밋이 있다.** 음성 브랜치를 main에 통째로 덮어쓰거나 모든 과거 PR을 순서대로 자동 병합하는 방식으로 정리하지 않는다.
@@ -231,7 +231,7 @@ API 키·실제 `.env`·개인 음성/로그·모델 가중치·원작 음원/RO
 - [Luna 계열 실제 ConversationApp](https://github.com/GUNOBAE/BGH_BMO/blob/054ced8f894f25f4cd0a178c2b097b5afe2c8576/software/bmo_ai/app.py), [audio.py](https://github.com/GUNOBAE/BGH_BMO/blob/054ced8f894f25f4cd0a178c2b097b5afe2c8576/software/bmo_ai/audio.py), [PR #9](https://github.com/GUNOBAE/BGH_BMO/pull/9)
 - [Action v0 코드](https://github.com/GUNOBAE/BGH_BMO/blob/b346cc3017ca0ee4cb2162384d1fa1499659739a/software/bmo_ai/actions.py), [계약](https://github.com/GUNOBAE/BGH_BMO/blob/b346cc3017ca0ee4cb2162384d1fa1499659739a/docs/action-system-v0.md), [CI 기록](https://github.com/GUNOBAE/BGH_BMO/actions/runs/39621984389)
 - [기존 하드웨어/IMU 진단 경계](https://github.com/GUNOBAE/BGH_BMO/blob/b346cc3017ca0ee4cb2162384d1fa1499659739a/docs/hardware.md)
-- [음성 정책 v1](https://github.com/GUNOBAE/BGH_BMO/blob/c28ab396df6eff77693f8b7d7bd6e63bc21c633e/docs/voice-policy-v1/README_KR.md), [별도 프롬프트](https://github.com/GUNOBAE/BGH_BMO/blob/c28ab396df6eff77693f8b7d7bd6e63bc21c633e/docs/voice-policy-v1/system-prompt.en.txt), [20개 검수 사례](https://github.com/GUNOBAE/BGH_BMO/blob/c28ab396df6eff77693f8b7d7bd6e63bc21c633e/docs/voice-policy-v1/acceptance-cases.json)
+- [음성 정책 v1](https://github.com/GUNOBAE/BGH_BMO/blob/707c66b8876130be75ad216fa10aaabf2bdcdb56/docs/voice-policy-v1/README_KR.md), [별도 프롬프트](https://github.com/GUNOBAE/BGH_BMO/blob/707c66b8876130be75ad216fa10aaabf2bdcdb56/docs/voice-policy-v1/system-prompt.en.txt), [20개 검수 사례](https://github.com/GUNOBAE/BGH_BMO/blob/707c66b8876130be75ad216fa10aaabf2bdcdb56/docs/voice-policy-v1/acceptance-cases.json)
 - [10월 21일 음성/Piper 인수인계](https://github.com/GUNOBAE/BGH_BMO/blob/e7a71db4505aafe3a973bfa9943d89dad2075ff9/docs/BMO_CROSS_CHAT_HANDOFF_2026-10-21_KR.md)
 - 얼굴·게임: 사용자가 받은 최종 원본 파일을 직접 읽고 위 SHA-256과 ZIP 내용을 확인. 화면 승인은 2026-10-21 사용자 결정, 게임 USB 패드 선택은 같은 날 대화 기록에 근거.
 

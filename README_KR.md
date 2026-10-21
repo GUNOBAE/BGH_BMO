@@ -125,7 +125,7 @@ PCB를 수령한 뒤 **RP2040 버튼·양팔의 개별 동작 시험**까지 진
 
 로컬 AI는 Raspberry Pi에서 실제 구동 시험을 마친 뒤 클라우드 GPT 기반으로 전환했습니다. 현재 [음성 개발 계열](https://github.com/GUNOBAE/BGH_BMO/tree/feature/bmo-luna-low-voice-ab)에 기존 대화·Fish·Piper·Luna 선택 코드가 있습니다. 사용자 선택은 **Luna low + Fish Aaron Soft + Beemo 발음 + PCM gain 0.25**이며 기존 GPT-4.1 mini 실행을 비교·복구용으로 보존합니다. 이 선택이 코드 기본값이나 현재 Pi 배포 설정에 이미 반영됐다는 뜻은 아닙니다.
 
-말투·언어·감정·행동 결과의 발화 규칙은 [대화·음성 운용 규칙 v1](https://github.com/GUNOBAE/BGH_BMO/blob/c28ab396df6eff77693f8b7d7bd6e63bc21c633e/docs/voice-policy-v1/README_KR.md)에 정리했습니다. 최종 얼굴·음성·버튼·팔을 함께 연결한 BMO의 실물 검수는 남아 있습니다.
+말투·언어·감정·행동 결과의 발화 규칙은 [대화·음성 운용 규칙 v1](https://github.com/GUNOBAE/BGH_BMO/blob/707c66b8876130be75ad216fa10aaabf2bdcdb56/docs/voice-policy-v1/README_KR.md)에 정리했습니다. 최종 얼굴·음성·버튼·팔을 함께 연결한 BMO의 실물 검수는 남아 있습니다.
 
 [야간 개발 보고서](https://github.com/GUNOBAE/BGH_BMO/blob/a2f895ea9f078c655f0db1a17d704008bbde7bb5/docs/reports/NIGHTLY_STATUS.md)의 테스트 통과는 해당 작업의 검사 기록이며 **사용자의 최종 승인과 다릅니다.** 상세 작동 방식과 검토 중인 동작은 [별도 계획 페이지](docs/BMO_OPERATION_PLAN_KR.md)에서 정리합니다.
 

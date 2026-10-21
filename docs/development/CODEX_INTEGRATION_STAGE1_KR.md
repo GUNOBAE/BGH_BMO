@@ -15,7 +15,7 @@
 - [통합 기준·계보·합격 기준](BMO_INTEGRATION_2026-10-22_KR.md)
 - 저장소의 실제 `AGENTS.md` 및 해당 경로의 작업 지침
 - 현재 runtime의 `config.py`, `core.py`, `app.py`, `conversation.py`, `audio.py`, `safe_playback.py`, `__main__.py`, 기존 face/UI 연결
-- [음성 정책 원본](https://github.com/GUNOBAE/BGH_BMO/blob/c28ab396df6eff77693f8b7d7bd6e63bc21c633e/docs/voice-policy-v1/README_KR.md)과 별도 프롬프트. 다른 세션에서 갱신 중일 수 있으므로 적용 직전 HEAD/내용 대조
+- [음성 정책 원본](https://github.com/GUNOBAE/BGH_BMO/blob/707c66b8876130be75ad216fa10aaabf2bdcdb56/docs/voice-policy-v1/README_KR.md)과 별도 프롬프트. 다른 세션에서 갱신 중일 수 있으므로 적용 직전 HEAD/내용 대조
 
 ## 1. 현장 조사 후 격리 개발을 계속한다
 
@@ -87,6 +87,8 @@ SHA-256 38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932
 | 백업 | 기존 Piper 원본, opt-in 상태와 실행기/모델 존재 확인 |
 
 `tts_provider=openai` 및 `fish_gain=0.30` 코드 기본값을 그대로 실행해 선택이 바뀌지 않도록 프로필에서 명시한다. `0.25`를 WAV와 브라우저 양쪽에 곱하지 않는다. 무료/유료 가용성을 추측하여 엔진을 자동 변경하지 않는다.
+
+출력 토큰 상한도 기존 기본 180, 최근 실음성 시험 320, 별도 텍스트 벤치마크 600을 구분한다. 실제 성공한 실행 옵션을 확인해 통합 프로필에 명시하고, 벤치마크 숫자를 제품 기본값으로 자동 승격하지 않는다.
 
 말투 규칙은 별도 정책의 원본을 사용하고 기존 `SYSTEM_PROMPT`/언어 지침과 충돌을 제거한다. `english_voice`는 현재 CLI 옵션이 아니므로 필요하면 명시적으로 구현하고 문서화한다. 자동 API 호출로 프롬프트 시험을 대량 실행하지 않는다. 감정 생성이 아직 없으면 중립 및 수동 감정 주입으로 adapter를 검증하고, LLM 감정 자동 선택까지 완료했다고 말하지 않는다.
 
