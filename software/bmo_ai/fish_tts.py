@@ -19,6 +19,9 @@ from . import audio
 FISH_TTS_URL = "https://api.fish.audio/v1/tts"
 FISH_MODELS = frozenset(("s2.1-pro-free", "s2.1-pro", "drama-3"))
 AARON_BMO_VOICE_ID = "106f41ea392c4cc48c6eee76f69ff17e"
+# This exact direction was preferred in Aaron Soft listening samples 1 and 2.
+SOFT_AARON_DIRECTION = "[gentle, warm, slightly lower pitch, still lightly playful] "
+DELIVERY_MODES = frozenset(("soft", "plain"))
 
 
 
@@ -170,6 +173,7 @@ def speak(
     download_timeout: float = 60.0,
     gain: float = 1.0,
     name_mode: str = "beemo",
+    delivery: str = "soft",
     on_playback_start=None,
     cancel_check=None,
 ) -> None:
@@ -181,8 +185,12 @@ def speak(
     from .safe_playback import play_wav, validate_gain
     from .pronunciation import spoken_bmo_name
     validate_gain(gain)
+    if not isinstance(delivery, str) or delivery not in DELIVERY_MODES:
+        raise audio.AudioValidationError("Invalid Fish BMO delivery mode.", "invalid_fish_delivery")
     try:
         spoken_text = spoken_bmo_name(text, name_mode)
+        if delivery == "soft":
+            spoken_text = SOFT_AARON_DIRECTION + spoken_text
     except ValueError:
         raise audio.AudioValidationError("Invalid Fish BMO name pronunciation mode.", "invalid_name_mode") from None
     audio._device_args(device)
