@@ -169,6 +169,7 @@ def speak(
     timeout: float = 30.0,
     download_timeout: float = 60.0,
     gain: float = 1.0,
+    name_mode: str = "beemo",
     on_playback_start=None,
     cancel_check=None,
 ) -> None:
@@ -178,10 +179,15 @@ def speak(
     if not text.strip():
         return
     from .safe_playback import play_wav, validate_gain
+    from .pronunciation import spoken_bmo_name
     validate_gain(gain)
+    try:
+        spoken_text = spoken_bmo_name(text, name_mode)
+    except ValueError:
+        raise audio.AudioValidationError("Invalid Fish BMO name pronunciation mode.", "invalid_name_mode") from None
     audio._device_args(device)
     path = synthesize_wav(
-        text, model=model, reference_id=reference_id,
+        spoken_text, model=model, reference_id=reference_id,
         timeout=timeout, download_timeout=download_timeout,
         cancel_check=cancel_check,
     )
