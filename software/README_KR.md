@@ -482,7 +482,7 @@ API 프로토콜은 그대로임. 모델 접근권한 및 같은 음색이 나�
 실기 시험은 현장 화면·키보드에서만 진행하세요.
 
 ```bash
-.venv/bin/python -m unittest tests.test_local_piper_fallback -v
+.venv/bin/python -m unittest discover -s tests -p 'test_local_piper_fallback.py' -v
 ```
 
 인터넷 없는 완전한 BMO 대화를 원한다면 로컬 마이크 STT 엔진과
