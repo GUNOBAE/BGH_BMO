@@ -47,7 +47,7 @@ with ExitStack() as guards:
 
 
 class IntegrationLauncherTests(unittest.TestCase):
-    def launch(self, *arguments):
+    def launch(self, *arguments, stdin=None):
         # Do not copy or filter a real credential-bearing environment. Construct
         # the complete child environment from public, fixed fields instead.
         with tempfile.TemporaryDirectory() as home:
@@ -60,7 +60,7 @@ class IntegrationLauncherTests(unittest.TestCase):
             }
             return subprocess.run(
                 [sys.executable, "-c", CHILD, *arguments], cwd=ROOT,
-                env=environment, capture_output=True, text=True, timeout=12,
+                env=environment, input=stdin, capture_output=True, text=True, timeout=12,
             )
 
     def test_effective_config_uses_selected_profile_without_parent_environment(self):
@@ -107,6 +107,12 @@ class IntegrationLauncherTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertIn("error:", result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
+
+    def test_repeat_without_a_successful_voice_is_explicit_and_does_not_synthesize(self):
+        result = self.launch("--simulate", "--no-web", stdin="/repeat\n/quit\n")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No successful voice is cached", result.stdout)
+        self.assertNotIn("Unknown command", result.stdout)
 
 
 if __name__ == "__main__":

@@ -65,7 +65,11 @@ class IntegrationVoiceTests(unittest.TestCase):
             voice.speak("Hello BMO.", on_playback_start=lambda: trace.append("callback"))
         gain.assert_called_once()
         self.assertEqual(trace, ["prepared", "callback", "started", "ended"])
-        self.assertTrue(all(not path.exists() for path in raw_paths + ready_paths))
+        self.assertTrue(all(not path.exists() for path in raw_paths))
+        self.assertTrue(voice.has_cache)
+        self.assertTrue(all(path.exists() for path in ready_paths))
+        voice.close()
+        self.assertTrue(all(not path.exists() for path in ready_paths))
         self.client.responses.create.assert_not_called()
 
     def test_simulate_never_uses_real_synthesis_or_devices(self):

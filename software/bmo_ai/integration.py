@@ -75,7 +75,7 @@ def main(argv=None):
             server = FaceServer(args.face_file, snapshot=session.browser_snapshot, port=args.port)
             server.start()
             print("Face: " + server.url, flush=True)
-        print("Commands: Enter=question, /cancel, /reset, /emotion NAME, /quit", flush=True)
+        print("Commands: Enter=question, /cancel, /repeat, /reset, /emotion NAME, /quit", flush=True)
         if args.turns:
             for index in range(args.turns):
                 session.start(f"Synthetic question {index + 1}")
@@ -103,6 +103,9 @@ def main(argv=None):
                 break
             if command == "/cancel":
                 session.cancel()
+            elif command == "/repeat":
+                if not session.repeat():
+                    print("No successful voice is cached, or a turn is still active.")
             elif command == "/reset":
                 session.reset()
             elif command.startswith("/emotion "):

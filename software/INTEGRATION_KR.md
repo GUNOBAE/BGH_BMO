@@ -82,6 +82,8 @@ GPT 호출을 하지 않는다. 한국어·클라우드 실패에는 기존 고�
 
 - 터미널 Enter: 한 턴 시작. live는 고정 길이 녹음부터, simulate는 합성 질문부터 진행.
 - `/cancel`: 현재 턴 무효화, 소유한 player만 종료·회수. 늦은 합성·입 이벤트 폐기.
+- `/repeat`: 세션의 마지막 성공 WAV 한 개를 재합성·추가 GPT·gain 재적용 없이
+  같은 단일 플레이어와 입 cue로 재생. 캐시가 없거나 busy면 시작하지 않는다.
 - `/reset`: 진행 중이면 먼저 취소하고 종료 뒤 대화 문맥 초기화.
 - `/emotion crying` 등: neutral/happy/angry/sad/crying/surprised 수동 감정 확인.
 - `/quit`, Ctrl-C, 터미널 EOF: 앱 소유 작업과 loopback 서버 정리. 다른 앱·서비스 유지.
@@ -91,6 +93,11 @@ GPT 호출을 하지 않는다. 한국어·클라우드 실패에는 기존 고�
   연결이 끊긴 활성 턴은 취소된다. 새로 연 페이지는 출력된 같은 URL을 사용한다.
 - launcher는 사용자별 lock으로 중복 실행을 거부한다. 강제 프로세스 일괄 종료나
   lock 파일 삭제 대신 기존 launcher의 `/quit`를 사용한다.
+
+캐시는 비공개 임시 WAV 한 개이며 성공 재생 뒤에만 교체한다. 합성·재생 실패나
+취소는 이전 성공 캐시를 유지한다. 반복 중에도 취소·중복 차단이 적용되며
+문맥은 변하지 않는다. `/reset`과 앱 종료는 캐시를 정리한다. 음성을 장기 보관하는
+DB가 아니며 강제 종료·시스템 장애 뒤의 정리는 정상 종료와 구분한다.
 
 Python/ALSA만 음성을 출력하며 browser의 playAudio/playBlob/media play를 쓰지
 않는다. gain은 최종 WAV에 한 번 적용하고 해당 WAV의 envelope로 입 cue를 만든다.

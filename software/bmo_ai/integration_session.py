@@ -10,6 +10,7 @@ import time
 from uuid import uuid4
 
 from .app import ConversationApp
+from .audio import AudioPlaybackError
 from .conversation import ConversationWorker, TurnCancelled
 from .cloud import CloudError
 from .hardware import FaceState
@@ -67,6 +68,32 @@ class IntegrationApp(ConversationApp):
             raise
 
 
+class RepeatApp(ConversationApp):
+    """Worker-compatible cached playback: no pretend listening or brain call."""
+    def voice_input(self):
+        self._check_cancelled()
+        self._state(FaceState.THINKING)
+        return "cached-audio"  # Internal worker stage token, never a transcript.
+
+    def answer(self, message):
+        self._check_cancelled()
+        return message
+
+    def playback(self, answer):
+        try:
+            self._check_cancelled()
+
+            def started():
+                self._check_cancelled()
+                self._state(FaceState.SPEAKING)
+                self._check_cancelled()
+
+            if not self.voice.repeat(on_playback_start=started):
+                raise AudioPlaybackError("No cached session audio is available.", "no_cached_audio")
+        finally:
+            self.idle()
+
+
 class IntegrationSession:
     def __init__(self, config, client, *, simulate=False, voice=None, brain=None,
                  clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0):
@@ -76,6 +103,7 @@ class IntegrationSession:
         self.session_id = uuid4().hex
         self._lock = Lock()
         self._closed = self._active = self._pending_reset = False
+        self._repeat = False
         self._started = self._browser_seen = None
         self._turn = 0
         self._data = dict(session_id=self.session_id, turn_id=None,
@@ -157,7 +185,11 @@ class IntegrationSession:
 
         def emit(kind, **fields):
             check()
-            cues = wav_cues(fields["path"]) if kind == "prepared" else None
+            cues = None
+            if kind == "prepared":
+                cues = fields.get("cues")
+                if cues is None:  # Compatibility for an injected voice adapter.
+                    cues = wav_cues(fields["path"])
             check()
             with self._lock:
                 if not self._active or turn != self._turn:
@@ -174,12 +206,23 @@ class IntegrationSession:
                 self._record(kind)
 
         self.voice.cancel_check, self.voice.emit = check, emit
-        return IntegrationApp(self.brain, self.client, self.config,
-                               face=SessionFace(), voice=self.voice, cancel_check=check)
+        app = RepeatApp if self._repeat else IntegrationApp
+        return app(self.brain, self.client, self.config,
+                   face=SessionFace(), voice=self.voice, cancel_check=check)
 
     def start(self, message="A synthetic question"):
+        return self._start_turn(message=message)
+
+    def repeat(self):
+        """Admit one cached playback turn; empty/closed/busy returns False."""
+        if not getattr(self.voice, "has_cache", False):
+            return False
+        return self._start_turn(repeat=True)
+
+    def _start_turn(self, *, message=None, repeat=False):
         if self._closed or self.worker.busy:
             return False
+        self._repeat = repeat
         with self._lock:
             self._turn = self.worker.turn + 1
             self._active = True
@@ -188,7 +231,8 @@ class IntegrationSession:
                               utterance_id=f"{self.session_id}:{self._turn}:1",
                               phase="idle", playback="idle", position=0.0, cues=[])
             self._record("turn_started")
-        self.voice.message = message
+        if not repeat:
+            self.voice.message = message
         return self.worker.start()
 
     def cancel(self):
@@ -244,6 +288,8 @@ class IntegrationSession:
             return
         self.cancel()
         self._closed = True
+        if hasattr(self.voice, "clear_cache"):
+            self.voice.clear_cache()
         self.worker.close()
         thread = self.worker._thread
         if thread is not None:

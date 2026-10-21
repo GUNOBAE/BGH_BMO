@@ -17,6 +17,7 @@ import wave
 from . import audio, fish_tts, local_piper
 from .app import OFFLINE_KOREAN_UNSUPPORTED_EN, OFFLINE_NOTICE_EN
 from .conversation import TurnCancelled
+from .integration_face import wav_cues
 from .pronunciation import spoken_bmo_name
 from .safe_playback import attenuated_copy, validate_gain
 
@@ -71,6 +72,23 @@ class IntegrationVoice:
         self._idle = Event()
         self._idle.set()
         self._speaking = Lock()
+        self._cache_lock = Lock()
+        self._cache = None
+        self._cache_generation = 0
+
+    @property
+    def has_cache(self):
+        """Whether this open session retains its last successful gained WAV."""
+        with self._cache_lock:
+            return not self._closed.is_set() and self._cache is not None
+
+    def clear_cache(self):
+        """Forget the sole private WAV and reject any in-flight cache promotion."""
+        with self._cache_lock:
+            previous, self._cache = self._cache, None
+            self._cache_generation += 1
+        if previous is not None:
+            audio._discard(previous["path"], suppress=True)
 
     def _check(self, cancellation):
         if self._closed.is_set():
@@ -131,6 +149,8 @@ class IntegrationVoice:
         if not self._speaking.acquire(blocking=False):
             raise audio.AudioPlaybackError("The voice player is busy.", "player_busy")
         self._idle.clear()
+        with self._cache_lock:
+            generation = self._cache_generation
         cancellation, emit = self.cancel_check, self.emit
         check = lambda: self._check(cancellation)
         raw = output = None
@@ -144,27 +164,19 @@ class IntegrationVoice:
             check()
             output = attenuated_copy(raw, self.config.fish_gain)
             info = audio._wav_info(output)
+            cues = tuple(dict(cue) for cue in wav_cues(output))
+            self._play(output, source, info, cues, check, emit, on_playback_start)
             check()
-            emit("prepared", path=str(output), source=source)
-            check()
-
-            def started():
-                check()
-                if on_playback_start is not None:
-                    on_playback_start()
-                check()
-                emit("started", path=str(output), source=source)
-
-            if self.simulate:
-                command = [sys.executable, "-c", "import time; time.sleep(0.8)"]
-            else:
-                command = ["aplay", "-q", *audio._device_args(self.config.speaker_device), str(output)]
-            player = self._player or audio._run
-            player(command, timeout=info["duration_seconds"] + 10,
-                   error_type=audio.AudioPlaybackError, on_start=started,
-                   cancel_check=check, env=_player_environment())
-            check()
-            emit("ended", source=source)
+            # A failed/cancelled replacement keeps the previous successful WAV.
+            # Promotion transfers the final gained file, without another copy.
+            previous = None
+            with self._cache_lock:
+                if generation == self._cache_generation and not self._closed.is_set():
+                    previous, self._cache = self._cache, dict(
+                        path=output, source=source, info=info, cues=cues)
+                    output = None
+            if previous is not None:
+                audio._discard(previous["path"], suppress=True)
         except (TurnCancelled, KeyboardInterrupt):
             emit("cancelled", source=source)
             raise
@@ -175,6 +187,62 @@ class IntegrationVoice:
             for path in (output, raw):
                 if path is not None:
                     audio._discard(Path(path), suppress=True)
+            self._speaking.release()
+            self._idle.set()
+
+    def _play(self, output, source, info, cues, check, emit, on_playback_start):
+        """The only player/event path, shared by a new utterance and repeat."""
+        check()
+        emit("prepared", path=str(output), source=source,
+             cues=[dict(cue) for cue in cues])
+        check()
+
+        def started():
+            check()
+            if on_playback_start is not None:
+                on_playback_start()
+            check()
+            emit("started", path=str(output), source=source)
+
+        if self.simulate:
+            command = [sys.executable, "-c", "import time; time.sleep(0.8)"]
+        else:
+            command = ["aplay", "-q", *audio._device_args(self.config.speaker_device), str(output)]
+        player = self._player or audio._run
+        player(command, timeout=info["duration_seconds"] + 10,
+               error_type=audio.AudioPlaybackError, on_start=started,
+               cancel_check=check, env=_player_environment())
+        check()
+        emit("ended", source=source)
+
+    def repeat(self, *, on_playback_start=None):
+        """Play the exact last success, without synthesis, gain or cue rebuild.
+
+        Return False without spawning when empty/closed/busy. A failed or
+        cancelled repeat retains the cache for the next explicit request.
+        """
+        if not self._speaking.acquire(blocking=False):
+            return False
+        self._idle.clear()
+        cancellation, emit = self.cancel_check, self.emit
+        check = lambda: self._check(cancellation)
+        source = None
+        try:
+            with self._cache_lock:
+                cached = self._cache
+            if cached is None or self._closed.is_set():
+                return False
+            source = cached["source"]
+            self._play(cached["path"], source, cached["info"], cached["cues"],
+                       check, emit, on_playback_start)
+            return True
+        except (TurnCancelled, KeyboardInterrupt):
+            emit("cancelled", source=source)
+            raise
+        except BaseException:
+            emit("error", source=source)
+            raise
+        finally:
             self._speaking.release()
             self._idle.set()
 
@@ -191,4 +259,6 @@ class IntegrationVoice:
         whether the current operation has completed its cleanup.
         """
         self._closed.set()
-        return self._idle.wait(0.5)
+        stopped = self._idle.wait(0.5)
+        self.clear_cache()
+        return stopped
