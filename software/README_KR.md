@@ -413,3 +413,79 @@ cd /home/bgh/BGH_BMO/software
 인사, 질문, 차분한 대화, 감정 표현의 연속성과 발음이 자연스러운지
 보는 것입니다. 실제 Fish 호출은 별도로 사용량에 따라 과금될
 수 있으며 무료 서비스 보장 시점은 2026-11-30까지의 발표 기준입니다.
+
+## 오프라인 Piper BMO 음성 백업 (별도 브랜치, 2026-10-21)
+
+**안정된 Fish Aaron Soft 브랜치는 그대로 유지.** 이 기능은
+`feature/bmo-local-piper-fallback`에서 실험하며, 기존 로컬 실험
+`~/bmo-voice-test/piper/piper`,
+`~/bmo-voice-test/bmo-piper/en_US-bmo_voice.onnx` 및
+`.onnx.json`을 **읽기만 합니다.** 별도 패키지를 설치하거나
+기존 파일을 수정하지 않고, BMO Python .venv도 교체하지 않습니다.
+
+상황에 따른 결과:
+- 정상 인터넷: 기존 GPT + Fish Aaron Soft + Beemo 발음, 게인 0.25 유지
+- GPT 답변 생성 성공, Fish 음성만 실패: 해당 GPT **영어** 답변을
+  로컬 Piper로 다시 읽음. Fish 요청을 반복하거나 유료 Fish 모델로
+  자동 변경하지 않음. 한국어 답변은 현재 영어 로컬 Piper가 읽을 수
+  없으므로 짧은 영어 안내 음성만 출력
+- OpenAI STT나 GPT 네트워크/서버/사용량 제한 오류: 음성 인식 및 대화
+  답변을 로컬에서 생성할 수 없으므로 로컬 Piper가 **고정된 오프라인
+  안내 문구**만 읽음. 따라서 인터넷 없이 자유로운 대화는 아직 불가
+- 인증 실패/모델 설정 오류/스피커 재생 오류: 네트워크 끊김으로
+  오판하지 않음. 오류를 출력하고 자격 증명/장치를 확인하도록 함
+
+기본값 `BMO_OFFLINE_VOICE=false`. 다음과 같이 명시적으로
+`--offline-voice`를 사용할 때만 자동으로 로컬 백업이 실행됩니다.
+
+### 1. 이미 설치된 Piper 검사 및 완전 로컬 음성 청취
+
+```bash
+cd /home/bgh/BGH_BMO/software
+.venv/bin/python -m bmo_ai.local_piper --check
+
+# OpenAI/Fish 키 및 인터넷이 없어도 작동하는 독립 음성 테스트
+.venv/bin/python -m bmo_ai.local_piper \
+  --say "Hi! I'm Beemo. My internet is sleeping." \
+  --device 'plughw:CARD=MAX98357A,DEV=0' --gain 0.25
+```
+
+검사가 모두 OK여야 백업이 가능. Python 프로그램은 모델 파일을
+변경하거나 온라인 요청을 하지 않으며, 생성 WAV는 재생 후 삭제됨.
+실제 Pi 모델 경로가 다르면 환경변수
+`BMO_LOCAL_PIPER_BINARY` / `BMO_LOCAL_PIPER_MODEL`로 지정.
+
+### 2. 기존 클라우드 대화에 백업 옵션 연결
+
+```bash
+cd /home/bgh/BGH_BMO/software
+
+.venv/bin/python -m bmo_ai \
+  --tts-provider fish \
+  --fish-model s2.1-pro-free \
+  --fish-delivery soft \
+  --fish-name-mode beemo \
+  --fish-gain 0.25 \
+  --offline-voice \
+  --mic-device 'plughw:CARD=Device,DEV=0' \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+```
+
+Fish 유료 전환은 위 명령의 `--fish-model s2.1-pro`만 변경하면
+API 프로토콜은 그대로임. 모델 접근권한 및 같은 음색이 나는지
+한 번 검증해야 함. 로컬 Piper와는 다른 성우이므로 백업시 음색이
+바뀌는 것은 정상.
+
+**주의:** SSH로 원격 접속 중 네트워크를 강제로 끊어서 시험하지
+마세요. 연결도 동시에 끊어질 수 있습니다. 우선 `--check`,
+`--say`와 오프라인 단위 테스트로 기능을 검증하고, 인터넷 장애
+실기 시험은 현장 화면·키보드에서만 진행하세요.
+
+```bash
+.venv/bin/python -m unittest tests.test_local_piper_fallback -v
+```
+
+인터넷 없는 완전한 BMO 대화를 원한다면 로컬 마이크 STT 엔진과
+로컬 LLM/규칙 기반 대화 모듈도 추가해야 합니다. 이전에 느리고
+부정확했던 Pi 5 로컬 3B 모델을 강제로 다시 도입하지는 않습니다.
+현재 Piper 음성의 외부 공개/협찬 영상 사용 권리도 별도 확인 필요.
