@@ -2,7 +2,7 @@
 
 기준일: **2026-10-22 KST**
 
-> **현재 작업 순서:** [Pi 현황 점검 작업서](CODEX_PI_PREFLIGHT_KR.md)에 따라 기존 작업 폴더와 장치를 읽기 전용으로 확인하고, 지정 GitHub 브랜치에 보고서 한 개를 올린다. 아래 통합 구현은 그 보고서 검토 후의 다음 단계다. 이번 지시로 전체 브랜치를 병합하거나 장치를 실행하지 않는다.
+> **현재 상태: Pi 현황 점검과 보고서 검토 완료.** [2026-10-22 02:48–02:58 KST 현장 보고서](https://github.com/GUNOBAE/BGH_BMO/blob/0bfb8bd4b4d99bffb9ba479eab6b8b7f62ac25b4/docs/reports/PI_PREFLIGHT_LATEST_KR.md)를 직접 읽고 업로드 커밋이 보고서 한 파일만 추가했음을 확인했다. 다음 작업은 승인 얼굴의 Pi 전달·해시 확인과 격리된 1차 통합 개발이다. 아래는 그 작업의 기준이며, 이번 보고서 검토에서 코드 병합이나 장치 실행을 수행한 것은 아니다.
 
 ## 결론부터
 
@@ -17,18 +17,34 @@
 사용자에게 필요한 첫 결과는 새 기능 목록이 아니라 **대기 → 듣기 → 생각 → 음성과 입 동작 → 대기**, 그리고 중간에 멈출 수 있는 한 흐름이다.
 
 - 제품 사용 설명: [BMO 작동 구조](../BMO_OPERATION_PLAN_KR.md)
-- 지금 실행할 작업: [Codex Pi 현황 점검과 GitHub 보고](CODEX_PI_PREFLIGHT_KR.md)
-- 현황 보고 검토 후의 개발 작업: [Codex 1차 통합 작업서](CODEX_INTEGRATION_STAGE1_KR.md)
+- 완료한 점검의 절차: [Codex Pi 현황 점검과 GitHub 보고](CODEX_PI_PREFLIGHT_KR.md)
+- 준비된 다음 개발 작업: [Codex 1차 통합 작업서](CODEX_INTEGRATION_STAGE1_KR.md)
 - 말투·언어·행동 정직성: [대화·음성 운용 규칙 v1](https://github.com/GUNOBAE/BGH_BMO/blob/707c66b8876130be75ad216fa10aaabf2bdcdb56/docs/voice-policy-v1/README_KR.md)
 
 이 문서는 확인 가능한 이전 대화의 최신 결정, GitHub 실제 코드/PR, 최종 얼굴·게임 파일을 대조했다. 모든 과거 대화 원문이나 Pi의 현재 디스크·프로세스를 실시간으로 확인한 것은 아니다. **이번 변경은 문서 정리이며, 로봇의 실행 코드 배포나 실물 통합 완료를 뜻하지 않는다.**
+
+### Pi 보고서 검토로 확정된 출발점
+
+| 항목 | 이번 현장 보고서와 검토 결과 | 후속 처리 |
+|---|---|---|
+| 기존 음성 폴더 | `/home/bgh/BGH_BMO`, Piper 브랜치 `7bed6d02`, clean | 현재 폴더·설정·복귀 경로 보존 |
+| Luna 폴더 | `/home/bgh/BMO_LUNA_AB`, `054ced8f`, tracked 변경 없음. 미추적 `logs/voice_41.jsonl`, `logs/voice_luna.jsonl` 존재 | 새 통합 폴더의 소스 기준. 두 로그는 수정·이동·업로드하지 않음 |
+| Action 폴더 | `/home/bgh/BGH_BMO_ACTIONS`, v0 `b346cc30`, clean | 5개 Mock 계약 보존. 첫 얼굴·음성 연결 뒤에 적용 |
+| 음성 선택 | Luna low/Fish Aaron Soft/beemo/gain 0.25는 유지. 이번 실행 적용값은 미확인 | 선택을 다시 요구하지 않고 새 통합 실행기에 명시. `.env`만 작성해서 적용 완료라고 하지 않음 |
+| Piper | 원본 ONNX·JSON·실행 파일과 현재 해시 확인 | 원본 보존. 별도 백업 사본의 현재 존재·동일성은 미확인으로 유지 |
+| 최종 얼굴 | Pi 한정 탐색에서 정확명 미발견. ChatGPT가 확보한 승인 HTML/ZIP은 위 기준 해시와 재대조 완료 | 승인 HTML 한 개를 Pi에 비공개 전달하고 경로·해시 확인. 이전 시안 대체나 재디자인 없음 |
+| 연결 코드 | 얼굴 브리지·입 이벤트·재생 중 즉시 취소·새 언어 정책 적용 미구현 | 아래 Stage 1 개발 범위. 사용자에게 해결할 준비물로 넘기지 않음 |
+
+Piper 음성 fallback과 별도의 모델 파일 백업은 다른 개념이다. 이번에 `/home/bgh/BMO_backups` 내부를 확인하지 않았으므로 백업이 없다고 결론 내리지 않는다. 표준 `.env`나 식별 가능한 실행 프로세스가 없었다는 관찰도 기존 실음성 성공을 취소하지 않는다.
+
+다음 개발 전에 HEAD·dirty 상태·작업 지침의 변동만 재확인한다. 같은 전체 preflight를 반복할 필요는 없다. 게임 패키지·RP2040·카메라·팔·IMU는 첫 얼굴·음성 코드 연결의 선행 조건이 아니다. 실제 장치 검수는 별도 단계로 남긴다.
 
 ## 1. 확정된 것과 실제 완성도를 나눠 보기
 
 | 부분 | 확정된 방향·확인된 결과 | 아직 남은 일 |
 |---|---|---|
-| 얼굴 | `BMO_Screen_v13_2.html`, 10월 21일 사용자 최종 시각/동작 승인. 원본·ZIP 실제 확보 및 대조 | Pi 음성 이벤트 연결, 실제 화면·오디오 동기화 |
-| 메인 대화 | 클라우드 GPT/STT + Fish의 Pi 대화 성공 이력. Luna low 실음성 비교 후 사용 선택 | 통합 실행 프로필에 선택 반영, 현재 Pi 체크아웃·설정 대조 |
+| 얼굴 | `BMO_Screen_v13_2.html`, 10월 21일 사용자 최종 시각/동작 승인. 원본·ZIP 실제 확보 및 대조 | Pi 원본 전달·해시 확인, 음성 이벤트 연결, 실제 화면·오디오 동기화 |
+| 메인 대화 | 클라우드 GPT/STT + Fish의 Pi 대화 성공 이력. Luna low 실음성 비교 후 사용 선택. Pi 체크아웃 SHA 대조 완료 | 통합 실행 프로필에 선택 반영, 실제 유효 설정·장치 경로 검수 |
 | 메인 목소리 | Fish Aaron 한 목소리, `soft`, `beemo`, PCM gain `0.25` | 통합에서 같은 출력 유지, 오류·중단 검수 |
 | 대화 규칙 | 별도 프롬프트·언어 정책·20개 검수 사례가 GitHub에 작성됨 | 런타임 적용과 실제 청취/대화 검수. 사례 작성은 통과 결과가 아님 |
 | 로컬 백업 | Piper 원본 ONNX/기본 추론 설정 선택, 음색 보정 실험 종료 | opt-in 자동 장애 전환을 Pi에서 검증. 오프라인 두뇌/STT는 없음 |
@@ -230,6 +246,7 @@ API 키·실제 `.env`·개인 음성/로그·모델 가중치·원작 음원/RO
 
 날짜와 커밋을 고정해 다른 세션에서도 같은 근거를 볼 수 있게 한다. 브랜치 HEAD는 계속 변할 수 있다.
 
+- [2026-10-22 Pi 현황 점검 보고서](https://github.com/GUNOBAE/BGH_BMO/blob/0bfb8bd4b4d99bffb9ba479eab6b8b7f62ac25b4/docs/reports/PI_PREFLIGHT_LATEST_KR.md): 실제 경로·Git·AGENTS·원본 Piper·미확인 설정/얼굴·인터페이스 충돌. 관찰 당시 자료이며 상시 상태 조회가 아님.
 - [기존 main의 README/하드웨어와 작동 방향](https://github.com/GUNOBAE/BGH_BMO/tree/161a2ebd99b21ddc31e4cbf6b1cbd4452967e264)
 - [Luna 계열 실제 ConversationApp](https://github.com/GUNOBAE/BGH_BMO/blob/054ced8f894f25f4cd0a178c2b097b5afe2c8576/software/bmo_ai/app.py), [audio.py](https://github.com/GUNOBAE/BGH_BMO/blob/054ced8f894f25f4cd0a178c2b097b5afe2c8576/software/bmo_ai/audio.py), [PR #9](https://github.com/GUNOBAE/BGH_BMO/pull/9)
 - [Action v0 코드](https://github.com/GUNOBAE/BGH_BMO/blob/b346cc3017ca0ee4cb2162384d1fa1499659739a/software/bmo_ai/actions.py), [계약](https://github.com/GUNOBAE/BGH_BMO/blob/b346cc3017ca0ee4cb2162384d1fa1499659739a/docs/action-system-v0.md), [CI 기록](https://github.com/GUNOBAE/BGH_BMO/actions/runs/39621984389)

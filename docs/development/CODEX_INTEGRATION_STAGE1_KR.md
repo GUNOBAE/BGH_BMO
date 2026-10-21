@@ -2,26 +2,27 @@
 
 기준일: **2026-10-22 KST**
 
-> **현재는 구현 전 점검 단계다.** 사용자의 최신 지시는 실제 Pi 경로·브랜치·git status·AGENTS.md·인터페이스와 충돌을 먼저 보고하는 것이다. 지금은 [Pi 현황 점검 작업서](CODEX_PI_PREFLIGHT_KR.md)를 수행하고 지정 GitHub 보고서를 올린 뒤 마친다. 이 문서의 구현·테스트 지시는 그 보고서 검토 후의 다음 작업이며, 이번 점검에서 실행하지 않는다.
+> **Pi 사전 점검과 보고서 검토가 완료됐다.** [현장 보고서 `0bfb8bd4`](https://github.com/GUNOBAE/BGH_BMO/blob/0bfb8bd4b4d99bffb9ba479eab6b8b7f62ac25b4/docs/reports/PI_PREFLIGHT_LATEST_KR.md)를 기준으로 아래 다음 구현 작업을 준비했다. 동일한 전체 점검을 다시 할 필요는 없다. 이 문서 갱신 자체가 Pi 구현·배포·장치 실행을 시작했다는 뜻은 아니다. 사용자가 후속 구현을 지시할 때 격리된 폴더에서 아래 범위로 진행한다.
 
 ## 목표
 
 기존 BGH_BMO의 대화·Fish 재생에 **사용자 승인 `BMO_Screen_v13_2.html`을 연결**한다. 첫 결과는 수동으로 실행 가능한 하나의 앱이다.
 
-이후 구현 단계의 목표는 **대기 → 듣기(질문 녹음 중) → 생각 → 실제 음성 재생과 입 동작 → 대기**, 그리고 취소·오류·앱 종료 시 올바른 정리다. 실제 작업 범위는 사용자의 최신 지시를 따른다. 현재의 읽기 전용 인수인계 지시를 이 문서로 확대하지 않는다.
+이후 구현 단계의 목표는 **대기 → 듣기(질문 녹음 중) → 생각 → 실제 음성 재생과 입 동작 → 대기**, 그리고 취소·오류·앱 종료 시 올바른 정리다. 실제 작업 범위는 사용자의 최신 지시를 따른다. 완료한 읽기 전용 인수인계나 당시 권한 허용을 전체 브랜치 병합·장치 실행 허가로 확대하지 않는다.
 
 이 문서는 실행 명령 자체가 아니며, 읽었다는 이유로 코드가 바뀌지는 않는다. Pi Codex에게 이 문서 전체 또는 아래의 짧은 지시를 전달해 작업한다.
 
 ## 0. 먼저 읽을 것
 
 - [통합 기준·계보·합격 기준](BMO_INTEGRATION_2026-10-22_KR.md)
+- [완료한 Pi 현황 점검 보고서](https://github.com/GUNOBAE/BGH_BMO/blob/0bfb8bd4b4d99bffb9ba479eab6b8b7f62ac25b4/docs/reports/PI_PREFLIGHT_LATEST_KR.md)
 - 저장소의 실제 `AGENTS.md` 및 해당 경로의 작업 지침
 - 현재 runtime의 `config.py`, `core.py`, `app.py`, `conversation.py`, `audio.py`, `safe_playback.py`, `__main__.py`, 기존 face/UI 연결
 - [음성 정책 원본](https://github.com/GUNOBAE/BGH_BMO/blob/707c66b8876130be75ad216fa10aaabf2bdcdb56/docs/voice-policy-v1/README_KR.md)과 별도 프롬프트. 다른 세션에서 갱신 중일 수 있으므로 적용 직전 HEAD/내용 대조
 
-## 1. 현장 조사 후 격리 개발을 계속한다
+## 1. 상태 변동만 재확인하고 격리 개발한다
 
-알려진 Pi 경로는 `/home/bgh/BGH_BMO`, `/home/bgh/BGH_BMO_ACTIONS`, `/home/bgh/BMO_LUNA_AB`다. 실제 존재 여부와 각각의 remote/branch/HEAD/dirty 상태를 확인한다. `BGH_BMO_ACTIONS`는 같은 GitHub 저장소의 작업 폴더다. `.env` 값이나 API 키를 출력하지 않는다.
+현장 확인 기준은 `/home/bgh/BGH_BMO`=Piper `7bed6d02` clean, `/home/bgh/BGH_BMO_ACTIONS`=Action v0 `b346cc30` clean, `/home/bgh/BMO_LUNA_AB`=Luna `054ced8f` tracked 변경 없음이다. Luna의 미추적 `logs/voice_41.jsonl`, `logs/voice_luna.jsonl`은 그대로 보존하고 읽거나 업로드하지 않는다. 작업 직전 `GIT_OPTIONAL_LOCKS=0 git -C <실제 경로>`로 remote/HEAD/status와 적용 지침의 변동만 재확인한다. `BGH_BMO_ACTIONS`는 같은 GitHub 저장소의 작업 폴더다. API 키나 인증 설정을 출력하지 않는다.
 
 현재 실행 중인 BMO 프로세스, ALSA 입력/출력 이름, 화면 세션을 읽기 전용으로 파악한다. 기존 서비스/펌웨어를 시작하거나 재시작하지 않는다. RP2040의 `code.py` 재시작은 팔 동작을 일으킬 수 있어 이 단계에서 하지 않는다.
 
@@ -29,14 +30,16 @@
 
 `feature/bmo-action-lab`나 모델 benchmark를 상시 앱에 병합하지 않는다. Action v0는 다음 단계에서 연결한다. 기존 독립 브랜치를 삭제·rebase·force-push하지 않는다.
 
-원본 얼굴을 기존 BMO 폴더/다운로드/사용자 제공 위치에서 찾고 다음 해시와 대조한다.
+Pi의 이전 한정 탐색에서는 승인 얼굴을 찾지 못했다. ChatGPT가 보관 중인 승인 원본을 재전달하므로 사용자에게 원본을 다시 찾아 제출하라고 요구하지 않는다. 전달된 경로를 명시적으로 인수하고 다음 해시와 대조한다. 전달 위치 후보는 `/home/bgh/Downloads/BMO_Screen_v13_2.html` 또는 사용자가 지정한 한 경로다. 이미 정한 범위의 전체 파일 검색을 반복하지 않는다.
 
 ```text
 BMO_Screen_v13_2.html
 SHA-256 38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932
 ```
 
-원본이 없으면 이전 버전을 대신 채택하거나 비슷한 얼굴을 새로 만들지 않는다. 원본 없이 가능한 코드 조사·adapter 경계·모의 검사를 먼저 끝내고, 필요한 것은 **이 파일 하나의 위치/전달**이라고 짧게 보고한다. 원본은 공개 Git에 넣지 않고 실행 시 지정하는 로컬 파일로 사용한다.
+원본이 아직 전달되지 않았으면 이전 버전을 대신 채택하거나 비슷한 얼굴을 새로 만들지 않는다. 원본 없이 가능한 코드 조사·adapter 경계·모의 검사를 먼저 끝내고, 실제 승인 얼굴을 이용한 검증은 파일 전달 후 수행한다. 원본은 공개 Git에 넣지 않고 실행 시 지정하는 로컬 파일로 사용한다. 게임 ZIP은 이 단계의 필수 준비물이 아니다.
+
+Piper 원본 `/home/bgh/bmo-voice-test/bmo-piper/en_US-bmo_voice.onnx`와 대응 JSON·실행 파일은 현장에서 확인됐다. 모델 SHA-256 `2b323dfdd76efb36b096b93ef8a6f0a60a26886aaaeeba97e691c13641611fb8`, JSON `0786c36ebf1ffc2b6979391941d64bd2ed0279bd0114654d980ad957ec914776`은 이번 관찰 기준이며 과거 승인 해시라고 확대하지 않는다. 원본을 수정하지 않는다. 별도 `/home/bgh/BMO_backups` 사본의 현재 검증은 후속 보존 점검이며, 음성 fallback 코드가 있다는 사실과 구분한다.
 
 ## 2. 이번에 구현할 것
 
@@ -76,12 +79,12 @@ SHA-256 38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932
 
 ### D. 통합 실행 프로필과 대화 규칙
 
-사용자 선택을 명시하는 통합 프로필을 둔다. 기존 실행 설정/`.env` 원본을 덮어쓰지 않는다.
+사용자 선택을 명시하는 통합 프로필을 둔다. 기존 실행 설정/`.env` 원본을 덮어쓰지 않는다. 현재 config는 dotenv를 로드하지 않으므로 `.env` 파일만 작성해서 적용됐다고 처리하지 않는다. 통합 launcher가 CLI 옵션 또는 명시한 설정 로더로 값을 실제 전달하고, 비밀값을 제외한 유효 설정을 확인할 수 있게 한다. 현재 실행값 미확인을 이유로 이미 선택한 모델·목소리를 사용자에게 다시 고르게 하지 않는다.
 
 | 항목 | 값 |
 |---|---|
 | GPT | `gpt-6-luna`, `low` |
-| 수동 비교/복귀 | 기존 `gpt-4.1-mini` |
+| 수동 비교/복귀 | 기존 `gpt-4.1-mini`, reasoning은 unset/None |
 | STT | 기존 `gpt-4o-mini-transcribe` |
 | TTS | `fish`, 기존 Aaron reference |
 | Fish | 시험한 `s2.1-pro-free`, `soft`, `beemo` |
@@ -89,6 +92,8 @@ SHA-256 38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932
 | 백업 | 기존 Piper 원본, opt-in 상태와 실행기/모델 존재 확인 |
 
 `tts_provider=openai` 및 `fish_gain=0.30` 코드 기본값을 그대로 실행해 선택이 바뀌지 않도록 프로필에서 명시한다. `0.25`를 WAV와 브라우저 양쪽에 곱하지 않는다. 무료/유료 가용성을 추측하여 엔진을 자동 변경하지 않는다.
+
+4.1 mini로 비교·복귀할 때 Luna의 `low` reasoning이 남으면 현재 validation이 거부한다. 모델만 바꾸지 말고 reasoning도 unset/None으로 정리한다.
 
 출력 토큰 상한도 기존 기본 180, 최근 실음성 시험 320, 별도 텍스트 벤치마크 600을 구분한다. 실제 성공한 실행 옵션을 확인해 통합 프로필에 명시하고, 벤치마크 숫자를 제품 기본값으로 자동 승격하지 않는다.
 
@@ -121,6 +126,8 @@ SHA-256 38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932
 3. 자동 검사 결과와 Pi 실기 미검증 항목을 구분한 짧은 보고.
 4. 사용자 브랜치/원본을 보존한 reviewable diff. 관련 코드만 커밋/검토용 PR로 제시하고 main 병합·서비스 배포를 완료했다고 표시하지 않음.
 5. 남은 차단 요인이 있으면 원본 위치/장치명 등 필요한 한 가지를 정확히 적기. 조사만 끝내고 구현 가능한 부분을 남겨두지 않기.
+
+후속 구현 보고서는 `feature/bmo-integration-v1`의 `docs/reports/INTEGRATION_STAGE1_LATEST_KR.md`에 코드와 함께 커밋·업로드한다. 기존 preflight 보고서는 덮어쓰지 않는다. 사용자에게는 GitHub 보고서/검토용 PR 링크와 결론만 알리고, 보고서 본문을 이 채팅으로 복사하라고 요구하지 않는다. 미업로드 상태는 완료로 표시하지 않는다.
 
 ## 이후 구현 단계에서 Codex에게 보낼 짧은 지시
 
