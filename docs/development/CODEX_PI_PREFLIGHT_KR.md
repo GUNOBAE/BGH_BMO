@@ -10,6 +10,16 @@
 
 ## 1. 허용 범위와 작업 위치
 
+**시작 폴더 주의:** `/tmp/bmo-preflight.*`는 보고서용 임시 폴더이며 Git 저장소가 아니다. 그곳의 `git status` 실패나 `rg --files` 결과 없음은 프로젝트 이상을 뜻하지 않는다. 임시 폴더를 Git 저장소로 만들거나 작업서가 로컬에 있다고 가정하지 않는다. 작업서는 GitHub에서 읽고, Git 조회는 존재를 확인한 실제 프로젝트에 `git -C <경로>`를 사용한다.
+
+```bash
+# 원격 작업서 읽기: 현재 폴더에 파일이 없어도 된다.
+gh api 'repos/GUNOBAE/BGH_BMO/contents/docs/development/CODEX_PI_PREFLIGHT_KR.md?ref=docs/bmo-integration-baseline-20261022' --jq .content | base64 --decode
+
+# 경로가 실제로 존재할 때의 저장소 조회 예시
+GIT_OPTIONAL_LOCKS=0 git -C /home/bgh/BGH_BMO status --short --branch
+```
+
 - 기존 `/home/bgh/BGH_BMO`, `/home/bgh/BGH_BMO_ACTIONS`, `/home/bgh/BMO_LUNA_AB`, `/home/bgh/bmo-voice-test`와 사용자 원본 파일은 읽기만 한다. 실제 존재 여부부터 확인한다.
 - Codex는 별도 `/tmp/bmo-preflight.*` 폴더에서 시작한다. 보고서와 업로드 요청 JSON 등 이번 작업의 임시 파일만 그 폴더에 작성할 수 있다.
 - **GitHub 쓰기 예외는 아래의 보고서 파일 한 개를 문서 커밋으로 업로드하는 것뿐이다.** 기존 체크아웃의 소스·설정·인덱스·브랜치를 수정하지 않는다. 원본 `.env`, Piper 모델, 얼굴/게임 원본은 그대로 보존한다.
