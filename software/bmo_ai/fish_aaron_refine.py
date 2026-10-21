@@ -19,7 +19,7 @@ from .fish_compare import FREE_UNTIL, today_kst
 AARON = fish_tts.AARON_BMO_VOICE_ID
 FREE_MODEL = "s2.1-pro-free"
 BASE = "Hi, I'm {name}! I was thinking about you today. What should we do together?"
-SOFT = "[gentle, warm, slightly lower pitch, still lightly playful] "
+SOFT = fish_tts.SOFT_AARON_DIRECTION
 LIGHTLY_PLAYFUL = "[warm, curious, lightly playful, natural conversational pace] "
 
 # Keep the spoken words identical apart from the name's spelling in the first
