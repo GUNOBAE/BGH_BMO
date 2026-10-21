@@ -285,3 +285,40 @@ No extra provider call, voice switching or paid fallback.
   --fish-delivery soft --fish-name-mode beemo --fish-gain 0.25 \
   --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
 ```
+
+## Experimental Piper voice fallback (optional separate branch)
+
+Branch `feature/bmo-local-piper-fallback` is based on the working Aaron
+Fish API baseline. The independent Piper test files under
+`~/bmo-voice-test/piper/piper` and
+`~/bmo-voice-test/bmo-piper/en_US-bmo_voice.onnx` (plus `.onnx.json`)
+are only **read**, never modified. No OS mixer, model install or package
+configuration is changed. Existing cloud behavior stays the default.
+
+```bash
+cd /home/bgh/BGH_BMO/software
+.venv/bin/python -m bmo_ai.local_piper --check   # no API/audio
+.venv/bin/python -m bmo_ai.local_piper --say "Hi! I am Beemo." --gain .25
+
+# Only enable after local voice works; cloud remains the primary voice:
+.venv/bin/python -m bmo_ai --tts-provider fish --fish-model s2.1-pro-free \
+  --fish-delivery soft --fish-name-mode beemo --fish-gain .25 --offline-voice \
+  --mic-device 'plughw:CARD=Device,DEV=0' \
+  --speaker-device 'plughw:CARD=MAX98357A,DEV=0'
+```
+
+When Fish TTS fails after GPT has succeeded, English GPT text is spoken by
+local Piper; Korean fallback is a fixed English notice because the installed
+model is English-only. If OpenAI STT/GPT cannot connect, Piper speaks **only**
+a fixed status notice, not a fake conversational reply. This is *voice*
+failover, **not full offline conversation**. Complete offline conversations
+would additionally need local STT + LLM. The model was previously auditioned
+in an independent folder; running it from this branch on the user's Pi still
+needs physical verification.
+
+One Fish request maximum per utterance, no automatic paid Fish fallback.
+Offline voice uses the same 25-30% software gain and cannot see OpenAI/Fish API
+keys in its subprocess environment. `BMO_OFFLINE_VOICE=false` by default;
+`--offline-voice` or `BMO_OFFLINE_VOICE=true` opts in. Override paths via
+`BMO_LOCAL_PIPER_BINARY` and `BMO_LOCAL_PIPER_MODEL` if needed. Do not
+cut the Pi's Wi-Fi while connected via SSH to test connectivity failover.
