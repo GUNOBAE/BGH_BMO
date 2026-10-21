@@ -168,6 +168,7 @@ def speak(
     reference_id: str = AARON_BMO_VOICE_ID,
     timeout: float = 30.0,
     download_timeout: float = 60.0,
+    gain: float = 1.0,
     on_playback_start=None,
     cancel_check=None,
 ) -> None:
@@ -176,7 +177,9 @@ def speak(
         raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
     if not text.strip():
         return
-    device_args = audio._device_args(device)
+    from .safe_playback import play_wav, validate_gain
+    validate_gain(gain)
+    audio._device_args(device)
     path = synthesize_wav(
         text, model=model, reference_id=reference_id,
         timeout=timeout, download_timeout=download_timeout,
@@ -184,15 +187,8 @@ def speak(
     )
     succeeded = False
     try:
-        info = audio._wav_info(path, allow_streaming_header=True)
-        if cancel_check is not None:
-            cancel_check()
-        playback_options = {} if on_playback_start is None else {"on_start": on_playback_start}
-        audio._run(
-            ["aplay", "-q", *device_args, str(path)],
-            timeout=info["duration_seconds"] + 10,
-            error_type=audio.AudioPlaybackError, **playback_options,
-        )
+        play_wav(path, device=device, gain=gain,
+                 on_playback_start=on_playback_start, cancel_check=cancel_check)
         succeeded = True
     finally:
         audio._discard(path, suppress=not succeeded)
