@@ -58,6 +58,7 @@ class ConversationApp:
                                reference_id=self.config.fish_voice_id,
                                timeout=self.config.timeout,
                                gain=self.config.fish_gain,
+                               name_mode=self.config.fish_name_mode,
                                on_playback_start=started,
                                cancel_check=self.cancel_check)
                 else:
