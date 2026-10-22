@@ -21,6 +21,7 @@ FACE_SHA256 = "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932"
 LADDER = ("closed", "parted", "small", "low", "mid", "body", "open", "high", "wide")
 MOUTHS = frozenset((*LADDER, "rest", "round", "tight", "flat", "grit"))
 EMOTIONS = frozenset(("neutral", "happy", "angry", "sad", "crying", "surprised"))
+EMOTION_MODES = frozenset(("manual", "auto"))
 PHASES = frozenset(("idle", "listening", "thinking", "speaking"))
 PLAYBACK = frozenset(("idle", "prepared", "started", "ended", "cancelled", "error"))
 
@@ -155,9 +156,10 @@ def _public_snapshot(value):
     out["sequence"] = sequence
     for field, allowed, default in (("phase", PHASES, "idle"),
                                      ("emotion", EMOTIONS, "neutral"),
+                                     ("emotion_mode", EMOTION_MODES, "manual"),
                                      ("playback", PLAYBACK, "idle")):
         item = value.get(field, default)
-        if item not in allowed:
+        if not isinstance(item, str) or item not in allowed:
             raise ValueError("Invalid snapshot state")
         out[field] = item
     position = value.get("position", 0)

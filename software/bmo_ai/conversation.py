@@ -33,7 +33,7 @@ class TurnEvent:
 
 _PUBLIC_CODES = frozenset({
     "authentication", "permission", "model", "rate_limit", "timeout", "connection",
-    "server", "request", "cloud", "invalid_wav", "audio_timeout", "device_unavailable",
+    "server", "request", "cloud", "expression_format", "invalid_wav", "audio_timeout", "device_unavailable",
     "audio_cleanup_failed", "invalid_transcription_response", "audio_download_timeout",
     "speech_download_too_large", "invalid_speech_download", "tool_unavailable",
 })

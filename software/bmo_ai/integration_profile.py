@@ -67,12 +67,17 @@ def load_voice_policy():
         raise ValueError("Integration voice policy is not valid UTF-8") from None
 
 
-def policy_brain(client, config, *, language_policy=DEFAULT_LANGUAGE_POLICY):
-    """Create one ordinary BMOBrain with policy priority and bounded history."""
+def policy_brain(client, config, *, language_policy=DEFAULT_LANGUAGE_POLICY,
+                 expression_client=None):
+    """Create a persistent brain, optionally using a non-owning expression view.
+
+    The session supplies and owns the optional view. The ordinary client remains
+    available to its STT/TTS paths; neither client is closed by this factory.
+    """
     if not isinstance(language_policy, str) or language_policy not in VOICE_LANGUAGE_INSTRUCTIONS:
         raise ValueError("Unsupported integration language policy")
     return BMOBrain(
-        client,
+        client if expression_client is None else expression_client,
         model=config.chat_model,
         reasoning_effort=config.reasoning_effort,
         language=config.language,
@@ -85,10 +90,12 @@ def policy_brain(client, config, *, language_policy=DEFAULT_LANGUAGE_POLICY):
     )
 
 
-def effective_config(config, *, language_policy=DEFAULT_LANGUAGE_POLICY):
+def effective_config(config, *, language_policy=DEFAULT_LANGUAGE_POLICY, emotion_mode="manual"):
     """Return an explicit noncredential allowlist; never serialize config/env."""
     if not isinstance(language_policy, str) or language_policy not in VOICE_LANGUAGE_INSTRUCTIONS:
         raise ValueError("Unsupported integration language policy")
+    if emotion_mode not in ("auto", "manual"):
+        raise ValueError("Unsupported emotion mode")
     names = (
         "chat_model", "reasoning_effort", "stt_model", "tts_provider",
         "fish_model", "fish_voice_id", "fish_gain", "fish_name_mode",
@@ -99,6 +106,7 @@ def effective_config(config, *, language_policy=DEFAULT_LANGUAGE_POLICY):
     return dict(
         {name: getattr(config, name) for name in names},
         language_policy=language_policy,
+        emotion_mode=emotion_mode,
         policy_source_commit=POLICY_SOURCE_COMMIT,
         policy_source_path=POLICY_SOURCE_PATH,
         audio_owner="python_alsa",

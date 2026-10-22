@@ -3,6 +3,8 @@ import os
 from collections.abc import Callable
 from typing import TypeVar
 
+from .expression_contract import ExpressionFormatError
+
 T = TypeVar("T")
 
 
@@ -18,6 +20,8 @@ class CloudError(RuntimeError):
 
 def cloud_error(error: Exception) -> CloudError:
     """Classify without formatting exceptions which can contain keys or input."""
+    if isinstance(error, ExpressionFormatError):
+        return CloudError("expression_format", "The reply did not match the expression contract.")
     name = type(error).__name__
     status = getattr(error, "status_code", None)
     if name == "AuthenticationError" or status == 401:

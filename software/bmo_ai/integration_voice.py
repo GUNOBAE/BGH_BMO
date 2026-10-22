@@ -17,6 +17,7 @@ import wave
 from . import audio, fish_tts, local_piper
 from .app import OFFLINE_KOREAN_UNSUPPORTED_EN, OFFLINE_NOTICE_EN
 from .conversation import TurnCancelled
+from .expression_contract import FACE_EMOTIONS
 from .integration_face import wav_cues
 from .pronunciation import spoken_bmo_name
 from .safe_playback import attenuated_copy, validate_gain
@@ -75,6 +76,17 @@ class IntegrationVoice:
         self._cache_lock = Lock()
         self._cache = None
         self._cache_generation = 0
+        self.expression_metadata = {"emotion": "neutral", "emotion_validation": "none"}
+
+    def _expression(self, *, notice=False):
+        """Copy only safe expression metadata, never a reply or TTS direction."""
+        value = self.expression_metadata
+        emotion = value.get("emotion") if type(value) is dict else None
+        validation = value.get("emotion_validation") if type(value) is dict else None
+        return dict(emotion="neutral" if notice or emotion not in FACE_EMOTIONS else emotion,
+                    emotion_validation="notice" if notice else validation if validation in
+                    ("none", "manual", "validated", "degraded") else "none",
+                    notice=bool(notice))
 
     @property
     def has_cache(self):
@@ -89,6 +101,16 @@ class IntegrationVoice:
             self._cache_generation += 1
         if previous is not None:
             audio._discard(previous["path"], suppress=True)
+
+    def invalidate_pending(self, cancel=None):
+        """Invalidate a replacement without deleting the last success.
+
+        The session can set its cancellation event under this same lock, so
+        cancellation and successful cache promotion have one commit boundary.
+        """
+        with self._cache_lock:
+            self._cache_generation += 1
+            return cancel() if cancel is not None else None
 
     def _check(self, cancellation):
         if self._closed.is_set():
@@ -114,15 +136,15 @@ class IntegrationVoice:
         finally:
             audio._discard(Path(path), suppress=True)
 
-    def _synthesize(self, text, check, *, force_piper=False):
+    def _synthesize(self, text, check, *, force_piper=False, notice=False):
         check()
         if self.simulate:
-            return synthetic_wav(), "synthetic"
+            return synthetic_wav(), "synthetic", notice
         if force_piper:
             synthesize = self._piper_synthesizer or local_piper.synthesize_wav
             return Path(synthesize(text, binary=self.config.local_piper_binary,
                                    model=self.config.local_piper_model,
-                                   name_mode=self.config.fish_name_mode)), "piper"
+                                   name_mode=self.config.fish_name_mode)), "piper", notice
         if self.config.tts_provider != "fish":
             raise audio.AudioValidationError(
                 "The integration voice profile requires Fish Audio.", "invalid_tts_provider")
@@ -133,15 +155,16 @@ class IntegrationVoice:
         try:
             return Path(synthesize(spoken, model=self.config.fish_model,
                                    reference_id=self.config.fish_voice_id,
-                                   timeout=self.config.timeout, cancel_check=check)), "fish"
+                                   timeout=self.config.timeout, cancel_check=check)), "fish", notice
         except audio.AudioSynthesisError:
             check()
             if not self.config.offline_voice:
                 raise
-            fallback = text if local_piper.is_english_text(text) else OFFLINE_KOREAN_UNSUPPORTED_EN
-            return self._synthesize(fallback, check, force_piper=True)
+            english = local_piper.is_english_text(text)
+            fallback = text if english else OFFLINE_KOREAN_UNSUPPORTED_EN
+            return self._synthesize(fallback, check, force_piper=True, notice=notice or not english)
 
-    def speak(self, text, *, on_playback_start=None, _force_piper=False):
+    def speak(self, text, *, on_playback_start=None, _force_piper=False, _notice=False):
         if not isinstance(text, str):
             raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
         if not text.strip():
@@ -158,22 +181,25 @@ class IntegrationVoice:
         try:
             check()
             validate_gain(self.config.fish_gain)
-            raw, source = self._synthesize(text, check, force_piper=_force_piper)
+            raw, source, notice = self._synthesize(text, check, force_piper=_force_piper,
+                                                  notice=_notice)
+            expression = self._expression(notice=notice)
             # A synchronous provider may finish after cancellation. Discard its
             # late result before any prepared/start event or process creation.
             check()
             output = attenuated_copy(raw, self.config.fish_gain)
             info = audio._wav_info(output)
             cues = tuple(dict(cue) for cue in wav_cues(output))
-            self._play(output, source, info, cues, check, emit, on_playback_start)
+            self._play(output, source, info, cues, check, emit, on_playback_start, expression)
             check()
             # A failed/cancelled replacement keeps the previous successful WAV.
             # Promotion transfers the final gained file, without another copy.
             previous = None
             with self._cache_lock:
+                check()
                 if generation == self._cache_generation and not self._closed.is_set():
                     previous, self._cache = self._cache, dict(
-                        path=output, source=source, info=info, cues=cues)
+                        path=output, source=source, info=info, cues=cues, expression=expression)
                     output = None
             if previous is not None:
                 audio._discard(previous["path"], suppress=True)
@@ -190,11 +216,11 @@ class IntegrationVoice:
             self._speaking.release()
             self._idle.set()
 
-    def _play(self, output, source, info, cues, check, emit, on_playback_start):
+    def _play(self, output, source, info, cues, check, emit, on_playback_start, expression):
         """The only player/event path, shared by a new utterance and repeat."""
         check()
         emit("prepared", path=str(output), source=source,
-             cues=[dict(cue) for cue in cues])
+             cues=[dict(cue) for cue in cues], **expression)
         check()
 
         def started():
@@ -202,7 +228,7 @@ class IntegrationVoice:
             if on_playback_start is not None:
                 on_playback_start()
             check()
-            emit("started", path=str(output), source=source)
+            emit("started", path=str(output), source=source, **expression)
 
         if self.simulate:
             command = [sys.executable, "-c", "import time; time.sleep(0.8)"]
@@ -234,7 +260,7 @@ class IntegrationVoice:
                 return False
             source = cached["source"]
             self._play(cached["path"], source, cached["info"], cached["cues"],
-                       check, emit, on_playback_start)
+                       check, emit, on_playback_start, cached["expression"])
             return True
         except (TurnCancelled, KeyboardInterrupt):
             emit("cancelled", source=source)
@@ -250,7 +276,7 @@ class IntegrationVoice:
         """Existing fixed English notice; this is not an offline chat brain."""
         if self.config.offline_voice:
             self.speak(OFFLINE_NOTICE_EN, on_playback_start=on_playback_start,
-                       _force_piper=True)
+                       _force_piper=True, _notice=True)
 
     def close(self):
         """Cancel owned playback; late synthesis cleans itself on return.

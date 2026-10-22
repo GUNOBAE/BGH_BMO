@@ -1,6 +1,6 @@
 # 승인 얼굴 v13.2와 음성의 수동 통합 실행기
 
-이 문서는 `feature/bmo-integration-v1`의 실행 방법이다. 기존 음성·Luna·Action
+기존 수동 통합 실행과 공통 복귀 방법을 설명한다. 자동 표정 v1은 [EMOTION_KR.md](EMOTION_KR.md)를 따른다. 기존 음성·Luna·Action
 체크아웃과 팬·SSH·서비스·펌웨어는 변경하지 않는다. 자동 검증은 모의 및
 headless 검사이며 실제 소리·Pi LCD·물리 버튼의 검수가 아니다.
 
@@ -148,7 +148,8 @@ env -i PATH=/usr/bin:/bin HOME=/tmp LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 
 마지막 E2E 명령은 실제 `--simulate` launcher·자체 서버·승인 iframe을 함께 띄워
 한 턴과 반복·취소·다음 턴·종료를 확인한다. 상태 관측용 150ms fixture 지연을
-사용하므로 API·가청·실물 지연 측정으로 해석하지 않는다. launcher 검사는
-중복 실행 lock을 사용하므로 다른 수동 launcher를 정상 종료한 뒤 실행한다.
+사용하므로 API·가청·실물 지연 측정으로 해석하지 않는다. 자동 launcher 검사는
+자체 임시 lock과 loopback 포트를 사용하므로 기존 앱을 종료하지 않는다. 일반 수동 실행의
+사용자별 중복 실행 lock은 유지한다.
 
 최신 결과와 미실행 항목은 `docs/reports/INTEGRATION_STAGE1_LATEST_KR.md`를 따른다.

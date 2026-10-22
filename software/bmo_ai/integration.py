@@ -1,4 +1,4 @@
-"""Manual Stage 1 launcher. --simulate shares the live session and face path."""
+"""Integration launcher. --simulate shares the live session and face path."""
 import argparse
 import fcntl
 import json
@@ -19,6 +19,8 @@ def parser():
     p.add_argument("--effective-config", action="store_true")
     p.add_argument("--baseline", action="store_true", help="GPT-4.1 mini; reasoning unset")
     p.add_argument("--offline-voice", action="store_true", help="opt in to original English Piper fallback")
+    p.add_argument("--emotion-mode", choices=("auto", "manual"), default="manual",
+                   help="automatic reply expressions, or existing manual control (default)")
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--speaker-device", default="plughw:CARD=MAX98357A,DEV=0")
     p.add_argument("--face-file", type=Path, default=Path("/home/bgh/Downloads/BMO_Screen_v13_2.html"))
@@ -28,7 +30,7 @@ def parser():
     return p
 
 
-def main(argv=None):
+def main(argv=None, *, lock_path=None):
     p = parser()
     args = p.parse_args(argv)
     try:
@@ -37,7 +39,8 @@ def main(argv=None):
     except ValueError:
         p.error("invalid integration configuration")
     if args.effective_config:
-        print(json.dumps(effective_config(config), indent=2, ensure_ascii=False))
+        print(json.dumps(effective_config(config, emotion_mode=args.emotion_mode),
+                         indent=2, ensure_ascii=False))
         return 0
     if not (args.live or args.simulate):
         p.error("choose --simulate or --live")
@@ -54,7 +57,10 @@ def main(argv=None):
     from .integration_actions import MockActionHost, demo_requests
 
     # One manual launcher per user; no daemon/service or automatic start install.
-    lock_path = Path(f"/tmp/bmo-integration-{os.getuid()}.lock")
+    # Tests inject a private temporary path. Normal launches retain the shared
+    # per-user lock protecting the existing integration application.
+    lock_path = (Path(f"/tmp/bmo-integration-{os.getuid()}.lock") if lock_path is None
+                 else Path(lock_path))
     try:
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         lock = os.fdopen(descriptor, "w")
@@ -71,13 +77,14 @@ def main(argv=None):
     session = server = client = None
     try:
         client = SimulatedClient() if args.simulate else create_client(config)
-        session = IntegrationSession(config, client, simulate=args.simulate)
+        session = IntegrationSession(config, client, simulate=args.simulate,
+                                     emotion_mode=args.emotion_mode)
         mock_actions = MockActionHost(simulate=True) if args.simulate else None
         if not args.no_web:
             server = FaceServer(args.face_file, snapshot=session.browser_snapshot, port=args.port)
             server.start()
             print("Face: " + server.url, flush=True)
-        print("Commands: Enter=question, /cancel, /repeat, /reset, /emotion NAME, "
+        print("Commands: Enter=question, /cancel, /repeat, /reset, /emotion auto|manual|NAME, "
               "/actions-demo (simulate), /action JSON (simulate), /quit", flush=True)
         if args.turns:
             for index in range(args.turns):
@@ -115,7 +122,7 @@ def main(argv=None):
                 try:
                     session.set_emotion(command.split(maxsplit=1)[1])
                 except ValueError:
-                    print("Emotion: neutral, happy, angry, sad, crying, surprised")
+                    print("Emotion: auto, manual, neutral, happy, angry, sad, crying, surprised")
             elif command == "/actions-demo":
                 if mock_actions is None:
                     print("Actions require --simulate; nothing was executed.")
