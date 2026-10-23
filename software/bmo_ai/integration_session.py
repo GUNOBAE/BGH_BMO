@@ -107,11 +107,13 @@ class RepeatApp(ConversationApp):
 class IntegrationSession:
     def __init__(self, config, client, *, simulate=False, voice=None, brain=None,
                  clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0,
-                 emotion_mode="manual", fish_api_key=None):
+                 emotion_mode="manual", fish_api_key=None, reply_client=None,
+                 on_reply=None, on_playback_event=None):
         if emotion_mode not in ("auto", "manual"):
             raise ValueError("unknown emotion mode")
         self.config, self.client, self.simulate = config, client, simulate
-        self.expression_client = ExpressionClient(client)
+        self.expression_client = ExpressionClient(client) if reply_client is None else reply_client
+        self._on_reply, self._on_playback_event = on_reply, on_playback_event
         self.brain = brain if brain is not None else policy_brain(
             client, config, expression_client=self.expression_client if emotion_mode == "auto" else None)
         self.clock, self.disconnect_timeout = clock, disconnect_timeout
@@ -242,6 +244,10 @@ class IntegrationSession:
                              emotion_validation="degraded" if reply.degraded else "validated")
                 self._staged_expression = dict(turn=turn, generation=generation, **value)
                 self.voice.expression_metadata = value
+                if self._on_reply is not None:
+                    # Feature host callbacks only enqueue bounded metadata. They
+                    # never perform resource transitions on the provider thread.
+                    self._on_reply(reply, self._data["turn_id"], self._data["utterance_id"])
             check()
 
         class SessionFace:
@@ -299,6 +305,8 @@ class IntegrationSession:
                         self._staged_expression = None
                     self._idle(kind)
                 self._record(kind)
+                if self._on_playback_event is not None:
+                    self._on_playback_event(kind, self._data["turn_id"], self.clock())
 
         self.voice.cancel_check, self.voice.emit = check, emit
         with self._lock:

@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+bmo_project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+bmo_python=${BMO_PYTHON:-"$bmo_project_dir/.venv/bin/python"}
+cd "$bmo_project_dir/software"
+exec "$bmo_python" -B -m bmo_ai.feature_launcher "$@"
