@@ -1,4 +1,4 @@
-# 자동 표정 v1 실행과 복귀
+# 자동 표정과 감정 연속성 v2 실행·복귀
 
 `feature/bmo-auto-emotion-v1`의 독립 clone `/home/bgh/BMO_EMOTION`에서 실행한다.
 기존 `/home/bgh/BMO_INTEGRATION`과 승인 HTML 원본은 그대로 둔다.
@@ -28,12 +28,12 @@ env -i PATH=/usr/bin:/bin HOME=/tmp LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 같은 사용자별 lock을 사용하므로, 이미 실행 중이면 새 실행이 거부된다.
 기존 앱을 강제로 종료하거나 lock을 지우지 않는다. 자동 검사는 자체 lock을 쓴다.
 
-- Enter: 질문. auto는 neutral에서 듣기/생각하며 답변 표정은 player started에 적용한다.
-- 정상 ended: 입은 닫고 표정은 2초 유지 후 poll에서 neutral로 복귀한다.
-- `/cancel`: 현재 턴과 유지 타이머 무효화. auto는 neutral, 수동 override는 유지한다.
+- Enter: 질문. 마지막 표시 감정으로 듣기/생각/prepared를 이어가고 새 감정은 player started에 적용한다.
+- 정상 ended: 입을 닫고 마지막 표정을 계속 유지한다. 시간 경과로 자동 neutral 초기화하지 않는다.
+- `/cancel`: 소리·입·현재 후보를 중단하며 마지막 실제 표시 감정을 유지한다. 아직 시작하지 않은 후보는 적용하지 않는다.
 - `/emotion happy` 등: 여섯 표정의 수동 고정 모드. `/emotion manual`도 수동 복귀다.
-- `/emotion auto`: 수동 override를 해제하고 neutral로 자동 복귀한다.
-- `/repeat`: 마지막 성공 WAV/입 cue/표정을 함께 재사용. GPT/합성/gain 재적용은 없다.
+- `/emotion auto`: 수동 override를 해제하되 현재 표시 감정은 유지하며 다음 실제 발화부터 자동 결정한다.
+- `/repeat`: 시작 전 현재 감정, 실제 player 시작에 캐시의 감정, 종료 뒤 그 감정을 유지한다. 마지막 성공 WAV/입 cue도 함께 재사용하며 GPT/합성/gain 재적용은 없다.
 - `/reset`: 선택한 모드를 유지하고 neutral, history/후보/캐시를 정리한다.
 - `/quit`, Ctrl-C, EOF: 이 앱 소유 작업과 서버를 정리한다.
 
@@ -41,7 +41,7 @@ env -i PATH=/usr/bin:/bin HOME=/tmp LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 발화는 사용한다. malformed JSON, unsafe speech, refusal, incomplete는 발화하지
 않고 해당 턴을 종료한다. 형식 복구용 추가 모델 호출이나 자동 모델 변경은 없다.
 동일 영어 답변의 Piper fallback은 표정을 보존하고, 고정 장애/한국어 미지원
-안내는 neutral이다. 실패한 새 음성이 이전 성공 캐시의 표정을 바꾸지 않는다.
+안내는 재생 중에만 neutral이며 끝나면 이전 대화 감정으로 복귀한다. 일반 cancel/error/disconnect도 마지막 표시 감정을 유지한다. 실패한 새 음성이 이전 성공 캐시의 표정을 바꾸지 않는다.
 
 ## 사용자가 수행할 실제 검수 — 이번 자동 작업에서는 NOT_RUN
 
@@ -65,7 +65,9 @@ cd /home/bgh/BMO_EMOTION/software
 `/home/bgh/BMO_INTEGRATION/software`의 수동 실행을 이용한다.
 
 실제 계정의 Luna schema 지원, 의미 분류 품질, LCD/가청 립싱크, 소리의 연기,
-Piper 실물 및 지연/비용은 이 모의 검사로 승인되지 않는다. 2초 유지도 초기값이다.
+Piper 실물 및 지연/비용은 이 모의 검사로 승인되지 않는다. 기존 2초 초기화는 v2에서 제거했다.
+승인 원본의 듣기 시선·끄덕임, 생각 시선·흠 입, 깜빡임·눈물은 유지하며, 별도의
+카메라 추적·랜덤 시선·새 음성 연기 구현과 구분한다.
 
 ## 오프라인 검증
 
@@ -90,4 +92,5 @@ env -i PATH=/usr/bin:/bin HOME=/tmp LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 ```
 
 최신 실제 검사 결과와 미실행 범위는
-[EMOTION_STAGE1_LATEST_KR.md](../docs/reports/EMOTION_STAGE1_LATEST_KR.md)에 기록한다.
+[EMOTION_CONTINUITY_V2_LATEST_KR.md](../docs/reports/EMOTION_CONTINUITY_V2_LATEST_KR.md)에 기록한다.
+이전 [v1 보고서](../docs/reports/EMOTION_STAGE1_LATEST_KR.md)는 당시 계약과 검증 이력으로 보존한다.

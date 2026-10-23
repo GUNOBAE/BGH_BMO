@@ -122,7 +122,7 @@ class IntegrationSession:
         self._emotion_generation = 0
         self._turn_mode = emotion_mode
         self._turn_emotion_generation = 0
-        self._staged_expression = self._emotion_hold = None
+        self._staged_expression = self._notice_restore = None
         self._started = self._browser_seen = None
         self._turn = 0
         self._data = dict(session_id=self.session_id, turn_id=None,
@@ -145,17 +145,35 @@ class IntegrationSession:
                              "playback", "source")} | {"kind": kind})
 
     def _invalidate_expression(self, *, neutral=False):
-        """Called under the state lock; manual overrides outlive auto timers."""
+        """Invalidate candidates without clearing the last displayed emotion.
+
+        Continuity v2 keeps emotion across activities and ordinary terminal
+        states. Only an explicit reset requests neutral here.
+        """
         self._emotion_generation += 1
-        self._staged_expression = self._emotion_hold = None
-        if neutral or self._data["emotion_mode"] == "auto":
+        self._staged_expression = self._notice_restore = None
+        if neutral:
             self._data.update(emotion="neutral", emotion_validation="none")
+
+    def _restore_notice_expression(self):
+        """A fixed notice is neutral only while playing, including repeats.
+
+        Completion, error or cancellation restores the prior dialogue display.
+        A reset/manual override/mode change invalidates this scoped restoration,
+        so its late terminal event cannot overwrite an explicit newer choice.
+        """
+        restore, self._notice_restore = self._notice_restore, None
+        if (restore is not None and self._current_expression_turn()
+                and restore[0] == self._emotion_generation and restore[1] == self._turn):
+            self._data.update(emotion=restore[2], emotion_validation=restore[3])
 
     def _current_expression_turn(self):
         return (self._data["emotion_mode"] == "auto" and self._turn_mode == "auto"
                 and self._turn_emotion_generation == self._emotion_generation)
 
     def _idle(self, playback):
+        if playback in ("ended", "cancelled", "error"):
+            self._restore_notice_expression()
         if playback in ("cancelled", "error"):
             self._invalidate_expression()
         self._data.update(phase="idle", playback=playback, cues=[], position=0.0,
@@ -185,7 +203,7 @@ class IntegrationSession:
             raise ValueError("unknown emotion")
         with self._lock:
             self._data["emotion_mode"] = "auto" if emotion == "auto" else "manual"
-            self._invalidate_expression(neutral=emotion == "auto")
+            self._invalidate_expression()
             if emotion in EMOTIONS:
                 self._data["emotion"] = emotion
             if self._data["emotion_mode"] == "manual":
@@ -265,6 +283,9 @@ class IntegrationSession:
                                       source=fields.get("source", self._data["source"]))
                     if self._current_expression_turn():
                         notice = fields.get("notice") is True
+                        self._notice_restore = (
+                            self._emotion_generation, turn, self._data["emotion"],
+                            self._data["emotion_validation"]) if notice else None
                         emotion = "neutral" if notice else fields.get("emotion", "neutral")
                         validation = "notice" if notice else fields.get("emotion_validation", "none")
                         if emotion not in EMOTIONS:
@@ -272,10 +293,8 @@ class IntegrationSession:
                         if validation not in ("none", "manual", "validated", "degraded", "notice"):
                             emotion, validation = "neutral", "none"
                         self._data.update(emotion=emotion, emotion_validation=validation)
-                        self._emotion_hold = None
                 elif kind in ("ended", "cancelled", "error"):
-                    if kind == "ended" and self._current_expression_turn() and self._started is not None:
-                        self._emotion_hold = (self._emotion_generation, turn, self.clock() + 2.0)
+                    if kind == "ended":
                         self._staged_expression = None
                     self._idle(kind)
                 self._record(kind)
@@ -355,14 +374,6 @@ class IntegrationSession:
                     self._record("finished")
                 if self._pending_reset:
                     self._reset_now()
-        with self._lock:
-            hold = self._emotion_hold
-            if (hold is not None and self._data["emotion_mode"] == "auto"
-                    and hold[0] == self._emotion_generation and hold[1] == self._turn
-                    and self.clock() >= hold[2]):
-                self._emotion_hold = None
-                self._data.update(emotion="neutral", emotion_validation="none")
-                self._record("emotion_released")
         return items
 
     def _reset_now(self):

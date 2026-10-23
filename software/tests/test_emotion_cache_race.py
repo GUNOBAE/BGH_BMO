@@ -113,7 +113,9 @@ class EmotionCacheRaceTests(unittest.TestCase):
         self.assertEqual(self.voice._cache["path"], self.saved_path)
         self.assertEqual(self.voice._cache["expression"], self.saved_expression)
         self.assertTrue(self.saved_path.exists())
-        self.assertEqual(self.session.snapshot()["emotion"], "neutral")
+        # The replacement really started as sad before the promotion gate;
+        # v2 retains that display while keeping the prior successful WAV happy.
+        self.assertEqual(self.session.snapshot()["emotion"], "sad")
         before_synthesis = self.synthesis.call_count
         before_requests = len(self.client.requests)
         self.assertTrue(self.session.repeat())
@@ -155,7 +157,7 @@ class EmotionCacheRaceTests(unittest.TestCase):
         self.assertTrue(self.client.closed.wait(3))
         self.assertIsNone(self.voice._cache)
         self.assertFalse(self.saved_path.exists())
-        self.assertEqual(self.session.snapshot()["emotion"], "neutral")
+        self.assertEqual(self.session.snapshot()["emotion"], "sad")
         self.assertFalse(self.session.start("Rejected closed-session question."))
         self.assertFalse(self.session.repeat())
 

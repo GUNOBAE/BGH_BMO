@@ -1,4 +1,8 @@
-"""Automatic expressions through the real session/worker with synthetic IO."""
+"""Automatic expressions through the real session/worker with synthetic IO.
+
+Continuity v2 supersedes Stage 1's new-turn/two-second/cancel neutral policy;
+the staging, validation, cache and cancellation checks remain in place.
+"""
 from collections import deque
 import json
 from pathlib import Path
@@ -105,7 +109,7 @@ class AutomaticSessionTests(unittest.TestCase):
         setattr(target, attribute, delayed)
         return entered, release, original
 
-    def test_auto_reply_stages_until_player_then_holds_two_monotonic_seconds(self):
+    def test_auto_reply_stages_until_player_and_persists_until_next_started(self):
         s = self.session([("A happy little discovery.", "happy"), ("A simple fact.", "neutral")])
         brain = s.brain
         self.assertIs(s.voice.client, s.client)
@@ -120,9 +124,10 @@ class AutomaticSessionTests(unittest.TestCase):
         self.assertEqual(s.snapshot()["emotion"], "happy")
         s.test_clock.now = 2.0
         s.poll()
-        self.assertEqual(s.snapshot()["emotion"], "neutral")
+        self.assertEqual(s.snapshot()["emotion"], "happy")
         self.assertTrue(s.start())
         self.finish(s)
+        self.assertEqual(s.observations[-1][0]["emotion"], "happy")
         self.assertIs(s.brain, brain)
         self.assertEqual([len(r["input"]) for r in s.client.requests], [1, 3])
         self.assertEqual(s.snapshot()["emotion"], "neutral")
@@ -131,7 +136,7 @@ class AutomaticSessionTests(unittest.TestCase):
                          ["A happy little discovery.", "A simple fact."])
         self.assertTrue(all("speech" not in event and "last_reply" not in event for event in s.events))
 
-    def test_next_turn_invalidates_old_hold_before_sad_to_happy_playback(self):
+    def test_next_turn_keeps_sad_until_started_and_does_not_expire_new_happy(self):
         s = self.session([("I am here with you.", "sad"), ("That is lovely news.", "happy")])
         s.start(); self.finish(s)
         self.assertEqual(s.snapshot()["emotion"], "sad")
@@ -149,7 +154,7 @@ class AutomaticSessionTests(unittest.TestCase):
         s.voice._player = playing
         s.start()
         self.assertTrue(entered.wait(1))
-        self.assertEqual(s.observations[-1][0]["emotion"], "neutral")
+        self.assertEqual(s.observations[-1][0]["emotion"], "sad")
         self.assertEqual(s.snapshot()["emotion"], "happy")
         s.test_clock.now = 3.0
         s.poll()
@@ -162,7 +167,7 @@ class AutomaticSessionTests(unittest.TestCase):
         self.assertEqual(s.snapshot()["emotion"], "happy")
         s.test_clock.now = 5.0
         s.poll()
-        self.assertEqual(s.snapshot()["emotion"], "neutral")
+        self.assertEqual(s.snapshot()["emotion"], "happy")
 
     def test_default_manual_and_named_override_survive_until_auto_or_reset(self):
         s = self.session([("Plain first.", "sad"), ("Auto second.", "happy")], mode="manual")
@@ -174,7 +179,7 @@ class AutomaticSessionTests(unittest.TestCase):
         s.poll(); s.cancel()
         self.assertEqual(s.snapshot()["emotion"], "crying")
         s.set_emotion("auto")
-        self.assertEqual(s.snapshot()["emotion"], "neutral")
+        self.assertEqual(s.snapshot()["emotion"], "crying")
         s.start(); self.finish(s)
         self.assertEqual(s.snapshot()["emotion"], "happy")
         s.set_emotion("manual")
@@ -197,7 +202,7 @@ class AutomaticSessionTests(unittest.TestCase):
                 s.set_emotion("auto")
                 release.set(); self.finish(s)
                 self.assertEqual("text" in s.client.requests[0], mode == "auto")
-                self.assertEqual(s.snapshot()["emotion"], "neutral")
+                self.assertEqual(s.snapshot()["emotion"], "crying")
                 s.client.create = original
                 s.start(); self.finish(s)
                 self.assertEqual(s.snapshot()["emotion"], "sad")
@@ -272,7 +277,7 @@ class AutomaticSessionTests(unittest.TestCase):
         s.set_emotion("crying")
         s.set_emotion("auto")
         release.set(); self.finish(s)
-        self.assertEqual(s.snapshot()["emotion"], "neutral")
+        self.assertEqual(s.snapshot()["emotion"], "crying")
         # The validated semantic expression belongs to this successful WAV,
         # while an in-flight mode change prevents it controlling the new mode.
         self.assertEqual(s.voice._cache["expression"]["emotion"], "happy")
@@ -313,7 +318,7 @@ class AutomaticSessionTests(unittest.TestCase):
         synthesize = s.voice._synthesize
         s.voice._synthesize = Mock(side_effect=audio.AudioSynthesisError("Synthetic failure."))
         s.start(); self.finish(s)
-        self.assertEqual(s.snapshot()["emotion"], "neutral")
+        self.assertEqual(s.snapshot()["emotion"], "happy")
         self.assertEqual(s.voice._cache["expression"]["emotion"], "happy")
         s.voice._synthesize = synthesize
         history = [dict(item) for item in s.brain.history]
@@ -333,7 +338,7 @@ class AutomaticSessionTests(unittest.TestCase):
         s.repeat(); self.finish(s)
         self.assertEqual(s.snapshot()["emotion"], "happy")
 
-    def test_reset_during_delayed_tts_keeps_mode_clears_candidate_hold_and_cache(self):
+    def test_reset_during_delayed_tts_keeps_mode_clears_candidate_display_and_cache(self):
         s = self.session([("Late happy reply.", "happy"), ("New sad reply.", "sad")])
         entered, release, original = self.gate(s.voice, "_synthesize")
         s.start(); self.assertTrue(entered.wait(1))
@@ -348,7 +353,7 @@ class AutomaticSessionTests(unittest.TestCase):
         s.start(); self.finish(s)
         self.assertEqual(s.snapshot()["emotion"], "sad")
 
-    def test_piper_same_english_keeps_emotion_but_changed_or_fixed_notice_is_neutral(self):
+    def test_piper_same_english_keeps_emotion_and_neutral_notices_restore_prior(self):
         s = self.session([("Lovely news.", "happy"), ("한국어 답변입니다.", "crying"),
                           CloudError("connection", "Synthetic cloud failure.")],
                          offline=True, real_voice=True)
@@ -360,12 +365,14 @@ class AutomaticSessionTests(unittest.TestCase):
         self.assertEqual(s.observations[-1][1]["source"], "piper")
         self.assertFalse(s.voice._cache["expression"]["notice"])
         s.start(); self.finish(s)
-        self.assertEqual(s.snapshot()["emotion"], "neutral")
+        self.assertEqual(s.observations[-1][1]["emotion"], "neutral")
+        self.assertEqual(s.snapshot()["emotion"], "happy")
         self.assertEqual(piper.call_args.args, (OFFLINE_KOREAN_UNSUPPORTED_EN,))
         self.assertTrue(s.voice._cache["expression"]["notice"])
         s.start(); self.finish(s)
         self.assertEqual(piper.call_args.args, (OFFLINE_NOTICE_EN,))
-        self.assertEqual(s.snapshot()["emotion"], "neutral")
+        self.assertEqual(s.observations[-1][1]["emotion"], "neutral")
+        self.assertEqual(s.snapshot()["emotion"], "happy")
         self.assertTrue(s.voice._cache["expression"]["notice"])
         self.assertEqual(len(s.client.requests), 3)
 

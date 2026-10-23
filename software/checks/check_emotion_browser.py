@@ -26,10 +26,11 @@ from check_integration_end_to_end import launcher_url, send
 CHILD = r'''
 from contextlib import ExitStack
 import inspect, json, os, signal, subprocess, sys, time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from bmo_ai.integration import main
-from bmo_ai.integration_session import SimulatedClient
+from bmo_ai.integration_session import IntegrationSession, SimulatedClient
 from bmo_ai.integration_voice import IntegrationVoice
 from bmo_ai import integration_voice as voice_module
 from bmo_ai import integration_session as session_module
@@ -38,10 +39,15 @@ allowed={'PATH','HOME','LC_ALL','LANG','LC_CTYPE','PYTHONPATH','PYTHONDONTWRITEB
 assert not set(os.environ)-allowed, 'Unexpected child environment field'
 counts=dict(listen=0,brain=0,structured=0,synthesis=0,gain=0,cues=0,players=0,reaped=0,forbidden=0)
 processes=[]
-emotions=['happy','sad','surprised','angry','neutral','crying','surprised','happy']
+emotions=['crying','happy','sad','surprised','angry','neutral','crying','surprised','happy']
 real_popen,real_listen,real_speak,real_play=(subprocess.Popen,IntegrationVoice.listen,
                                          IntegrationVoice.speak,IntegrationVoice._play)
 real_gain,real_cues=voice_module.attenuated_copy,voice_module.wav_cues
+real_session_init=IntegrationSession.__init__
+def session_init(self,*args,**options):
+    # Advance idle policy time without waiting or altering provider/player time.
+    options['clock']=lambda:time.monotonic()+float(Path(sys.argv[3]).read_text())
+    return real_session_init(self,*args,**options)
 def forbidden(*args,**kwargs):
     counts['forbidden']+=1
     raise AssertionError('Live IO forbidden')
@@ -102,6 +108,7 @@ with ExitStack() as guards:
     guards.enter_context(patch.object(voice_module,'wav_cues',cues))
     guards.enter_context(patch.object(session_module,'wav_cues',cues))
     guards.enter_context(patch.object(SimulatedClient,'create',create))
+    guards.enter_context(patch.object(IntegrationSession,'__init__',session_init))
     result=main(['--simulate','--emotion-mode','auto','--port','0','--face-file',sys.argv[1]],
                 lock_path=sys.argv[2])
 for process in processes:
@@ -127,7 +134,8 @@ INSTALL_OBSERVER = """() => {
     const s=face.getState(),v=BMOIntegration.state;
     if(v) observed.push({turn:v.turn_id,utterance:v.utterance_id,position:v.position,
       mode:v.emotion_mode,emotion:s.selectedEmotion,activity:s.activity,speech:s.speech,
-      mouth:s.mouth,eye:s.eyeHref,mouthHref:s.mouthHref,playback:v.playback});
+      visible:s.emotion,mouth:s.mouth,eye:s.eyeHref,mouthHref:s.mouthHref,
+      gaze:s.gaze,eyeOnly:s.eyeOnly,nod:s.nod,tears:s.tearCount,blink:s.blink,playback:v.playback});
     if(observed.length>1200) observed.shift();
     requestAnimationFrame(sample);
   }
@@ -145,6 +153,55 @@ def media_calls(page):
     return page.evaluate("window.__mediaPlayCalls+window.facePlayCalls") + page.locator("#face").content_frame.locator("body").evaluate("()=>window.__mediaPlayCalls")
 
 
+def native_motion_check(browser,url):
+    """Run original RAF-driven gaze/nod/blink with a controlled browser clock."""
+    page=browser.new_page()
+    try:
+        page.set_default_timeout(4500)
+        page.clock.install()
+        page.route("**/*",lambda route:route.continue_() if route.request.url.startswith(url) else route.abort())
+        page.add_init_script("""window.__mediaPlayCalls=0;
+          HTMLMediaElement.prototype.play=function(){window.__mediaPlayCalls++;
+            throw new Error('Browser audio forbidden')};""")
+        observe(page,url)
+        page.evaluate("""() => {
+          BMOIntegration.close();
+          face.inspect({emotion:'crying',activity:'idle',time:0,cryStart:0,tears:true});
+          face.setActivity('listening');
+        }""")
+        page.clock.run_for(1220)
+        listening=page.evaluate("face.getState()")
+        assert listening['selectedEmotion']==listening['emotion']=='crying'
+        assert listening['activity']=='listening' and listening['mouth']=='closed'
+        assert abs(listening['gaze']['x']-.95)<.01 and abs(listening['gaze']['y']+.8)<.01
+        assert listening['nod']>10 and listening['tearCount']>0
+        page.evaluate("face.setActivity('thinking')")
+        page.clock.run_for(250)
+        thinking=page.evaluate("face.getState()")
+        assert thinking['selectedEmotion']==thinking['emotion']=='crying' and thinking['tearCount']>0
+        assert thinking['mouthHref']=='#mouth-thinking-hmm'
+        assert abs(thinking['gaze']['x']+.82)<.01 and abs(thinking['gaze']['y']+.7)<.01
+        assert abs(thinking['eyeOnly']['x']+.16)<.01 and abs(thinking['eyeOnly']['y']+.08)<.01
+        page.evaluate("""() => {
+          face.inspect({emotion:'crying',activity:'idle',time:0,cryStart:0,tears:true});
+          face.resume();
+        }""")
+        page.clock.run_for(3300)
+        blink=page.evaluate("face.getState()")
+        assert blink['blink']=='closed' and blink['eyeHref']=='#eye-crying-closed'
+        page.clock.run_for(200)
+        assert page.evaluate("face.getState().blink")=='open'
+        aperture=page.evaluate("""() => ['closed','wide'].map(mouth=>{
+          const s=face.inspect({emotion:'surprised',activity:'idle',time:0,mouth,blink:'open'});
+          return {mouth:s.mouth,eye:s.eyeHref,scale:s.eyeScale};
+        })""")
+        assert aperture[0]['eye']=='#eye-surprised-open-closed' and aperture[1]['eye']=='#eye-surprised-open-wide'
+        assert aperture[1]['scale']>aperture[0]['scale']
+        assert media_calls(page)==0
+    finally:
+        page.close()
+
+
 def run(face_path, chromium):
     from playwright.sync_api import sync_playwright
 
@@ -156,7 +213,9 @@ def run(face_path, chromium):
     with tempfile.TemporaryDirectory(prefix="bmo-emotion-browser-") as home:
         env={"PATH":os.defpath,"HOME":home,"LC_ALL":"C.UTF-8",
              "PYTHONPATH":str(Path(__file__).resolve().parents[1]),"PYTHONDONTWRITEBYTECODE":"1"}
-        process=subprocess.Popen([sys.executable,"-u","-B","-c",CHILD,str(face_path),str(Path(home)/"launcher.lock")],
+        clock_path=Path(home)/'clock-offset.txt'
+        clock_path.write_text('0')
+        process=subprocess.Popen([sys.executable,"-u","-B","-c",CHILD,str(face_path),str(Path(home)/"launcher.lock"),str(clock_path)],
                                  stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,env=env)
         try:
             url=launcher_url(process)
@@ -171,9 +230,25 @@ def run(face_path, chromium):
                       HTMLMediaElement.prototype.play=function(){window.__mediaPlayCalls++;
                         throw new Error('Browser audio forbidden')};""")
                     observe(page,url)
+                    idle_offset=0
+
+                    def long_idle(emotion):
+                        nonlocal idle_offset
+                        idle_offset+=3600
+                        next_clock=clock_path.with_suffix('.next')
+                        next_clock.write_text(str(idle_offset))
+                        os.replace(next_clock,clock_path)
+                        # This GET also refreshes browser liveness on the host's
+                        # advanced clock before admitting another worker turn.
+                        with urlopen(url+'api/state',timeout=2) as response:
+                            snapshot=json.load(response)
+                        assert snapshot['emotion']==emotion and snapshot['phase']=='idle'
+                        page.wait_for_timeout(100)
+                        assert page.evaluate('face.getState().selectedEmotion')==emotion
 
                     def turn(emotion, *, mode="auto", reconnect=False):
                         previous=page.evaluate("BMOIntegration.state?.turn_id")
+                        expected=page.evaluate('face.getState().selectedEmotion')
                         page.evaluate("observed.length=0")
                         send(process,"")
                         for phase in ("listening","thinking"):
@@ -184,8 +259,11 @@ def run(face_path, chromium):
                                 raise AssertionError(f"Missing {phase} in synthetic {emotion} turn: {json.dumps(metadata)}") from None
                         page.wait_for_function("old=>observed.some(s=>s.turn!==old&&s.playback==='prepared')",arg=previous)
                         staged=page.evaluate("observed.filter(s=>s.playback!=='started'&&['listening','thinking'].includes(s.activity))")
-                        expected="neutral" if mode=="auto" else emotion
-                        assert staged and all(s["emotion"]==expected and s["speech"]=="off" for s in staged), "Emotion/speech changed before player start"
+                        assert staged and all(s["emotion"]==s['visible']==expected and s["speech"]=="off" for s in staged), "Displayed emotion changed before player start"
+                        assert any(s['activity']=='listening' and s['gaze']['x']>0 and s['gaze']['y']<0 for s in staged)
+                        assert any(s['activity']=='thinking' and s['gaze']['x']<0 and s['eyeOnly']['x']<0 and s['mouthHref']=='#mouth-thinking-hmm' for s in staged)
+                        if expected=='crying':
+                            assert any(s['tears']>0 and s['eye'].startswith('#eye-crying-') for s in staged)
                         page.wait_for_function("([old,emotion])=>observed.some(s=>s.turn!==old&&s.speech==='external'&&s.emotion===emotion&&s.mouth!=='closed')",arg=[previous,emotion])
                         active=page.evaluate("({turn:BMOIntegration.state.turn_id,utterance:BMOIntegration.state.utterance_id,position:BMOIntegration.state.position})")
                         assert page.evaluate("face.getState().eyeHref").startswith("#eye-"+emotion+"-"), "Wrong original SVG emotion reference"
@@ -199,47 +277,46 @@ def run(face_path, chromium):
                         page.wait_for_timeout(100)
                         return active
 
-                    for index,emotion in enumerate(("happy","sad","surprised","angry","neutral","crying")):
+                    for emotion in ("crying","happy","sad","surprised","angry","neutral","crying"):
                         last=turn(emotion,reconnect=emotion=="surprised")
-                        if index==0:
-                            page.wait_for_timeout(300)
-                            assert page.evaluate("face.getState().selectedEmotion")=="happy"
-                            page.wait_for_function("()=>face.getState().selectedEmotion==='neutral'")
-                    checks.append("six automatic emotions reach original SVG only at player start; normal end holds then returns neutral")
+                        long_idle(emotion)
+                    checks.append("all six emotions survive ended, hour-long mock idle, next listening/thinking/prepared until new player start")
                     checks.append("browser reconnect resumes current utterance/position/emotion without restarting speech")
 
                     send(process,"/repeat")
                     page.wait_for_function("old=>{const v=BMOIntegration.state,s=face.getState();return v?.turn_id!==old&&s.speech==='external'&&s.selectedEmotion==='crying'}",arg=last["turn"])
                     stale=page.evaluate("structuredClone(BMOIntegration.state)")
                     send(process,"/cancel")
-                    page.wait_for_function("()=>{const v=BMOIntegration.state,s=face.getState();return v?.playback==='cancelled'&&s.speech==='off'&&s.mouth==='closed'&&s.selectedEmotion==='neutral'}")
+                    page.wait_for_function("()=>{const v=BMOIntegration.state,s=face.getState();return v?.playback==='cancelled'&&s.speech==='off'&&s.mouth==='closed'&&s.selectedEmotion==='crying'}")
                     rejected=page.evaluate("stale=>{stale.sequence=BMOIntegration.sequence+1000;return BMOIntegration.applySnapshot(stale)}",stale)
                     assert rejected is False, "Retired emotion snapshot was accepted"
                     page.wait_for_timeout(100)
-                    checks.append("repeat preserves cached crying expression; cancel closes/reset neutral and rejects stale utterance")
+                    checks.append("repeat preserves cached crying expression; cancel closes mouth while retaining crying and rejects stale utterance")
 
                     send(process,"/emotion sad")
                     page.wait_for_function("()=>BMOIntegration.state?.emotion_mode==='manual'&&face.getState().selectedEmotion==='sad'")
                     turn("sad",mode="manual")
-                    page.wait_for_timeout(2200)
+                    long_idle('sad')
                     assert page.evaluate("face.getState().selectedEmotion")=="sad", "Auto expiry cleared manual override"
                     send(process,"/emotion auto")
-                    page.wait_for_function("()=>BMOIntegration.state?.emotion_mode==='auto'&&face.getState().selectedEmotion==='neutral'")
+                    page.wait_for_function("()=>BMOIntegration.state?.emotion_mode==='auto'&&face.getState().selectedEmotion==='sad'")
                     turn("happy")
                     send(process,"/repeat")
                     page.wait_for_function("()=>face.getState().speech==='external'&&face.getState().selectedEmotion==='happy'")
                     page.wait_for_function("()=>BMOIntegration.state?.playback==='ended'&&face.getState().speech==='off'")
                     send(process,"/reset")
                     page.wait_for_function("()=>BMOIntegration.state?.emotion_mode==='auto'&&face.getState().selectedEmotion==='neutral'")
-                    checks.append("manual override survives expiry; auto resumes; happy repeat and reset preserve selected mode")
+                    checks.append("manual-to-auto keeps displayed sad until new happy playback; repeat retains happy; explicit reset returns neutral")
                     assert media_calls(page)==0
+                    native_motion_check(browser,url)
+                    checks.append("unmodified native listening gaze/nods, thinking gaze/hmm, crying tears, automatic blink and surprise aperture coupling survive controlled clock")
                     stdout,_=process.communicate("/quit\n",timeout=4)
                     assert process.returncode==0, "Auto launcher did not exit cleanly"
                     summaries=[json.loads(line.removeprefix("EMOTION_RESULT ")) for line in stdout.splitlines() if line.startswith("EMOTION_RESULT ")]
                     assert len(summaries)==1
                     counts=summaries[0]
-                    assert counts["listen"]==counts["brain"]==counts["synthesis"]==counts["gain"]==counts["cues"]==8, counts
-                    assert counts["structured"]==7 and counts["players"]==counts["reaped"]==10 and counts["forbidden"]==0, counts
+                    assert counts["listen"]==counts["brain"]==counts["synthesis"]==counts["gain"]==counts["cues"]==9, counts
+                    assert counts["structured"]==8 and counts["players"]==counts["reaped"]==11 and counts["forbidden"]==0, counts
                     try:
                         urlopen(url+"api/state",timeout=.3)
                     except URLError as error:
