@@ -25,6 +25,7 @@ from bmo_ai.integration_face import FACE_SHA256
 
 CHILD = r'''
 from contextlib import ExitStack
+from pathlib import Path
 import json, os, signal, subprocess, sys, time
 from unittest.mock import patch
 from bmo_ai.integration import main
@@ -66,7 +67,8 @@ with ExitStack() as guards:
     guards.enter_context(patch('subprocess.Popen', side_effect=spawn))
     guards.enter_context(patch.object(IntegrationVoice,'listen',listen))
     guards.enter_context(patch.object(SimulatedClient,'create',create))
-    result = main(['--simulate','--port','0','--face-file',sys.argv[1]])
+    result = main(['--simulate','--port','0','--face-file',sys.argv[1]],
+                  lock_path=Path(os.environ['HOME'])/'launcher.lock')
 for process in processes:
     assert process.poll() is not None, 'Owned player survived launcher exit'
     try:

@@ -4,6 +4,7 @@ The existing ConversationWorker owns turn admission, queue pressure, cooperative
 cancellation and late results. This adapter never creates hardware at import.
 """
 from collections import deque
+import json
 from threading import Lock, Thread
 from types import SimpleNamespace
 import time
@@ -13,6 +14,7 @@ from .app import ConversationApp
 from .audio import AudioPlaybackError
 from .conversation import ConversationWorker, TurnCancelled
 from .cloud import CloudError
+from .expression_contract import ExpressionClient
 from .hardware import FaceState
 from .integration_face import wav_cues
 from .integration_profile import policy_brain
@@ -29,8 +31,11 @@ class SimulatedClient:
 
     def create(self, **request):
         self.requests.append(request)
+        text = "We can have a little adventure together."
+        if request.get("text", {}).get("format", {}).get("type") == "json_schema":
+            text = json.dumps({"speech": text, "emotion": "happy"})
         return SimpleNamespace(status="completed", incomplete_details=None,
-                               error=None, output_text="We can have a little adventure together.")
+                               error=None, output_text=text)
 
     def close(self):
         pass
@@ -38,6 +43,7 @@ class SimulatedClient:
 
 class IntegrationApp(ConversationApp):
     """Keep existing fixed unavailability notices on the same owned output."""
+    stage_reply = None
     def _notice(self, error):
         if self.config.offline_voice and error.code in ("connection", "timeout", "server", "rate_limit"):
             try:
@@ -57,7 +63,11 @@ class IntegrationApp(ConversationApp):
     def answer(self, message):
         previous = [dict(item) for item in self.brain.history]
         try:
-            return super().answer(message)
+            answer = super().answer(message)
+            if self.stage_reply is not None:
+                self.stage_reply(answer)
+            self._check_cancelled()
+            return answer
         except TurnCancelled:
             # A synchronous provider may return after cancel. Its answer must
             # enter neither playback nor the next turn's retained context.
@@ -96,24 +106,35 @@ class RepeatApp(ConversationApp):
 
 class IntegrationSession:
     def __init__(self, config, client, *, simulate=False, voice=None, brain=None,
-                 clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0):
+                 clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0,
+                 emotion_mode="manual", fish_api_key=None):
+        if emotion_mode not in ("auto", "manual"):
+            raise ValueError("unknown emotion mode")
         self.config, self.client, self.simulate = config, client, simulate
-        self.brain = brain if brain is not None else policy_brain(client, config)
+        self.expression_client = ExpressionClient(client)
+        self.brain = brain if brain is not None else policy_brain(
+            client, config, expression_client=self.expression_client if emotion_mode == "auto" else None)
         self.clock, self.disconnect_timeout = clock, disconnect_timeout
         self.session_id = uuid4().hex
         self._lock = Lock()
         self._closed = self._active = self._pending_reset = False
         self._repeat = False
+        self._emotion_generation = 0
+        self._turn_mode = emotion_mode
+        self._turn_emotion_generation = 0
+        self._staged_expression = self._notice_restore = None
         self._started = self._browser_seen = None
         self._turn = 0
         self._data = dict(session_id=self.session_id, turn_id=None,
                           utterance_id=None, sequence=0, phase="idle",
-                          emotion="neutral", playback="idle", position=0.0,
+                          emotion="neutral", emotion_mode=emotion_mode,
+                          emotion_validation="none", playback="idle", position=0.0,
                           cues=[], source=None)
         self.events = deque(maxlen=128)
+        voice_credentials = {} if fish_api_key is None else {"fish_api_key": fish_api_key}
         self.voice = voice if voice is not None else IntegrationVoice(
             config, client, simulate=simulate, emit=lambda *a, **kw: None,
-            cancel_check=lambda: None)
+            cancel_check=lambda: None, **voice_credentials)
         self.worker = ConversationWorker(self._factory, timeout=timeout,
                                          queue_size=32, clock=clock, synthetic=simulate)
 
@@ -121,9 +142,41 @@ class IntegrationSession:
         self._data["sequence"] += 1
         self.events.append({key: self._data[key] for key in
                             ("session_id", "turn_id", "utterance_id", "sequence",
-                             "phase", "emotion", "playback", "source")} | {"kind": kind})
+                             "phase", "emotion", "emotion_mode", "emotion_validation",
+                             "playback", "source")} | {"kind": kind})
+
+    def _invalidate_expression(self, *, neutral=False):
+        """Invalidate candidates without clearing the last displayed emotion.
+
+        Continuity v2 keeps emotion across activities and ordinary terminal
+        states. Only an explicit reset requests neutral here.
+        """
+        self._emotion_generation += 1
+        self._staged_expression = self._notice_restore = None
+        if neutral:
+            self._data.update(emotion="neutral", emotion_validation="none")
+
+    def _restore_notice_expression(self):
+        """A fixed notice is neutral only while playing, including repeats.
+
+        Completion, error or cancellation restores the prior dialogue display.
+        A reset/manual override/mode change invalidates this scoped restoration,
+        so its late terminal event cannot overwrite an explicit newer choice.
+        """
+        restore, self._notice_restore = self._notice_restore, None
+        if (restore is not None and self._current_expression_turn()
+                and restore[0] == self._emotion_generation and restore[1] == self._turn):
+            self._data.update(emotion=restore[2], emotion_validation=restore[3])
+
+    def _current_expression_turn(self):
+        return (self._data["emotion_mode"] == "auto" and self._turn_mode == "auto"
+                and self._turn_emotion_generation == self._emotion_generation)
 
     def _idle(self, playback):
+        if playback in ("ended", "cancelled", "error"):
+            self._restore_notice_expression()
+        if playback in ("cancelled", "error"):
+            self._invalidate_expression()
         self._data.update(phase="idle", playback=playback, cues=[], position=0.0,
                           utterance_id=None)
         self._started = None
@@ -147,14 +200,23 @@ class IntegrationSession:
         return self.snapshot()
 
     def set_emotion(self, emotion):
-        if emotion not in EMOTIONS:
+        if emotion not in EMOTIONS and emotion not in ("auto", "manual"):
             raise ValueError("unknown emotion")
         with self._lock:
-            self._data["emotion"] = emotion
+            self._data["emotion_mode"] = "auto" if emotion == "auto" else "manual"
+            self._invalidate_expression()
+            if emotion in EMOTIONS:
+                self._data["emotion"] = emotion
+            if self._data["emotion_mode"] == "manual":
+                self._data["emotion_validation"] = "manual"
             self._record("emotion")
+        # A busy turn keeps its original brain-only view. Generation checks
+        # discard its provisional metadata; the next turn chooses a new view.
+        self.expression_client.reset()
 
     def _factory(self, queue_face, cancellation):
         turn = self.worker.turn
+        mode, generation = self._turn_mode, self._turn_emotion_generation
 
         def check():
             from .conversation import TurnCancelled
@@ -162,6 +224,25 @@ class IntegrationSession:
                 raise TurnCancelled()
 
         session = self
+
+        def stage_reply(answer):
+            check()
+            if mode != "auto":
+                return
+            with self._lock:
+                if (not self._active or turn != self._turn or cancellation.is_set()
+                        or generation != self._emotion_generation
+                        or self._data["emotion_mode"] != "auto"):
+                    return
+                reply = self.expression_client.last_reply
+                if reply is None or reply.speech != answer:
+                    # No raw envelope or unmatched provisional reply reaches TTS.
+                    raise CloudError("expression_format", "The reply did not match the expression contract.")
+                value = dict(emotion=reply.emotion,
+                             emotion_validation="degraded" if reply.degraded else "validated")
+                self._staged_expression = dict(turn=turn, generation=generation, **value)
+                self.voice.expression_metadata = value
+            check()
 
         class SessionFace:
             def set_state(self, state):
@@ -201,14 +282,35 @@ class IntegrationSession:
                     self._started = self.clock()
                     self._data.update(playback="started", phase="speaking",
                                       source=fields.get("source", self._data["source"]))
+                    if self._current_expression_turn():
+                        notice = fields.get("notice") is True
+                        self._notice_restore = (
+                            self._emotion_generation, turn, self._data["emotion"],
+                            self._data["emotion_validation"]) if notice else None
+                        emotion = "neutral" if notice else fields.get("emotion", "neutral")
+                        validation = "notice" if notice else fields.get("emotion_validation", "none")
+                        if emotion not in EMOTIONS:
+                            emotion, validation = "neutral", "none"
+                        if validation not in ("none", "manual", "validated", "degraded", "notice"):
+                            emotion, validation = "neutral", "none"
+                        self._data.update(emotion=emotion, emotion_validation=validation)
                 elif kind in ("ended", "cancelled", "error"):
+                    if kind == "ended":
+                        self._staged_expression = None
                     self._idle(kind)
                 self._record(kind)
 
         self.voice.cancel_check, self.voice.emit = check, emit
+        with self._lock:
+            self.voice.expression_metadata = dict(
+                emotion=self._data["emotion"] if mode == "manual" else "neutral",
+                emotion_validation="manual" if mode == "manual" else "none")
         app = RepeatApp if self._repeat else IntegrationApp
-        return app(self.brain, self.client, self.config,
-                   face=SessionFace(), voice=self.voice, cancel_check=check)
+        instance = app(self.brain, self.client, self.config,
+                       face=SessionFace(), voice=self.voice, cancel_check=check)
+        if not self._repeat:
+            instance.stage_reply = stage_reply
+        return instance
 
     def start(self, message="A synthetic question"):
         return self._start_turn(message=message)
@@ -224,6 +326,9 @@ class IntegrationSession:
             return False
         self._repeat = repeat
         with self._lock:
+            self._invalidate_expression()
+            self._turn_mode = self._data["emotion_mode"]
+            self._turn_emotion_generation = self._emotion_generation
             self._turn = self.worker.turn + 1
             self._active = True
             self._started = None
@@ -231,12 +336,17 @@ class IntegrationSession:
                               utterance_id=f"{self.session_id}:{self._turn}:1",
                               phase="idle", playback="idle", position=0.0, cues=[])
             self._record("turn_started")
+        self.expression_client.reset()
+        self.brain.client = self.expression_client if self._turn_mode == "auto" else self.client
         if not repeat:
             self.voice.message = message
         return self.worker.start()
 
     def cancel(self):
-        result = self.worker.cancel()
+        if hasattr(self.voice, "invalidate_pending"):
+            result = self.voice.invalidate_pending(self.worker.cancel)
+        else:
+            result = self.worker.cancel()
         with self._lock:
             self._active = False
             self._idle("cancelled")
@@ -269,14 +379,19 @@ class IntegrationSession:
 
     def _reset_now(self):
         self.brain.reset()
+        self.expression_client.reset()
         if hasattr(self.voice, "clear_cache"):
             self.voice.clear_cache()
         self._pending_reset = False
         with self._lock:
+            self._invalidate_expression(neutral=True)
             self._idle("idle")
             self._record("reset")
 
     def reset(self):
+        with self._lock:
+            self._invalidate_expression(neutral=True)
+            self._record("expression_reset")
         if self.busy:
             self._pending_reset = True
             self.cancel()

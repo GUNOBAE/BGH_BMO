@@ -1,7 +1,8 @@
 """Optional Fish Audio WAV output for BMO; no extra dependencies or implicit fallback.
 
 Only Fish gets the spoken reply. GPT chat and OpenAI transcription remain in
-existing modules. FISH_API_KEY is read at call time; no secrets enter config or logs.
+existing modules. Keys are supplied in memory or read at call time from
+FISH_API_KEY; no secrets enter config or logs.
 """
 from __future__ import annotations
 
@@ -84,6 +85,7 @@ def synthesize_wav(
     timeout: float = 30.0,
     download_timeout: float = 60.0,
     cancel_check=None,
+    api_key=None,
 ):
     """Call Fish once and return a validated temporary WAV path.
 
@@ -104,8 +106,10 @@ def synthesize_wav(
     for duration in (timeout, download_timeout):
         if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 0 < duration <= 300:
             raise audio.AudioValidationError("Fish Audio timeouts must be finite values between 0 and 300 seconds.", "invalid_fish_timeout")
-    key = os.environ.get("FISH_API_KEY", "").strip()
-    if not key or key == "YOUR_KEY_HERE" or key.startswith("YOUR_FISH"):
+    selected = os.environ.get("FISH_API_KEY", "") if api_key is None else api_key
+    key = selected.strip() if type(selected) is str else ""
+    if (not key or len(key) > 4096 or any(not 33 <= ord(c) <= 126 for c in key)
+            or key == "YOUR_KEY_HERE" or key.startswith("YOUR_FISH")):
         raise audio.AudioSynthesisError("Set FISH_API_KEY before selecting Fish Audio.", "missing_fish_key")
     if cancel_check is not None:
         cancel_check()

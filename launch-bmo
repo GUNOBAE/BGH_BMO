@@ -1,0 +1,7 @@
+#!/bin/sh
+# Manual entry point only. No service, startup registration or key arguments.
+set -eu
+bmo_project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+bmo_python=${BMO_PYTHON:-"$bmo_project_dir/.venv/bin/python"}
+cd "$bmo_project_dir/software"
+exec "$bmo_python" -B -m bmo_ai.manual_launcher "$@"

@@ -13,6 +13,8 @@ from bmo_ai.audio import AudioValidationError
 from bmo_ai.cloud import CloudError
 from bmo_ai.config import BMOConfig
 from bmo_ai.conversation import ConversationWorker, TurnCancelled
+from bmo_ai.core import BMOBrain
+from bmo_ai.expression_contract import ExpressionClient
 from bmo_ai.hardware import FaceState
 from bmo_ai.offline_demo import offline_app
 
@@ -341,6 +343,33 @@ class WorkerTests(unittest.TestCase):
                 fail[0] = False
                 worker.start()
                 self.assertEqual(self.finish(worker)[-1].code, "ok")
+
+    def test_expression_format_code_survives_worker_without_speech_and_next_turn_recovers(self):
+        responses = SimpleNamespace(create=Mock(side_effect=[
+            SimpleNamespace(status="completed", error=None, incomplete_details=None,
+                            output_text='{"speech":"private partial'),
+            SimpleNamespace(status="completed", error=None, incomplete_details=None,
+                            output_text='{"speech":"A clean reply.","emotion":"neutral"}'),
+        ]))
+        client = ExpressionClient(SimpleNamespace(responses=responses))
+        brain = BMOBrain(client, model="gpt-4.1-mini")
+        voice = SimpleNamespace(listen=lambda: "Synthetic question.", speak=Mock(
+            side_effect=lambda text, on_playback_start: on_playback_start()))
+        worker = self.worker(lambda face, cancel: ConversationApp(
+            brain, None, BMOConfig(), face=face, voice=voice), synthetic=True)
+        worker.start()
+        failed = self.finish(worker)
+        self.assertEqual((failed[-1].code, failed[-1].state),
+                         ("expression_format", FaceState.ERROR))
+        self.assertNotIn("private", repr(failed))
+        self.assertEqual(brain.history, [])
+        self.assertIsNone(client.last_reply)
+        voice.speak.assert_not_called()
+        self.assertTrue(worker.start())
+        self.assertEqual(self.finish(worker)[-1].code, "ok")
+        self.assertEqual(voice.speak.call_count, 1)
+        self.assertEqual(voice.speak.call_args.args[0], "A clean reply.")
+        self.assertEqual(responses.create.call_count, 2)
 
     def test_tts_completion_is_not_speaking_until_player_start(self):
         factory, entered, release, calls = self.gated("tts")

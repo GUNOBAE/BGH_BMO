@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # tested. Only its harmless owned Python sleep child is permitted to spawn.
 CHILD = r'''
 from contextlib import ExitStack
+from pathlib import Path
 import os
 import subprocess
 import sys
@@ -42,7 +43,7 @@ with ExitStack() as guards:
                    "bmo_ai.local_piper.synthesize_wav"):
         guards.enter_context(patch(target, side_effect=AssertionError("Live IO forbidden")))
     guards.enter_context(patch("subprocess.Popen", side_effect=harmless_child))
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main(sys.argv[1:], lock_path=Path(os.environ["HOME"]) / "launcher.lock"))
 '''
 
 
@@ -80,8 +81,39 @@ class IntegrationLauncherTests(unittest.TestCase):
         self.assertEqual(config["fish_gain"], .25)
         self.assertEqual(config["language_policy"], "english_voice")
         self.assertEqual(config["audio_owner"], "python_alsa")
+        self.assertEqual(config["emotion_mode"], "manual")
+        self.assertEqual(config["screen_profile"], "v13.2")
         self.assertNotIn("private", result.stdout + result.stderr)
         self.assertNotIn("unselected-parent-model", result.stdout)
+
+    def test_auto_mode_is_explicit_in_effective_config(self):
+        result = self.launch("--emotion-mode", "auto", "--effective-config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["emotion_mode"], "auto")
+
+    def test_r10_selection_is_explicit_without_loading_an_asset_or_credentials(self):
+        result = self.launch("--screen-profile", "r10", "--effective-config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["screen_profile"], "r10")
+
+    def test_unknown_screen_profile_is_rejected(self):
+        result = self.launch("--screen-profile", "unregistered-screen", "--effective-config")
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_auto_launcher_uses_same_two_turn_path(self):
+        result = self.launch("--simulate", "--emotion-mode", "auto", "--no-web", "--turns", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        turns = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
+        self.assertEqual([turn["history_messages"] for turn in turns], [2, 4])
+        self.assertTrue(all(turn["playback"] == "ended" for turn in turns))
+
+    def test_runtime_emotion_modes_are_accepted_without_cloud_io(self):
+        result = self.launch("--simulate", "--no-web", stdin=(
+            "/emotion happy\n/emotion auto\n/emotion manual\n/reset\n/quit\n"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Emotion:", result.stdout)
+        self.assertNotIn("Unknown command", result.stdout)
 
     def test_baseline_effective_config_clears_reasoning(self):
         result = self.launch("--baseline", "--effective-config")
