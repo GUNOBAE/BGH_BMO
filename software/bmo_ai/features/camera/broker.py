@@ -1,0 +1,99 @@
+"""One lazy capture owner shared by preview, tracking and synchronous photo."""
+from threading import Lock, RLock
+
+from ..contracts import FeatureError
+from .models import Frame
+
+
+class CameraBroker:
+    def __init__(self, backend_factory):
+        self.factory = backend_factory
+        self._state, self._operation = RLock(), Lock()
+        self._backend = None
+        self._epoch = 0
+        self._seq = self._stamp = None
+        self.simulated = getattr(backend_factory, 'simulated', True) is not False
+
+    @property
+    def opened(self):
+        with self._state:
+            return self._backend is not None
+
+    @property
+    def stream_generation(self):
+        with self._state:
+            return self._epoch
+
+    def open(self, *, cancel_check=None):
+        if cancel_check is not None:
+            cancel_check()
+        with self._state:
+            if self._backend is not None:
+                return
+            expected = self._epoch
+        with self._operation:
+            if cancel_check is not None:
+                cancel_check()
+            with self._state:
+                if expected != self._epoch:
+                    raise FeatureError('camera_cancelled')
+                if self._backend is not None:
+                    return
+                self._epoch += 1
+                epoch = self._epoch
+            backend = None
+            try:
+                backend = self.factory()
+                backend.open(epoch)
+                with self._state:
+                    if epoch != self._epoch:
+                        raise FeatureError('camera_cancelled')
+                    self._backend = backend
+                    self.simulated = backend.simulated is not False
+                    self._seq = self._stamp = None
+            except Exception:
+                if backend is not None:
+                    try:
+                        backend.close()
+                    except Exception:
+                        pass
+                raise FeatureError('camera_open_failed') from None
+
+    def _call(self, method):
+        with self._operation:
+            with self._state:
+                backend, epoch = self._backend, self._epoch
+            if backend is None:
+                raise FeatureError('camera_off')
+            frame = getattr(backend, method)()
+            with self._state:
+                if epoch != self._epoch or backend is not self._backend:
+                    raise FeatureError('camera_cancelled')
+                if not isinstance(frame, Frame) or frame.stream_generation != epoch:
+                    raise FeatureError('invalid_camera_frame')
+                if self._seq is not None and (frame.seq <= self._seq or frame.captured_at < self._stamp):
+                    return None
+                self._seq, self._stamp = frame.seq, frame.captured_at
+                return frame
+
+    def read_frame(self):
+        return self._call('read_frame')
+
+    def capture_photo(self):
+        frame = self._call('capture_photo')
+        if frame is None:
+            raise FeatureError('stale_photo')
+        return frame
+
+    def close(self):
+        # Do not wait on a capture operation to invalidate its future result.
+        with self._state:
+            self._epoch += 1
+            backend, self._backend = self._backend, None
+            self._seq = self._stamp = None
+        if backend is not None:
+            try:
+                backend.close()
+            except Exception:
+                return False
+        return True
