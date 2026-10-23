@@ -16,8 +16,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 import wave
 
+from .screen_profiles import SCREEN_PROFILES
 
-FACE_SHA256 = "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932"
+
+FACE_SHA256 = SCREEN_PROFILES["v13.2"]["sha256"]
 LADDER = ("closed", "parted", "small", "low", "mid", "body", "open", "high", "wide")
 MOUTHS = frozenset((*LADDER, "rest", "round", "tight", "flat", "grit"))
 EMOTIONS = frozenset(("neutral", "happy", "angry", "sad", "crying", "surprised"))
@@ -186,17 +188,30 @@ def _public_snapshot(value):
 
 
 class FaceServer:
-    """GET-only loopback server for one approved face and bundled wrapper."""
+    """GET-only loopback server for one pinned local screen and wrapper."""
 
-    def __init__(self, face_path, *, snapshot, host="127.0.0.1", port=0):
+    def __init__(self, face_path, *, snapshot, host="127.0.0.1", port=0,
+                 screen_profile="v13.2"):
         host = "127.0.0.1" if host == "localhost" else host
         if not ipaddress.ip_address(host).is_loopback or ":" in host:
             raise ValueError("An IPv4 loopback host is required")
+        if not isinstance(screen_profile, str) or screen_profile not in SCREEN_PROFILES:
+            raise ValueError("Unknown screen profile")
+        self.screen_profile = screen_profile
+        profile = SCREEN_PROFILES[screen_profile]
         self.face_path = Path(face_path).expanduser().resolve(strict=True)
         self._face = self.face_path.read_bytes()
         self.sha256 = hashlib.sha256(self._face).hexdigest()
-        if self.sha256 != FACE_SHA256:
-            raise ValueError("Face SHA-256 does not match approved v13.2")
+        # Keep the original v13.2 patch boundary for existing fixture tests.
+        # Patching it cannot admit another file through the explicit R10 pin.
+        expected = FACE_SHA256 if screen_profile == "v13.2" else profile["sha256"]
+        if self.sha256 != expected:
+            raise ValueError("Face SHA-256 does not match selected screen profile")
+        self._screen_metadata = json.dumps({
+            "version": screen_profile,
+            "sha256": self.sha256,
+            "approval_status": profile["approval_status"],
+        }).encode()
         self.snapshot, self.host, self.port = snapshot, host, port
         self._server = self._thread = None
         root = Path(__file__).with_name("integration_web")
@@ -246,7 +261,9 @@ class FaceServer:
                     self._respond(403)
                     return
                 path = urlsplit(self.path).path
-                if path == "/api/state":
+                if path == "/api/screen":
+                    self._respond(200, owner._screen_metadata, "application/json")
+                elif path == "/api/state":
                     try:
                         body = json.dumps(_public_snapshot(owner.snapshot()), allow_nan=False).encode()
                     except Exception:

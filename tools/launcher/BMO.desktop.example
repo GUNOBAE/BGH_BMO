@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=BMO Manual Launcher
+Comment=Explicit live conversation; first use asks for private credentials
+Terminal=true
+Exec=/home/bgh/BMO_EMOTION/launch-bmo --live --emotion-mode auto --screen-profile v13.2
+Path=/home/bgh/BMO_EMOTION
+Categories=Utility;

@@ -82,6 +82,7 @@ class IntegrationLauncherTests(unittest.TestCase):
         self.assertEqual(config["language_policy"], "english_voice")
         self.assertEqual(config["audio_owner"], "python_alsa")
         self.assertEqual(config["emotion_mode"], "manual")
+        self.assertEqual(config["screen_profile"], "v13.2")
         self.assertNotIn("private", result.stdout + result.stderr)
         self.assertNotIn("unselected-parent-model", result.stdout)
 
@@ -89,6 +90,16 @@ class IntegrationLauncherTests(unittest.TestCase):
         result = self.launch("--emotion-mode", "auto", "--effective-config")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["emotion_mode"], "auto")
+
+    def test_r10_selection_is_explicit_without_loading_an_asset_or_credentials(self):
+        result = self.launch("--screen-profile", "r10", "--effective-config")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["screen_profile"], "r10")
+
+    def test_unknown_screen_profile_is_rejected(self):
+        result = self.launch("--screen-profile", "unregistered-screen", "--effective-config")
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_auto_launcher_uses_same_two_turn_path(self):
         result = self.launch("--simulate", "--emotion-mode", "auto", "--no-web", "--turns", "2")

@@ -53,11 +53,20 @@ def call_cloud(operation: Callable[[], T]) -> T:
         raise cloud_error(error) from None
 
 
-def create_client(config, *, env=None):
-    """Import OpenAI lazily, allowing help, doctor, tests and benchmarks offline."""
-    env = os.environ if env is None else env
-    key = env.get("OPENAI_API_KEY", "").strip()
-    if not key or key == "YOUR_KEY_HERE" or key.startswith("YOUR_OPENAI"):
+def create_client(config, *, env=None, api_key=None):
+    """Import the SDK lazily; an explicit key stays in this memory boundary.
+
+    None preserves the existing environment path. An invalid explicit key never
+    silently falls back to a different environment credential.
+    """
+    if api_key is None:
+        env = os.environ if env is None else env
+        selected = env.get("OPENAI_API_KEY", "")
+    else:
+        selected = api_key
+    key = selected.strip() if type(selected) is str else ""
+    if (not key or len(key) > 4096 or any(not 33 <= ord(c) <= 126 for c in key)
+            or key == "YOUR_KEY_HERE" or key.startswith("YOUR_OPENAI")):
         raise CloudError("missing_key", "Set OPENAI_API_KEY in your environment before starting cloud mode.")
     try:
         from openai import OpenAI

@@ -107,7 +107,7 @@ class RepeatApp(ConversationApp):
 class IntegrationSession:
     def __init__(self, config, client, *, simulate=False, voice=None, brain=None,
                  clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0,
-                 emotion_mode="manual"):
+                 emotion_mode="manual", fish_api_key=None):
         if emotion_mode not in ("auto", "manual"):
             raise ValueError("unknown emotion mode")
         self.config, self.client, self.simulate = config, client, simulate
@@ -131,9 +131,10 @@ class IntegrationSession:
                           emotion_validation="none", playback="idle", position=0.0,
                           cues=[], source=None)
         self.events = deque(maxlen=128)
+        voice_credentials = {} if fish_api_key is None else {"fish_api_key": fish_api_key}
         self.voice = voice if voice is not None else IntegrationVoice(
             config, client, simulate=simulate, emit=lambda *a, **kw: None,
-            cancel_check=lambda: None)
+            cancel_check=lambda: None, **voice_credentials)
         self.worker = ConversationWorker(self._factory, timeout=timeout,
                                          queue_size=32, clock=clock, synthetic=simulate)
 

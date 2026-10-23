@@ -59,7 +59,8 @@ class IntegrationVoice:
     """
 
     def __init__(self, config, client, *, emit, cancel_check=None, simulate=False,
-                 fish_synthesizer=None, piper_synthesizer=None, player=None):
+                 fish_synthesizer=None, piper_synthesizer=None, player=None,
+                 fish_api_key=None):
         self.config = config
         self.client = client
         self.emit = emit
@@ -69,6 +70,7 @@ class IntegrationVoice:
         self._fish_synthesizer = fish_synthesizer
         self._piper_synthesizer = piper_synthesizer
         self._player = player
+        self._fish_api_key = fish_api_key
         self._closed = Event()
         self._idle = Event()
         self._idle.set()
@@ -152,10 +154,12 @@ class IntegrationVoice:
         if self.config.fish_delivery == "soft":
             spoken = fish_tts.SOFT_AARON_DIRECTION + spoken
         synthesize = self._fish_synthesizer or fish_tts.synthesize_wav
+        credentials = {} if self._fish_api_key is None else {"api_key": self._fish_api_key}
         try:
             return Path(synthesize(spoken, model=self.config.fish_model,
                                    reference_id=self.config.fish_voice_id,
-                                   timeout=self.config.timeout, cancel_check=check)), "fish", notice
+                                   timeout=self.config.timeout, cancel_check=check,
+                                   **credentials)), "fish", notice
         except audio.AudioSynthesisError:
             check()
             if not self.config.offline_voice:

@@ -45,13 +45,14 @@ env -i PATH=/usr/bin:/bin HOME=/tmp LC_ALL=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 \
 
 ## 사용자가 수행할 실제 검수 — 이번 자동 작업에서는 NOT_RUN
 
-새 터미널에 키가 없다면 인증을 다시 입력해야 한다. 키를 파일·명령행·Git에
-저장하지 않는다. 아래 live 명령은 실제 마이크/유료 API/스피커를 사용한다.
+최초 한 번만 비공개 키를 설정하고 재사용하는 수동 Launcher는
+[LAUNCHER_KR.md](LAUNCHER_KR.md)를 따른다. 키를 소스·명령행·Git에 저장하지 않는다.
+전용 비공개 설정과 환경 인증의 차이를 구분한다. 아래 live 명령은 실제 마이크/유료 API/스피커를 사용한다.
 기존 앱이 실행 중이면 사용자가 정상 종료한 뒤 검수한다.
 
 ```bash
-cd /home/bgh/BMO_EMOTION/software
-../.venv/bin/python -B -m bmo_ai.integration --live --emotion-mode auto \
+cd /home/bgh/BMO_EMOTION
+./launch-bmo --live --emotion-mode auto --screen-profile v13.2 \
   --face-file /home/bgh/Downloads/BMO_Screen_v13_2.html \
   --mic-device plughw:CARD=Device,DEV=0 \
   --speaker-device plughw:CARD=MAX98357A,DEV=0

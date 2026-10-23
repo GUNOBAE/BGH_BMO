@@ -23,14 +23,16 @@ def parser():
                    help="automatic reply expressions, or existing manual control (default)")
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--speaker-device", default="plughw:CARD=MAX98357A,DEV=0")
-    p.add_argument("--face-file", type=Path, default=Path("/home/bgh/Downloads/BMO_Screen_v13_2.html"))
+    p.add_argument("--screen-profile", choices=("v13.2", "r10"), default="v13.2",
+                   help="versioned external face; R10 local candidate requires explicit selection")
+    p.add_argument("--face-file", type=Path, default=None)
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--no-web", action="store_true", help="simulation-only CLI check")
     p.add_argument("--turns", type=int, default=0, help="run this many synthetic turns then exit")
     return p
 
 
-def main(argv=None, *, lock_path=None):
+def main(argv=None, *, lock_path=None, credential_resolver=None):
     p = parser()
     args = p.parse_args(argv)
     try:
@@ -39,7 +41,8 @@ def main(argv=None, *, lock_path=None):
     except ValueError:
         p.error("invalid integration configuration")
     if args.effective_config:
-        print(json.dumps(effective_config(config, emotion_mode=args.emotion_mode),
+        print(json.dumps(dict(effective_config(config, emotion_mode=args.emotion_mode),
+                              screen_profile=args.screen_profile),
                          indent=2, ensure_ascii=False))
         return 0
     if not (args.live or args.simulate):
@@ -76,12 +79,23 @@ def main(argv=None, *, lock_path=None):
 
     session = server = client = None
     try:
-        client = SimulatedClient() if args.simulate else create_client(config)
+        # The manual launcher resolves private credentials only after the shared
+        # lock is held. Simulation/help/effective-config never touch key storage.
+        credentials = (credential_resolver() if args.live and credential_resolver is not None
+                       else None)
+        client = (SimulatedClient() if args.simulate else create_client(config,
+                  **({"api_key": credentials.openai_api_key} if credentials is not None else {})))
         session = IntegrationSession(config, client, simulate=args.simulate,
-                                     emotion_mode=args.emotion_mode)
+                                     emotion_mode=args.emotion_mode,
+                                     **({"fish_api_key": credentials.fish_api_key}
+                                        if credentials is not None else {}))
         mock_actions = MockActionHost(simulate=True) if args.simulate else None
         if not args.no_web:
-            server = FaceServer(args.face_file, snapshot=session.browser_snapshot, port=args.port)
+            from .screen_profiles import SCREEN_PROFILES
+            face_file = (args.face_file if args.face_file is not None else
+                         Path(SCREEN_PROFILES[args.screen_profile]["default_path"]))
+            server = FaceServer(face_file, snapshot=session.browser_snapshot, port=args.port,
+                                screen_profile=args.screen_profile)
             server.start()
             print("Face: " + server.url, flush=True)
         print("Commands: Enter=question, /cancel, /repeat, /reset, /emotion auto|manual|NAME, "
