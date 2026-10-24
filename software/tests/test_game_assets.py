@@ -182,6 +182,72 @@ class GameAssetTests(unittest.TestCase):
             review = assets.review_archive(self.archive)
             self.assertEqual(tuple(entry.name for entry in review.entries), ("web/index.html", "LICENSE"))
 
+    def test_review_parser_uses_immutable_snapshot_when_original_changes_after_preflight(self):
+        self.zip([("a.txt", b"a")])
+        original_bytes = self.archive.read_bytes()
+        self.zip([("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c")])
+        changed_bytes = self.archive.read_bytes()
+        self.archive.write_bytes(original_bytes)
+        preflight, info_type = assets._preflight_archive, assets.zipfile.ZipInfo
+        allocations = [0]
+        class CountedInfo(info_type):
+            def __init__(self, *args, **kwargs):
+                allocations[0] += 1
+                super().__init__(*args, **kwargs)
+        def replace_original(snapshot):
+            self.assertFalse(hasattr(snapshot, "write"))
+            preflight(snapshot)
+            self.archive.write_bytes(changed_bytes)
+        with patch.object(assets, "MAX_ENTRIES", 1), \
+             patch.object(assets, "_preflight_archive", side_effect=replace_original), \
+             patch.object(assets.zipfile, "ZipInfo", CountedInfo), \
+             self.assertRaises(FeatureError) as caught:
+            assets.review_archive(self.archive)
+        self.assertEqual(caught.exception.code, "game_asset_changed")
+        self.assertEqual(allocations[0], 1)
+        self.assertFalse(self.content.exists())
+
+    def test_installer_extracts_same_snapshot_and_rejects_original_post_preflight_mutation(self):
+        review = assets.review_archive(self.zip([("a.txt", b"a")]))
+        original_bytes = self.archive.read_bytes()
+        self.zip([("a.txt", b"a"), ("b.txt", b"b"), ("c.txt", b"c")])
+        changed_bytes = self.archive.read_bytes()
+        self.archive.write_bytes(original_bytes)
+        preflight, info_type, calls = assets._preflight_archive, assets.zipfile.ZipInfo, [0]
+        allocations = [0]
+        class CountedInfo(info_type):
+            def __init__(self, *args, **kwargs):
+                allocations[0] += 1
+                super().__init__(*args, **kwargs)
+        def change_only_install_snapshot(snapshot):
+            preflight(snapshot)
+            calls[0] += 1
+            if calls[0] == 2:
+                self.archive.write_bytes(changed_bytes)
+        with patch.object(assets, "MAX_ENTRIES", 1), \
+             patch.object(assets, "_preflight_archive", side_effect=change_only_install_snapshot), \
+             patch.object(assets.zipfile, "ZipInfo", CountedInfo), \
+             self.assertRaises(FeatureError) as caught:
+            self.install(review)
+        self.assertEqual(caught.exception.code, "game_asset_changed")
+        self.assertEqual(allocations[0], 2)  # one reviewed + one extracted entry, never three
+        self.assertFalse((self.content / "fixture_pack").exists())
+        self.assertNoStage()
+
+    def test_original_is_rechecked_after_extraction_and_immediately_before_publication(self):
+        review = assets.review_archive(self.zip([("a.txt", b"old")]))
+        self.install(review)
+        original_stage_file = assets._stage_file
+        def change_source_when_manifest_is_staged(directory, name):
+            if name == assets._MANIFEST:
+                self.archive.write_bytes(b"changed after extraction")
+            return original_stage_file(directory, name)
+        with patch.object(assets, "_stage_file", side_effect=change_source_when_manifest_is_staged), \
+             self.assertRaises(FeatureError):
+            self.install(review, replace_existing=True)
+        self.assertEqual((self.content / "fixture_pack/a.txt").read_bytes(), b"old")
+        self.assertNoStage()
+
     def test_source_symlink_hardlink_and_changed_checksum_are_rejected(self):
         self.zip()
         link = self.root / "alias.zip"

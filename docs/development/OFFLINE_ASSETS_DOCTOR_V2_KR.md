@@ -43,7 +43,9 @@ desktop 도구는 `launch-features --simulate --screen-profile r10`을 기본으
 
 검토기는 절대·상위·Windows·인코딩 경로, 중복·충돌 경로, `.git`·`.env`·credential 파일명, symlink·장치·FIFO, 암호화 항목, 실행 비트와 네이티브 실행 파일 헤더를 거부한다. 지원 목록 밖의 확장자는 거부한다. 외부 게임 코드의 import, 쉘 실행, ROM·에뮬레이터 실행, 브라우저 열기는 없다. ZIP 전체·항목 수·항목 크기·압축 비율·총 해제 크기를 제한하고, 재확인한 ZIP·항목 해시만 추출한다.
 
-`ZipFile`이 항목 객체를 만들기 전에 EOCD와 중앙 디렉터리를 작은 고정 버퍼로 사전 검사한다. 최대 2,048항목, 중앙 디렉터리 4 MiB만 허용하며 EOCD의 개수와 실제 레코드 수·길이, 로컬 헤더·데이터 범위, 오프셋을 대조한다. ZIP64·다중 디스크·겹치는 데이터 영역을 거부하고 압축 방식은 stored/deflate로 제한한다. 허위 항목 수와 범위 초과는 `ZipFile` 생성 전에 거부한다.
+원본 ZIP을 최대 128 MiB의 private 불변 bytes 사본으로 읽고, 같은 사본에서 해시·사전검사·`ZipFile` 파싱·추출을 수행한다. 따라서 사전검사 후 외부 원본이 바뀌어도 파서가 새로운 항목을 할당하지 않는다. 원본 fd의 inode·크기·mtime·ctime을 사본 로딩 전후와 검토 종료·설치 게시 직전에 대조하여 원본 변경도 거부한다. 읽기 전용 검토는 사본 파일을 디스크에 쓰지 않는다.
+
+`ZipFile`이 항목 객체를 만들기 전에 EOCD와 중앙 디렉터리를 사전 검사한다. 최대 2,048항목, 중앙 디렉터리 4 MiB만 허용하며 EOCD의 개수와 실제 레코드 수·길이, 로컬 헤더·데이터 범위, 오프셋을 대조한다. ZIP64·다중 디스크·겹치는 데이터 영역을 거부하고 압축 방식은 stored/deflate로 제한한다. 허위 항목 수와 범위 초과는 `ZipFile` 생성 전에 거부한다. 메모리는 원본 사본 최대 128 MiB에 중앙 디렉터리 파서·항목 객체 및 작은 작업 버퍼가 추가된다. EOCD 사전검사 자체의 tail 버퍼 제한 65,577바이트를 전체 작업의 메모리 상한으로 표현하지 않는다.
 
 설치는 사용자 소유 700 디렉터리와 600 일반 파일만 사용한다. `O_NOFOLLOW`·고정 dirfd·파일 정체성 검사·private flock·새 staging 디렉터리·파일 fsync 후 디렉터리 rename을 사용한다. 설치 manifest도 `runtime_verified=false`, `runtime=NOT_RUN`이다. 설치 준비가 성공해도 HTTP 등록, 게임 catalog READY 전환, 실행 허용을 자동으로 수행하지 않는다.
 
@@ -61,4 +63,4 @@ desktop 도구는 `launch-features --simulate --screen-profile r10`을 기본으
 
 ## 검증
 
-합성 임시 파일만 사용한 새 테스트는 `test_game_assets.py` 22개, `test_offline_doctor.py` 8개, `test_desktop_plan.py` 5개, `test_media_video_fixture.py` 7개다. 게임 테스트는 ZIP 공격 경로·해시·라이선스 gate·사본 보존·경합·추출/게시 실패·rename 직후 취소·복구 실패와 중앙 디렉터리 사전 제한을 확인한다. 범위 초과 파일은 `ZipFile` 생성·`ZipInfo` 할당이 각각 0회임을 확인한다. 영상 테스트는 실제 player/network/credential 호출을 금지한 상태에서 기본 backend 거부와 명시적 fake 타임라인만 확인한다. 기존 `test_feature_media.py` 회귀 14개도 확인했다. 실물 장치와 실제 콘텐츠 실행 검증은 별도 `NOT_RUN`이다.
+합성 임시 파일만 사용한 새 테스트는 `test_game_assets.py` 25개, `test_offline_doctor.py` 8개, `test_desktop_plan.py` 5개, `test_media_video_fixture.py` 7개다. 게임 테스트는 ZIP 공격 경로·해시·라이선스 gate·사본 보존·경합·추출/게시 실패·rename 직후 취소·복구 실패와 중앙 디렉터리 사전 제한을 확인한다. 범위 초과 파일은 `ZipFile` 생성·`ZipInfo` 할당이 각각 0회임을 확인한다. 사전검사 직후 원본을 1항목에서 3항목으로 바꾸는 검토·설치 회귀에서도 파서는 사본의 1항목만 할당하고 원본 변경을 거부한다. 영상 테스트는 실제 player/network/credential 호출을 금지한 상태에서 기본 backend 거부와 명시적 fake 타임라인만 확인한다. 기존 `test_feature_media.py` 회귀 14개도 확인했다. 실물 장치와 실제 콘텐츠 실행 검증은 별도 `NOT_RUN`이다.

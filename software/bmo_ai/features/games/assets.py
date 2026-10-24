@@ -162,6 +162,54 @@ def _unchanged(stream, before):
         raise FeatureError("game_asset_changed")
 
 
+class _ArchiveSnapshot:
+    """A seekable read-only view over one private immutable bytes object."""
+    def __init__(self, raw):
+        self._raw, self._position = raw, 0
+
+    def read(self, size=-1):
+        end = len(self._raw) if size is None or size < 0 else min(len(self._raw), self._position + size)
+        value = self._raw[self._position:end]
+        self._position = max(self._position, end)
+        return value
+
+    def seek(self, offset, whence=os.SEEK_SET):
+        position = offset + (0 if whence == os.SEEK_SET else self._position if whence == os.SEEK_CUR
+                             else len(self._raw) if whence == os.SEEK_END else -offset - 1)
+        if position < 0 or whence not in (os.SEEK_SET, os.SEEK_CUR, os.SEEK_END):
+            raise ValueError("invalid snapshot seek")
+        self._position = position
+        return position
+
+    def tell(self):
+        return self._position
+
+    def seekable(self):
+        return True
+
+    def close(self):
+        self._raw = b""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *ignored):
+        self.close()
+
+
+def _snapshot_archive(source, before):
+    # fstat already bounded this length. Read only that amount so a growing
+    # source cannot grow the allocation beyond MAX_ARCHIVE_BYTES. Metadata is
+    # checked after loading and again after review / immediately before publish.
+    if not 0 < before.st_size <= MAX_ARCHIVE_BYTES:
+        raise FeatureError("unsafe_game_archive")
+    raw = source.read(before.st_size)
+    _unchanged(source, before)
+    if len(raw) != before.st_size:
+        raise FeatureError("game_asset_changed")
+    return _ArchiveSnapshot(raw)
+
+
 def _extra_without_zip64(raw):
     offset = 0
     while offset < len(raw):
@@ -178,8 +226,8 @@ def _preflight_archive(stream):
     """Bound central parsing before ZipFile allocates its ZipInfo list.
 
     Only single-disk, non-ZIP64 stored/deflated archives are admitted. The
-    largest preflight buffer is the bounded EOCD tail (65,577 bytes), rather
-    than an attacker-declared directory or number of entry objects.
+    Preflight adds at most a 65,577-byte EOCD tail buffer to the bounded raw
+    immutable archive snapshot; no attacker-declared entry list is allocated.
     """
     reject = lambda: FeatureError("unsafe_game_archive")
     try:
@@ -263,13 +311,13 @@ def review_archive(source, *, expected_sha256=None):
         raise FeatureError("invalid_game_hash")
     stream, before = _open_archive(source)
     try:
-        with stream:
-            digest = _archive_hash(stream)
+        with stream, _snapshot_archive(stream, before) as snapshot:
+            digest = _archive_hash(snapshot)
             if expected_sha256 is not None and digest != expected_sha256:
                 raise FeatureError("game_hash_mismatch")
-            _preflight_archive(stream)
+            _preflight_archive(snapshot)
             entries, names, files, total = [], set(), set(), 0
-            with zipfile.ZipFile(stream) as archive:
+            with zipfile.ZipFile(snapshot) as archive:
                 infos = archive.infolist()
                 if not infos or len(infos) > MAX_ENTRIES:
                     raise FeatureError("unsafe_game_archive")
@@ -358,6 +406,7 @@ def install_reviewed(review, content_root, pack_id, *, license_id, license_revie
     if fresh != review:
         raise FeatureError("game_asset_changed")
     root = stage_fd = lock = None
+    source_stream = None
     stage, backup = None, None
     published = moved_old = False
     try:
@@ -383,12 +432,12 @@ def install_reviewed(review, content_root, pack_id, *, license_id, license_revie
         if stage is None:
             raise FeatureError("game_install_busy")
         stage_fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=root)
-        stream, before = _open_archive(review.source_path)
-        with stream:
-            if _archive_hash(stream) != review.sha256:
+        source_stream, before = _open_archive(review.source_path)
+        with _snapshot_archive(source_stream, before) as snapshot:
+            if _archive_hash(snapshot) != review.sha256:
                 raise FeatureError("game_asset_changed")
-            _preflight_archive(stream)
-            with zipfile.ZipFile(stream) as archive:
+            _preflight_archive(snapshot)
+            with zipfile.ZipFile(snapshot) as archive:
                 for entry in review.entries:
                     with archive.open(entry.name) as item, os.fdopen(_stage_file(stage_fd, entry.name), "wb") as output:
                         digest, size = hashlib.sha256(), 0
@@ -403,7 +452,7 @@ def install_reviewed(review, content_root, pack_id, *, license_id, license_revie
                         if size != entry.size or digest.hexdigest() != entry.sha256:
                             raise FeatureError("game_asset_changed")
                         output.flush(); os.fsync(output.fileno())
-            _unchanged(stream, before)
+            _unchanged(source_stream, before)
         manifest = {"version": 1, "pack_id": pack_id, "archive_sha256": review.sha256,
                     "license_id": license_id, "license_reviewed": True,
                     "web_content_reviewed": bool(web_content_reviewed),
@@ -435,6 +484,7 @@ def install_reviewed(review, content_root, pack_id, *, license_id, license_revie
             if backup is None:
                 raise FeatureError("game_install_busy")
         try:
+            _unchanged(source_stream, before)
             if old is not None:
                 os.rename(pack_id, backup, src_dir_fd=root, dst_dir_fd=root)
                 moved_old = True
@@ -480,6 +530,8 @@ def install_reviewed(review, content_root, pack_id, *, license_id, license_revie
     except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
         raise FeatureError("game_install_failed") from None
     finally:
+        if source_stream is not None:
+            source_stream.close()
         for descriptor in (stage_fd, lock):
             if descriptor is not None:
                 os.close(descriptor)
