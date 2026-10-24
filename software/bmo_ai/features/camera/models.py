@@ -5,6 +5,7 @@ import re
 from typing import Protocol
 
 from ..contracts import FeatureError, request_id_ok, valid_id
+from .limits import MAX_IMAGE_SIDE, MAX_PNG_BYTES
 
 
 def finite(value):
@@ -26,8 +27,8 @@ class Frame:
         if (type(self.stream_generation) is not int or self.stream_generation < 0
                 or type(self.seq) is not int or self.seq < 0
                 or not finite(self.captured_at) or self.captured_at < 0
-                or any(type(n) is not int or not 1 <= n <= 4096 for n in (self.width, self.height))
-                or type(self.payload) is not bytes or not 0 < len(self.payload) <= 8 * 1024 * 1024
+                or any(type(n) is not int or not 1 <= n <= MAX_IMAGE_SIDE for n in (self.width, self.height))
+                or type(self.payload) is not bytes or not 0 < len(self.payload) <= MAX_PNG_BYTES
                 or self.format != "png" or type(self.focus_ok) is not bool):
             raise FeatureError("invalid_camera_frame")
 

@@ -23,3 +23,17 @@ jobs:
         working-directory: software
       - run: python -m compileall -q bmo_ai tests
         working-directory: software
+  public-browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - run: python -m pip install -r software/requirements-integration-dev.txt
+      - run: python -m pip check
+      # Ephemeral CI runner only. This does not install OS packages on the Pi.
+      - run: python -m playwright install --with-deps chromium
+      - run: python -B software/checks/check_offline_shell_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'

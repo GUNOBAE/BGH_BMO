@@ -111,16 +111,44 @@ None을 반환하고 `finish(result)`는 실패해도 lease를 해제해야 한�
 감독하의 별도 명시 단계다. 시스템 패키지를 이 모듈이 설치하거나 교체하지 않는다.
 현재 Debian 13의 Picamera2/OpenCV/Pillow/libcamera 준비 상태는 확인하지 않았다.
 
-선택적 live adapter는 한 센서 인스턴스·preview configuration·유한 capture/autofocus
-wait를 사용한다. libcamera SensorTimestamp를 stream별 상대 host clock으로 매핑하며
-두 monotonic 원점이 같다고 가정하지 않는다. 실제 카메라에서 이 경계는 미검수다.
-사진은 설정한 preview 해상도이며 full-resolution 촬영 기능이라고 표시하지 않는다.
+선택적 live adapter는 한 센서 인스턴스를 사용한다. preview는 기본 320x240이며,
+사진은 `create_still_configuration`의 native sensor 해상도를 요청한다. `still_size`
+옵션으로 별도 크기를 지정할 수 있다. SDK의 switch-and-capture가 성공하면 원래
+preview 설정으로 복귀한다. autofocus=False는 사진 캡처 전에 실패로 처리한다.
+이는 SDK 계약에 대한 mock 검증이며 실제 센서의 해상도/초점/품질 검수가 아니다.
+
+capture/autofocus는 비동기 SDK job과 최대 50ms 단위 wait를 사용한다. 기본 timeout은
+read 1초/사진 4초/초점 2초이며 `cancel_check`는 wait 전후에 검사한다. 실패·timeout·
+cancel은 pending job을 flush하고 센서를 닫는다. 이미 닫힌 센서는 tracking 복원이나
+poll로 다시 열지 않는다. SDK constructor/configure/start/stop/close가 네이티브 코드에서
+멈추는 경우를 Python이 강제로 중단한다고 보장하지 않으며 실기 검수 대상이다.
+`close()`의 False는 SDK cleanup 실패이고 소유권 lock은 반환하지만 물리적 정지의
+증거가 아니다. libcamera SensorTimestamp는 stream별 상대 host clock으로 매핑한다.
+
+PNG는 한 변 8192, 압축 48MiB, 압축 해제 64MiB의 유한 한도를 적용한다. Camera Module 3
+native still 크기 4608x2592 합성 PNG의 검증·저장·읽기 경로를 시험하며 원본 이미지를
+보관하거나 실제 camera frame을 생성하지 않는다.
+
+`camera_factory` 및 OpenCV의 `module_loader`는 SDK double 주입 경계다. 테스트는
+picamera2/libcamera/cv2/numpy/PIL 실제 import 자체를 차단한다. 기본 생성자와 disabled
+경로는 이 loader도 호출하지 않는다. 실제 optional SDK는 명시 enabled open/detect에서만
+lazy import된다. OpenCV decode 크기와 반환한 얼굴 사각형은 검증 후에만 전달한다.
 
 API 참고: [Raspberry Pi camera software](https://www.raspberrypi.com/documentation/computers/camera_software.html),
 [공식 Picamera2 구현](https://github.com/raspberrypi/picamera2/blob/main/picamera2/picamera2.py).
-이 문서 확인은 설치/센서/초점/영상 검수 통과를 뜻하지 않는다.
+2026-10-24에 위 공식 소스의 `create_still_configuration`(기본 sensor_resolution),
+`capture_file(..., wait=False)`, `autofocus_cycle(wait=False)`,
+`switch_mode_and_capture_file`(원래 preview config 복귀), `wait(job, timeout)`과
+`cancel_all_and_flush`를 직접 읽어 계약을 대조했다. 공식
+[Job 구현](https://github.com/raspberrypi/picamera2/blob/main/picamera2/job.py)은
+`Future.result(timeout)`을 사용하며 `job.cancel()`을 직접 부르지 말고 camera flush를
+쓰라고 설명한다. 이 때문에 timeout/cancel 이후 자동 재사용 대신 close를 수행한다.
+OpenCV는 공식 [CascadeClassifier](https://docs.opencv.org/4.x/d1/de5/classcv_1_1CascadeClassifier.html)와
+[imdecode](https://docs.opencv.org/4.x/d4/da8/group__imgcodecs.html)의 grayscale 입력·사각형
+반환 계약을 대조했다. 문서/소스 확인과 fake SDK 검사는 설치된 SDK 버전 호환성,
+센서/초점/영상 또는 실제 네이티브 중단 검수 통과를 뜻하지 않는다.
 
 검사: 새 clone의 venv에서 `PYTHONPATH=software .venv/bin/python -B -m unittest discover
--s software/tests -p test_feature_camera.py -v`. 실제 자격증명 없는 child 환경에서
+-s software/tests -p 'test_feature_camera*.py' -v`. 실제 자격증명 없는 child 환경에서
 실행한다. 검증은 합성 프레임·임시 PNG 저장·fake detector·취소/디스크 오류이며
 실제 카메라·모터·음성·클라우드 호출은 하지 않는다.

@@ -13,6 +13,7 @@ import fcntl
 
 from ..contracts import FeatureError, request_id_ok
 from .codec import validate_png
+from .limits import MAX_PNG_BYTES
 from .models import PhotoResult
 
 
@@ -184,7 +185,7 @@ class PhotoStore:
             with os.fdopen(descriptor, 'rb') as handle:
                 if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                     raise FeatureError('invalid_photo')
-                payload = handle.read(8 * 1024 * 1024 + 1)
+                payload = handle.read(MAX_PNG_BYTES + 1)
             validate_png(payload)
             return payload
         except Exception:
