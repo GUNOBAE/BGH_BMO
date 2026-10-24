@@ -24,7 +24,7 @@ def parser():
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--speaker-device", default="plughw:CARD=MAX98357A,DEV=0")
     p.add_argument("--screen-profile", choices=("v13.2", "r10"), default="v13.2",
-                   help="versioned external face; R10 local candidate requires explicit selection")
+                   help="versioned external face; approved R10 requires explicit legacy selection; Pi live NOT_RUN")
     p.add_argument("--face-file", type=Path, default=None)
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--no-web", action="store_true", help="simulation-only CLI check")

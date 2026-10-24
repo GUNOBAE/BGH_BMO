@@ -15,7 +15,7 @@ from ..contracts import FeatureError, valid_id
 
 MAX_ASSET_BYTES = 256 * 1024 * 1024
 MAX_MANIFEST_ITEMS = 128
-MEDIA_TYPES = frozenset({"audio/wav", "audio/mpeg", "audio/ogg", "audio/flac", "video/mp4", "video/webm"})
+MEDIA_TYPES = frozenset({"audio/wav", "audio/mpeg", "audio/ogg", "audio/flac", "video/mp4", "video/webm", "video/x-msvideo"})
 _FIELDS = frozenset({"id", "title", "source", "path", "sha256", "media_type", "duration", "cue_path", "cue_sha256"})
 _REQUIRED = frozenset({"id", "title", "source", "path", "sha256", "media_type"})
 
@@ -150,6 +150,12 @@ class AssetHandle:
                         raise FeatureError("media_duration_mismatch")
                     self.duration = actual
                 os.lseek(self.fd, 0, os.SEEK_SET)
+            elif asset.media_type == "video/x-msvideo":
+                from .video_fixture import validate_avi_fd
+                actual = validate_avi_fd(self.fd)["duration"]
+                if self.duration is not None and abs(actual - self.duration) > .02:
+                    raise FeatureError("media_duration_mismatch")
+                self.duration = actual
             if asset.cue_path is not None:
                 cue_fd = _verified_fd(root, asset.cue_path, asset.cue_sha256, limit=1024 * 1024)
                 with os.fdopen(cue_fd, "rb") as stream:

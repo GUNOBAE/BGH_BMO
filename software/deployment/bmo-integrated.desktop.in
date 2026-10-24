@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BMO integrated robot (review template)
+Comment=Review only; do not place in autostart
+Exec="@PROJECT_ROOT@/launch-features" --simulate --screen-profile r10
+Path=@PROJECT_ROOT@
+Terminal=true
+Icon=applications-games
+Categories=Game;Utility;
+X-GNOME-Autostart-enabled=false
