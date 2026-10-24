@@ -1,4 +1,8 @@
-"""Manual, simulation-only feature shell. Live hardware remains disabled."""
+"""Unified manual BMO shell. Live conversation requires explicit --live.
+
+Arms, IMU, camera, external games and music remain denied in the live route.
+No launch installs a service, starts automatic listening or reads keys in mock.
+"""
 import argparse
 import fcntl
 import json
@@ -13,35 +17,50 @@ from .features.reply import HostIntent
 from .features.server import FeatureServer
 from .integration_profile import integration_config, effective_config
 from .screen_profiles import SCREEN_PROFILES
+from .features.runtime import RuntimePolicy
 
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--simulate", action="store_true")
+    modes = p.add_mutually_exclusive_group()
+    modes.add_argument("--simulate", action="store_true", help="synthetic IO; no network/device/key access")
+    modes.add_argument("--live", action="store_true", help="supervised conversation only; devices denied")
     p.add_argument("--demo-assets", action="store_true", help="explicit generated game/song fixtures")
-    p.add_argument("--screen-profile", choices=tuple(SCREEN_PROFILES), default="v13.2")
+    p.add_argument("--screen-profile", choices=tuple(SCREEN_PROFILES), default="r10")
     p.add_argument("--face-file", type=Path)
     p.add_argument("--port", type=int, default=0)
     p.add_argument("--no-web", action="store_true")
     p.add_argument("--turns", type=int, default=0)
     p.add_argument("--effective-config", action="store_true")
+    p.add_argument("--status", action="store_true", help="public configuration only; no credential access")
+    p.add_argument("--baseline", action="store_true", help="explicit GPT-4.1 mini fallback")
+    p.add_argument("--offline-voice", action="store_true", help="opt in to preserved English Piper fallback")
+    p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
+    p.add_argument("--speaker-device", default="plughw:CARD=MAX98357A,DEV=0")
     return p
 
 
-def main(argv=None, *, lock_path=None, clock=time.monotonic, host_factory=FeatureHost):
+def main(argv=None, *, lock_path=None, clock=time.monotonic, host_factory=FeatureHost,
+         credential_resolver=None, client_factory=None):
     p = parser()
     args = p.parse_args(argv)
-    if args.effective_config:
-        print(json.dumps(dict(effective_config(integration_config(), emotion_mode="auto"),
-            feature_reply_version=1, simulation=True, real_features_enabled=False,
+    config = integration_config(baseline=args.baseline, offline_voice=args.offline_voice,
+                               mic_device=args.mic_device, speaker_device=args.speaker_device)
+    runtime = RuntimePolicy(simulate=not args.live)
+    if args.effective_config or args.status:
+        print(json.dumps(dict(effective_config(config, emotion_mode="auto"),
+            feature_reply_version=1, simulation=runtime.simulate, real_features_enabled=False,
+            capabilities=runtime.public(),
             screen_profile=args.screen_profile), ensure_ascii=False, indent=2))
         return 0
-    if not args.simulate:
-        p.error("feature execution requires --simulate; real features are not enabled")
+    if not (args.simulate or args.live):
+        p.error("choose --simulate or explicit --live")
+    if args.live and (args.demo_assets or args.turns):
+        p.error("generated assets and automatic turns require --simulate")
     if not 0 <= args.port <= 65535 or not 0 <= args.turns <= 20:
         p.error("invalid port or turn count")
     path = Path(lock_path) if lock_path is not None else Path(f"/tmp/bmo-integration-{os.getuid()}.lock")
-    lock = host = server = None
+    lock = host = server = client = None
     try:
         descriptor = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         lock = os.fdopen(descriptor, "w")
@@ -50,12 +69,22 @@ def main(argv=None, *, lock_path=None, clock=time.monotonic, host_factory=Featur
         except BlockingIOError:
             print("BMO is already running for this user.", file=sys.stderr)
             return 2
-        host = host_factory(demo_assets=args.demo_assets, clock=clock)
+        settings = {"demo_assets": args.demo_assets, "clock": clock, "config": config, "runtime": runtime}
+        if args.live:
+            # Same 0700/0600 store as launch-bmo. This block is never reached by
+            # help/status/simulation, and runs only after exclusive lock success.
+            from .private_credentials import resolve_credentials
+            from .cloud import create_client
+            credentials = (credential_resolver or resolve_credentials)()
+            client = (client_factory or create_client)(config, api_key=credentials.openai_api_key)
+            settings.update(client=client, fish_api_key=credentials.fish_api_key)
+        host = host_factory(**settings)
         if not args.no_web:
             face = args.face_file or Path(SCREEN_PROFILES[args.screen_profile]["default_path"])
             server = FeatureServer(host, face, screen_profile=args.screen_profile, port=args.port).start()
             print("Face: " + server.url, flush=True)
-        print("SIMULATION: /games, /game ID, /face, /photo, /track, /camera-off, /song ID, "
+        print(("SIMULATION" if args.simulate else "LIVE CONVERSATION; OTHER DEVICES DENIED")
+              + ": Enter=explicit talk, /games, /game ID, /face, /photo, /track, /camera-off, /song ID, "
               "/media pause|resume|next|stop, /gesture ID, /key KEY down|up, "
               "/emotion NAME, /cancel, /repeat, /reset, /stop, /quit", flush=True)
         if args.turns:
@@ -124,6 +153,11 @@ def main(argv=None, *, lock_path=None, clock=time.monotonic, host_factory=Featur
         if host is not None:
             try:
                 host.close()
+            except Exception:
+                cleanup_failed = True
+        elif client is not None:
+            try:
+                client.close()
             except Exception:
                 cleanup_failed = True
         if lock is not None:

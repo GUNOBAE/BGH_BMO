@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Untouched local v13.2/R10 files through the real server and external adapter.
 
-R10 is explicitly a review candidate. This check adds no viewport transform,
+R10 is an approved design per Issue #15. This check adds no viewport transform,
 artwork, audio path or runtime approval; the default remains original v13.2.
 """
 from __future__ import annotations
@@ -76,7 +76,7 @@ def check_profile(browser, profile, path):
         assert hashlib.sha256(served).hexdigest()==before and served==path.read_bytes()
         with urlopen(server.url+'api/screen',timeout=2) as response:
             metadata=json.load(response)
-        assert metadata==dict(version=profile,sha256=before,approval_status=record['approval_status'])
+        assert metadata==dict(version=profile,sha256=before,approval_status=record['approval_status'],pi_live_verified=False)
         checks.append('selected-only metadata and served bytes exactly match pinned local file')
         page=browser.new_page(viewport={'width':1024,'height':600})
         try:
@@ -175,7 +175,7 @@ def run(v13_face,r10_face,chromium):
         finally:
             browser.close()
     return dict(status='PASS',default_profile='v13.2',profiles=results,
-                not_run=['final R10 user approval/master ZIP','real audio/devices/cloud APIs','Pi LCD visual acceptance'])
+                not_run=['real audio/devices/cloud APIs','Pi LCD visual acceptance'])
 
 
 def main():

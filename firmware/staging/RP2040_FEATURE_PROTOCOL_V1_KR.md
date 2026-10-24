@@ -48,8 +48,10 @@ USB endpoint, HID, GPIO, IMU 레지스터, 서보 또는 전원을 변경하는 
    `unknown` 경계다. 자동 재전송/재시작 뒤 명령 복원/과거 제스처 몰아 실행은 없다.
    새 boot가 확인되면 대기 중이던 이전 명령도 취소한다.
 
-현재 FakeMotionTransport는 위 핵심 의미를 메모리에서만 검사한다. JSON wire
-encoder, USB CDC reader/writer, firmware command handler 및 실제 모터 backend는 없다.
+현재 FakeMotionTransport는 위 핵심 의미를 메모리에서만 검사한다. Issue #15에서
+`motion/wire.py`에 512바이트 JSON/LF encoder/decoder와 선택 CRC32를 추가했다.
+모의 command/ACK는 이 codec을 왕복하며, CRC는 무결성 확인이지 인증이나 위치
+검증이 아니다. USB CDC reader/writer, firmware command handler 및 실제 모터 backend는 없다.
 Python mock ACK 성공을 실물 안전 검수로 해석하면 안 된다.
 
 ## 호스트의 발화·취소·중복 정책

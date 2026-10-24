@@ -1,4 +1,7 @@
-"""The owner-thread mock feature host; real devices and paid APIs are disabled."""
+"""One owner-thread feature host and persistent dialogue session.
+
+Runtime policy is injected explicitly; live conversation never enables devices.
+"""
 from collections import deque
 from dataclasses import dataclass
 import json
@@ -16,6 +19,7 @@ from .contracts import FeatureError, HostResult, request_id_ok
 from .journal import ActionJournal
 from .reply import FeatureClient, HostIntent
 from .resources import ModeManager, AudioFocus, InputRouter, GazeArbiter, LOGICAL_INPUTS
+from .runtime import RuntimePolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +71,18 @@ class FeatureSimulatedClient:
 
 class FeatureHost:
     def __init__(self, *, demo_assets=False, clock=time.monotonic, client=None, voice=None,
-                 games=None, media=None, camera=None, motion=None, journal=None):
+                 games=None, media=None, camera=None, motion=None, journal=None,
+                 config=None, brain=None, runtime=None, fish_api_key=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
         from .motion import MotionFeature, IMUHealthMonitor
+        self.runtime = runtime if runtime is not None else RuntimePolicy()
+        if not isinstance(self.runtime, RuntimePolicy):
+            raise FeatureError("invalid_runtime")
+        if not self.runtime.simulate and (client is None or demo_assets):
+            raise FeatureError("invalid_runtime")
+        self.config = config if config is not None else integration_config()
         self.clock = clock
         self.modes, self.audio = ModeManager(), AudioFocus()
         self.gaze = GazeArbiter(clock=clock)
@@ -113,7 +124,8 @@ class FeatureHost:
         self._face_sequence = 0
         self._media_cue = None
         self.client = client or FeatureSimulatedClient()
-        self.session = IntegrationSession(integration_config(), self.client, simulate=True,
+        self.session = IntegrationSession(self.config, self.client, simulate=self.runtime.simulate,
+            brain=brain, fish_api_key=fish_api_key,
             voice=voice, clock=clock, emotion_mode="auto", reply_client=FeatureClient(self.client),
             on_reply=self._reply, on_playback_event=self._playback)
         self.modes.register("conversation", enter=self._enter_conversation, leave=self._leave_conversation)
@@ -268,6 +280,10 @@ class FeatureHost:
             return self._finish_result(HostResult(request, "rejected", "stale_mode"))
         try:
             name = intent.name
+            capability = {"launch_game": "external_games", "play_song": "music",
+                "take_photo": "camera", "start_face_tracking": "camera", "arm_gesture": "arms"}.get(name)
+            if capability is not None:
+                self.runtime.require(capability)
             if name in ("launch_game", "play_song"):
                 items = self.games.catalog() if name == "launch_game" else self.media.catalog()
                 item = next((item for item in items if item.id == intent.target), None)
@@ -386,6 +402,8 @@ class FeatureHost:
             elif action == "emotion":
                 self.session.set_emotion(value)
             elif action == "preview":
+                if value:
+                    self.runtime.require("camera")
                 if self.modes.mode not in ("conversation", "photo"):
                     raise FeatureError("camera_mode_unsupported")
                 self.camera.set_preview(value, generation=self.modes.generation)
@@ -434,11 +452,12 @@ class FeatureHost:
         if self._closed or self.session.busy:
             return False
         self._transition("conversation")
-        self.session.expression_client.set_context({"version": 1, "simulation": True,
+        self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
             "real_features_enabled": False,
             "games": [{"id": item.id, "readiness": item.readiness} for item in self.games.catalog()],
             "songs": [{"id": item.id, "readiness": item.readiness} for item in self.media.catalog()],
-            "camera": "synthetic_only", "arm": "mock_ack_position_unverified",
+            "camera": "synthetic_only" if self.runtime.simulate else "denied",
+            "arm": "mock_ack_position_unverified" if self.runtime.simulate else "denied",
             "imu": "physical_unverified_no_control"})
         self._voice_lease = self.audio.acquire("conversation", stop=self.cancel_conversation)
         turn_id = f"{self.session.session_id}:{self.session.worker.turn + 1}"
@@ -453,6 +472,7 @@ class FeatureHost:
     def cancel_conversation(self):
         self._proposals.clear()
         self._turn_generations.clear()
+        self.gaze.clear("reaction")
         if self.session.busy:
             self.session.cancel()
         self.motion.cancel()
@@ -525,7 +545,13 @@ class FeatureHost:
                 self._proposals[turn] = {"gesture": data[0], "intent": data[1], "ended": False}
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
-                if (proposal["gesture"] != "none" and self.clock() - at <= .5
+                # A single short, deterministic look at actual speech start.
+                # Native activity and tracking retain higher priority; no idle
+                # timer, random motion or emotion/mouth setter is introduced.
+                if self.clock() - at <= .5:
+                    self.gaze.offer("reaction", .12, -.04, generation=generation,
+                                    expires_at=at + .65)
+                if (self.runtime.simulate and proposal["gesture"] != "none" and self.clock() - at <= .5
                         and self.session.snapshot()["playback"] == "started"):
                     request = "gesture_" + uuid5(self._namespace, turn).hex
                     try:
@@ -550,9 +576,11 @@ class FeatureHost:
                 ok = event.code == "ok"
                 if (stopping or resetting) and self.modes.mode == "conversation":
                     self.modes.last_error = None
-                self._remember(HostResult(request, "simulated" if ok or stopping or resetting else "cancelled" if event.code == "cancelled" else "failed",
+                self._remember(HostResult(request, ("simulated" if self.runtime.simulate else "succeeded") if ok or stopping or resetting else "cancelled" if event.code == "cancelled" else "failed",
                     "reset_completed" if resetting else "resources_stopped" if stopping else "voice_completed" if ok else "voice_cancelled" if event.code == "cancelled" else "voice_failed",
-                    completed=ok or stopping or resetting, completion="simulated" if ok or stopping or resetting else "unknown"))
+                    simulated=self.runtime.simulate, executed=not self.runtime.simulate and ok,
+                    completed=ok or stopping or resetting,
+                    completion=("simulated" if self.runtime.simulate else "voice_playback") if ok or stopping or resetting else "unknown"))
             turn = f"{self.session.session_id}:{event.turn}"
             proposal = self._proposals.pop(turn, None)
             generation = self._turn_generations.pop(turn, None)
@@ -604,7 +632,8 @@ class FeatureHost:
         camera = self.camera.snapshot()
         with self._records_lock:
             recent = [dict(value["result"]) for value in list(self._records.values())[-8:]]
-        state = {"version": 1, "sequence": self._state_sequence, "simulation": True, "real_features_enabled": False,
+        state = {"version": 1, "sequence": self._state_sequence, "simulation": self.runtime.simulate,
+            "capabilities": self.runtime.public(), "real_features_enabled": False,
             "mode": self.modes.mode, "mode_generation": self.modes.generation,
             "mode_error": self.modes.last_error, "audio_owner": self.audio.owner,
             "conversation_busy": self.session.busy, "emotion": face["emotion"],

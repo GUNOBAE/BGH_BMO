@@ -14,6 +14,9 @@
   function fillCatalog(element,items,handler){element.replaceChildren();for(const item of items){const button=document.createElement('button');button.textContent=item.title+(item.simulated?' · 모의':'');button.disabled=item.readiness!=='READY';button.dataset.catalogId=item.id;button.addEventListener('click',()=>handler(item.id).catch(showError));element.append(button);}}
   function showError(error){$('result').textContent=error.message;}
   function render(next){if(state&&(next.mode_generation<state.mode_generation||next.sequence<state.sequence))return;state=next;window.BMOFeatures.state=next;
+    $('simulation').textContent=next.simulation?'모의 실행 · 실제 장치 동작 없음':'명시적 실시간 대화 · 다른 장치 기능 차단';
+    $('talk-button').textContent=next.simulation?'가상 질문':'누르면 한 번 듣기';
+    const denied=next.capabilities?.camera==='denied';for(const id of ['photo-button','track-button','preview-button'])$(id).disabled=denied;
     const mode=next.mode;for(const [id,selected] of [['face-panel',mode==='conversation'||mode==='music'],['game-menu',mode==='game_menu'],['game-panel',mode==='game'],['photo-panel',mode==='photo'],['music-panel',mode==='music']])$(id).hidden=!selected;
     fillCatalog($('game-list'),next.games.catalog,id=>intent('launch_game',id));
     const song=$('songs').value;const items=next.media.catalog;$('songs').replaceChildren();for(const item of items){const option=document.createElement('option');option.value=item.id;option.textContent=item.title+' · 모의';option.disabled=item.readiness!=='READY';$('songs').append(option);}if(items.some(x=>x.id===song))$('songs').value=song;$('song-play').disabled=!items.length;
@@ -21,17 +24,18 @@
     const countdown=next.photo_countdown;$('photo-status').textContent=countdown!==null?`합성 사진 저장까지 ${Math.ceil(countdown)}`:next.photo?.completed?'합성 사진 파일 저장 확인':'실제 카메라는 꺼져 있습니다.';
     $('photo-result').hidden=!next.photo?.photo_id;if(next.photo?.photo_id)$('photo-result').src='/api/photo/'+encodeURIComponent(next.photo.photo_id);
     $('preview-panel').hidden=!next.camera.preview;if(next.camera.preview)$('preview').src='/api/preview?t='+Date.now();else $('preview').removeAttribute('src');
-    $('track-button').disabled=next.camera.tracking;$('camera-off').disabled=!next.camera.on;
+    $('track-button').disabled=denied||next.camera.tracking;$('camera-off').disabled=!next.camera.on;
     if(mode==='game'&&lastGame!==next.games.active_id){lastGame=next.games.active_id;$('game-title').textContent='모의 게임 · '+lastGame;$('game-frame').srcdoc='<!doctype html><html><body style="background:#12353a;color:#d7f5d4;font:24px system-ui;text-align:center"><p>합성 게임 실행 중</p><p>실제 게임 자산은 아직 없습니다.</p></body></html>';}
     if(mode!=='game'){lastGame=null;$('game-frame').removeAttribute('srcdoc');}
     const gaze=next.gaze,face=$('face').contentWindow?.BMOFace;
     const livePhase=window.BMOIntegration?.state?.phase,nativeActive=face&&([livePhase,face.getState().activity].some(phase=>['listening','thinking'].includes(phase)));
     if(nativeActive&&gaze.owner!=='manual')lastGaze=null;
-    else if(face&&gaze.apply){const key=JSON.stringify([gaze.owner,gaze.x,gaze.y,next.mode_generation]);if(key!==lastGaze){face.look(gaze.x,gaze.y);face.lookEyes(gaze.x*.15,gaze.y*.15);lastGaze=key;}}
+    else if(face&&gaze.apply){const key=JSON.stringify([gaze.owner,gaze.x,gaze.y,next.mode_generation]);if(key!==lastGaze){face.look(gaze.x,gaze.y);face.lookEyes(gaze.x*.15,gaze.y*.15);if(gaze.owner==='reaction')face.blink();lastGaze=key;}}
     else if(gaze.owner==='native')lastGaze=null;
   }
   async function poll(){if(closed||document.hidden)return;const generation=pollGeneration,request=new AbortController();controller=request;try{const response=await fetch('/api/features',{cache:'no-store',signal:request.signal});if(!response.ok)throw new Error();const next=await response.json();if(generation===pollGeneration&&!closed&&!document.hidden)render(next);}catch(error){if(error.name!=='AbortError')$('result').textContent='연결을 확인 중입니다. 실제 장치는 자동으로 켜지지 않습니다.';}finally{if(controller===request)controller=null;if(!closed&&generation===pollGeneration&&!document.hidden)timer=setTimeout(poll,80);}}
   document.querySelectorAll('[data-intent]').forEach(button=>button.onclick=()=>intent(button.dataset.intent).catch(showError));
+  $('controls-toggle').onclick=()=>{const hidden=document.body.classList.toggle('controls-hidden');$('controls-toggle').setAttribute('aria-expanded',String(!hidden));$('controls-toggle').textContent=hidden?'메뉴':'메뉴 숨기기';};
   document.querySelectorAll('[data-control]').forEach(button=>button.onclick=()=>control(button.dataset.control,button.dataset.control==='question'?'Synthetic browser question.':null).catch(showError));
   $('emotion').onchange=()=>control('emotion',$('emotion').value).catch(showError);$('preview-button').onclick=()=>control('preview',!state?.camera.preview).catch(showError);$('song-play').onclick=()=>intent('play_song',$('songs').value).catch(showError);
   const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',b:'B',Escape:'ESC',Enter:'START',Shift:'SELECT'};

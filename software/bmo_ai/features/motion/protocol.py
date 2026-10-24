@@ -50,13 +50,14 @@ class FakeMotionTransport:
     simulated = True
 
     def __init__(self, *, clock=time.monotonic, ack_delay=0.0, auto_ack=True,
-                 ledger_limit=256, version=1, channel="dedicated_data", dedup=True):
+                 ledger_limit=256, version=1, channel="dedicated_data", dedup=True, wire_crc=False):
         if (type(ack_delay) not in (int, float) or not math.isfinite(ack_delay) or ack_delay < 0
-                or type(auto_ack) is not bool or type(ledger_limit) is not int
+                or type(auto_ack) is not bool or type(wire_crc) is not bool or type(ledger_limit) is not int
                 or not 1 <= ledger_limit <= 4096):
             raise FeatureError("invalid_motion_transport")
         self.clock, self.ack_delay, self.auto_ack = clock, ack_delay, auto_ack
         self.ledger_limit = ledger_limit
+        self.wire_crc = wire_crc
         self._version, self._channel, self._dedup = version, channel, dedup
         self._boot = "fixture_boot_1"
         self.connected = True
@@ -71,6 +72,9 @@ class FakeMotionTransport:
         return Handshake(self._version, self._channel, self._boot, self._dedup, False)
 
     def send(self, command):
+        # Exercise the proposed wire contract in memory, without a device port.
+        from .wire import encode_frame, decode_frame
+        command = decode_frame(encode_frame(command, crc=self.wire_crc), require_crc=self.wire_crc)
         hello = self.handshake()
         if not isinstance(command, MotionCommand) or command.controller_boot != hello.controller_boot:
             raise FeatureError("controller_boot_mismatch")
@@ -85,8 +89,10 @@ class FakeMotionTransport:
             self._ledger[command.request_id] = command
             self.dispatch_count += 1
         if self.auto_ack:
+            ack = decode_frame(encode_frame(MotionAck(command.request_id, self._boot),
+                                           crc=self.wire_crc), require_crc=self.wire_crc)
             self._acks.append((self.clock() + self.ack_delay,
-                               MotionAck(command.request_id, self._boot)))
+                               ack))
 
     def inject_ack(self, request_id, *, controller_boot=None, accepted=True):
         self._acks.append((self.clock(), MotionAck(request_id, controller_boot or self._boot, accepted)))

@@ -1,9 +1,9 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="bmo-command-token" content="__COMMAND_TOKEN__">
-<title>BMO 기능 통합 · 모의 실행</title><link rel="stylesheet" href="/feature.css">
+<title>BMO 기능 통합</title><link rel="stylesheet" href="/feature.css">
 <script src="/adapter.js" defer></script><script src="/feature.js" defer></script></head>
-<body><header><strong>BMO</strong><span id="simulation">모의 실행 · 실제 장치 동작 없음</span>
+<body><button id="controls-toggle" aria-expanded="true" aria-controls="shell-header shell-footer">메뉴 숨기기</button><header id="shell-header"><strong>BMO</strong><span id="simulation">연결 확인 중</span>
 <button id="face-button" data-intent="return_to_face">얼굴</button>
 <button id="games-button" data-intent="open_game_menu">게임</button>
 <button id="photo-button" data-intent="take_photo">사진</button>
@@ -16,7 +16,7 @@
 <section id="photo-panel" class="panel" hidden><h1>모의 사진</h1><p id="photo-status"></p><img id="photo-result" alt="합성 사진 결과" hidden><button data-intent="take_photo">다시 찍기</button><button data-intent="return_to_face">얼굴 복귀</button></section>
 <section id="music-panel" class="panel" hidden><h1>모의 미디어</h1><p id="media-status"></p><button data-control="pause">일시 정지</button><button data-control="resume">재개</button><button data-control="next">다음 곡</button><button data-intent="stop_media">정지·얼굴 복귀</button></section>
 </main><aside id="preview-panel" hidden><span>합성 프리뷰 · 실제 카메라 아님</span><img id="preview" alt="합성 카메라 프리뷰"></aside>
-<footer><div id="status" role="status"></div><div id="result" aria-live="polite"></div>
+<footer id="shell-footer"><div id="status" role="status"></div><div id="result" aria-live="polite"></div>
 <button id="talk-button" data-control="question">가상 질문</button><button data-control="cancel">취소</button><button id="repeat-button" data-control="repeat">다시 듣기</button><button data-control="reset">초기화</button><button id="preview-button">프리뷰 켜기/끄기</button>
 <label>표정<select id="emotion"><option>auto</option><option>crying</option><option>happy</option><option>sad</option><option>surprised</option><option>angry</option><option>neutral</option><option>manual</option></select></label>
 <label>모의 노래<select id="songs"></select></label><button id="song-play">선택 곡 재생</button>

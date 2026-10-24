@@ -211,6 +211,7 @@ class FaceServer:
             "version": screen_profile,
             "sha256": self.sha256,
             "approval_status": profile["approval_status"],
+            "pi_live_verified": profile["pi_live_verified"],
         }).encode()
         self.snapshot, self.host, self.port = snapshot, host, port
         self._server = self._thread = None
