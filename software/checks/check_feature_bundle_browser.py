@@ -197,7 +197,7 @@ def run(face_path,chromium,profile='v13.2'):
                     assert not page.evaluate('()=>BMOFeatures.state.camera.on'),'Camera default was on'
                     assert page.locator('#face').get_attribute('src').endswith('?kiosk=1')
                     with urlopen(url+'api/screen',timeout=2) as response:metadata=json.load(response)
-                    assert metadata==dict(version=profile,sha256=before,approval_status=SCREEN_PROFILES[profile]['approval_status'])
+                    assert metadata==dict(version=profile,sha256=before,approval_status=SCREEN_PROFILES[profile]['approval_status'],pi_live_verified=False)
                     checks.append('actual simulation launcher serves selected pinned original inside external kiosk shell')
                     offset=0.0
 

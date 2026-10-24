@@ -23,11 +23,12 @@ class ScreenProfileTests(unittest.TestCase):
         self.snapshot = Mock(return_value=dict(session_id="s", turn_id="", utterance_id="",
                         sequence=0, phase="idle", emotion="neutral", playback="idle", position=0, cues=[]))
 
-    def test_profiles_and_records_are_immutable_with_explicit_candidate_status(self):
+    def test_profiles_and_records_are_immutable_with_explicit_design_status(self):
         self.assertEqual(set(SCREEN_PROFILES), {"v13.2", "r10"})
         self.assertEqual(SCREEN_PROFILES["v13.2"]["sha256"], face.FACE_SHA256)
         self.assertEqual(SCREEN_PROFILES["v13.2"]["approval_status"], "approved")
-        self.assertEqual(SCREEN_PROFILES["r10"]["approval_status"], "candidate_pending_user_approval")
+        self.assertEqual(SCREEN_PROFILES["r10"]["approval_status"], "approved_design")
+        self.assertFalse(SCREEN_PROFILES["r10"]["pi_live_verified"])
         self.assertNotEqual(SCREEN_PROFILES["v13.2"]["sha256"], SCREEN_PROFILES["r10"]["sha256"])
         with self.assertRaises(TypeError):
             SCREEN_PROFILES["r10"] = {}
@@ -43,7 +44,7 @@ class ScreenProfileTests(unittest.TestCase):
             with urlopen(server.url + "api/screen", timeout=2) as response:
                 metadata = json.load(response)
                 self.assertEqual(response.headers["Cache-Control"], "no-store")
-            self.assertEqual(metadata, dict(version="v13.2", sha256=self.hash, approval_status="approved"))
+            self.assertEqual(metadata, dict(version="v13.2", sha256=self.hash, approval_status="approved", pi_live_verified=False))
             self.snapshot.assert_not_called()
         self.assertEqual(self.path.read_bytes(), self.body)
 
@@ -69,8 +70,8 @@ class ScreenProfileTests(unittest.TestCase):
             with urlopen(server.url + "api/screen?screen_profile=v13.2", timeout=2) as response:
                 metadata = json.load(response)
             self.assertEqual(metadata, dict(version="r10", sha256=self.hash,
-                                           approval_status="candidate_pending_user_approval"))
-            self.assertEqual(set(metadata), {"version", "sha256", "approval_status"})
+                                           approval_status="approved_design", pi_live_verified=False))
+            self.assertEqual(set(metadata), {"version", "sha256", "approval_status", "pi_live_verified"})
             self.assertNotIn(self.directory, json.dumps(metadata))
             self.assertNotIn(SCREEN_PROFILES["v13.2"]["sha256"], json.dumps(metadata))
             with urlopen(server.url + "face.html", timeout=2) as response:

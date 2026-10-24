@@ -1,4 +1,7 @@
-"""The owner-thread mock feature host; real devices and paid APIs are disabled."""
+"""One owner-thread feature host and persistent dialogue session.
+
+Runtime policy is injected explicitly; live conversation never enables devices.
+"""
 from collections import deque
 from dataclasses import dataclass
 import json
@@ -16,6 +19,7 @@ from .contracts import FeatureError, HostResult, request_id_ok
 from .journal import ActionJournal
 from .reply import FeatureClient, HostIntent
 from .resources import ModeManager, AudioFocus, InputRouter, GazeArbiter, LOGICAL_INPUTS
+from .runtime import RuntimePolicy
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,11 +71,21 @@ class FeatureSimulatedClient:
 
 class FeatureHost:
     def __init__(self, *, demo_assets=False, clock=time.monotonic, client=None, voice=None,
-                 games=None, media=None, camera=None, motion=None, journal=None):
+                 games=None, media=None, camera=None, motion=None, journal=None,
+                 config=None, brain=None, runtime=None, fish_api_key=None,
+                 input_source=None, input_mapping=None, pcm_transcriber=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
         from .motion import MotionFeature, IMUHealthMonitor
+        self.runtime = runtime if runtime is not None else RuntimePolicy()
+        if not isinstance(self.runtime, RuntimePolicy):
+            raise FeatureError("invalid_runtime")
+        if not self.runtime.simulate and (client is None or demo_assets):
+            raise FeatureError("invalid_runtime")
+        if not self.runtime.simulate and (input_source is not None or pcm_transcriber is not None):
+            raise FeatureError("input_disabled")
+        self.config = config if config is not None else integration_config()
         self.clock = clock
         self.modes, self.audio = ModeManager(), AudioFocus()
         self.gaze = GazeArbiter(clock=clock)
@@ -91,8 +105,13 @@ class FeatureHost:
         self.journal = journal or ActionJournal()
         self._namespace = uuid4()
         self._commands, self._voice_events = PriorityQueue(32), Queue(64)
-        self._command_sequence = 0
+        self._command_sequence = self._command_epoch = 0
         self._records, self._nonce_map = {}, {}
+        # Stop/cancel are idempotent safety controls, coalesced by action in two
+        # reserved slots. They never depend on the ordinary nonce ledger/queue.
+        self._safety_pending, self._safety_results = {}, {}
+        self._safety_ids = {action: "web_safety_" + uuid5(self._namespace, action).hex
+                            for action in ("stop", "cancel")}
         self._records_lock = Lock()
         self._snapshot_lock = Lock()
         self._public = {}
@@ -100,8 +119,8 @@ class FeatureHost:
         self._turn_generations, self._proposals = {}, {}
         self._voice_lease = self._game_lease = self._music_lease = None
         self._voice_control_request = None
-        self._voice_control_stop = False
-        self._voice_control_reset = False
+        self._voice_cleanup = {}
+        self._playback_lock, self._voice_started_turns = Lock(), set()
         self._active_game_request = self._active_media_request = None
         self._pending_photo = self._photo_result = self._photo_restore = None
         self._last_result = None
@@ -113,7 +132,8 @@ class FeatureHost:
         self._face_sequence = 0
         self._media_cue = None
         self.client = client or FeatureSimulatedClient()
-        self.session = IntegrationSession(integration_config(), self.client, simulate=True,
+        self.session = IntegrationSession(self.config, self.client, simulate=self.runtime.simulate,
+            brain=brain, fish_api_key=fish_api_key,
             voice=voice, clock=clock, emotion_mode="auto", reply_client=FeatureClient(self.client),
             on_reply=self._reply, on_playback_event=self._playback)
         self.modes.register("conversation", enter=self._enter_conversation, leave=self._leave_conversation)
@@ -124,6 +144,14 @@ class FeatureHost:
         self.inputs = InputRouter(self.modes, stop=self.stop, talk=self.start_question)
         self.inputs.bind("game_menu", self._menu_input)
         self.inputs.bind("game", self._game_input)
+        from .input import InputAdapter, PcmTurnGate, WakeWordGate
+        self.input_adapter = (InputAdapter(self.inputs, input_source, mapping=input_mapping, clock=clock)
+                              if input_source is not None else None)
+        self._pcm_transcriber = pcm_transcriber
+        self._pcm_sequence, self._pcm_mode_generation, self._pcm_epoch = 0, None, 0
+        self.pcm = PcmTurnGate(self.audio, enabled=pcm_transcriber is not None, clock=clock,
+                              playback_active=lambda: self.session.busy)
+        self.wake_word = WakeWordGate()
         self.motion.set_context(self.session.session_id, "idle", self.modes.generation)
         self._refresh()
 
@@ -137,6 +165,9 @@ class FeatureHost:
         self._put_voice(("reply", turn_id, (reply.gesture, reply.intent), self.clock()))
 
     def _playback(self, kind, turn_id, at):
+        if kind == "started":
+            with self._playback_lock:
+                self._voice_started_turns.add(turn_id)
         self._put_voice((kind, turn_id, None, at))
 
     def _camera_target(self, target):
@@ -149,6 +180,10 @@ class FeatureHost:
             self.gaze.clear("camera")
 
     def _transition(self, mode, context=None, *, force=False):
+        if mode != self.modes.mode or force:
+            self.pcm.cancel("mode_changed")
+            self._pcm_mode_generation = None
+            self._pcm_epoch += 1
         self._transition_target = mode
         self.gaze.clear()
         self.motion.cancel()
@@ -235,6 +270,8 @@ class FeatureHost:
             record = self._records.get(result.request_id)
             if record is not None:
                 record["result"] = result.public()
+            if result.request_id in self._safety_ids.values():
+                self._safety_results[result.request_id] = result.public()
         return result
 
     def _finish_result(self, result):
@@ -268,6 +305,10 @@ class FeatureHost:
             return self._finish_result(HostResult(request, "rejected", "stale_mode"))
         try:
             name = intent.name
+            capability = {"launch_game": "external_games", "play_song": "music",
+                "take_photo": "camera", "start_face_tracking": "camera", "arm_gesture": "arms"}.get(name)
+            if capability is not None:
+                self.runtime.require(capability)
             if name in ("launch_game", "play_song"):
                 items = self.games.catalog() if name == "launch_game" else self.media.catalog()
                 item = next((item for item in items if item.id == intent.target), None)
@@ -326,6 +367,17 @@ class FeatureHost:
         request = "web_" + uuid5(self._namespace, nonce).hex
         fingerprint = json.dumps(intent.public(), sort_keys=True)
         with self._records_lock:
+            safety = (intent.action if isinstance(intent, HostControl) and intent.action in ("stop", "cancel")
+                      else "stop" if isinstance(intent, HostControl) and intent.action == "input"
+                      and intent.value == {"key": "STOP", "pressed": True} else None)
+            if safety is not None:
+                request = self._safety_ids[safety]
+                if safety in self._safety_pending or request in self._voice_cleanup:
+                    return dict(self._safety_results[request])
+                result = HostResult(request, "accepted", "queued").public()
+                self._safety_results[request] = result
+                self._safety_pending[safety] = (request, HostControl(safety))
+                return dict(result)
             if request in self._records:
                 previous = self._records[request]
                 if previous["fingerprint"] != fingerprint:
@@ -337,12 +389,18 @@ class FeatureHost:
             result = HostResult(request, "accepted", "queued").public()
             try:
                 self._command_sequence += 1
-                priority = 0 if isinstance(intent, HostControl) and intent.action in ("stop", "cancel") else 1
-                self._commands.put_nowait((priority, self._command_sequence, request, intent, generation))
+                self._commands.put_nowait((1, self._command_sequence, request, intent, generation, self._command_epoch))
             except Full:
                 raise FeatureError("command_queue_full") from None
             self._records[request] = {"fingerprint": fingerprint, "result": result}
             return dict(result)
+
+    def _await_voice_cleanup(self, request, action):
+        if len(self._voice_cleanup) >= 64 and request not in self._voice_cleanup:
+            raise FeatureError("cleanup_capacity")
+        self._voice_cleanup[request] = action
+        return self._remember(HostResult(request, "running", action + "_pending",
+                                        simulated=self.runtime.simulate))
 
     def control(self, control, request):
         if self._closed:
@@ -358,19 +416,19 @@ class FeatureHost:
                 self.cancel_conversation()
                 if self.modes.mode == "photo":
                     self._transition("conversation")
+                if self.session.busy:
+                    return self._await_voice_cleanup(request, "cancel")
             elif action == "reset":
                 stopped = self.stop()
                 self.session.reset()
                 if self.session.busy:
-                    self._voice_control_request, self._voice_control_reset = request, True
-                    return self._remember(HostResult(request, "running", "reset_pending"))
+                    return self._await_voice_cleanup(request, "reset")
                 if not stopped:
                     raise FeatureError("cleanup_failed")
             elif action == "stop":
                 if not self.stop():
                     if self.session.busy and self.modes.mode == "conversation":
-                        self._voice_control_request, self._voice_control_stop = request, True
-                        return self._remember(HostResult(request, "running", "stop_pending"))
+                        return self._await_voice_cleanup(request, "stop")
                     raise FeatureError("cleanup_failed")
             elif action == "repeat":
                 if self.session.busy or not self.session.voice.has_cache:
@@ -386,6 +444,8 @@ class FeatureHost:
             elif action == "emotion":
                 self.session.set_emotion(value)
             elif action == "preview":
+                if value:
+                    self.runtime.require("camera")
                 if self.modes.mode not in ("conversation", "photo"):
                     raise FeatureError("camera_mode_unsupported")
                 self.camera.set_preview(value, generation=self.modes.generation)
@@ -393,8 +453,7 @@ class FeatureHost:
                 outcome = self.inputs.route(value["key"], value["pressed"], now=self.clock())
                 if outcome is False and value["pressed"] and value["key"] in ("STOP", "TALK"):
                     if value["key"] == "STOP" and self.session.busy and self.modes.mode == "conversation":
-                        self._voice_control_request, self._voice_control_stop = request, True
-                        return self._remember(HostResult(request, "running", "stop_pending"))
+                        return self._await_voice_cleanup(request, "stop")
                     raise FeatureError("cleanup_failed" if value["key"] == "STOP" else "conversation_busy")
                 if isinstance(outcome, HostResult):
                     return self._remember(HostResult(request, outcome.status, outcome.code,
@@ -434,11 +493,12 @@ class FeatureHost:
         if self._closed or self.session.busy:
             return False
         self._transition("conversation")
-        self.session.expression_client.set_context({"version": 1, "simulation": True,
+        self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
             "real_features_enabled": False,
             "games": [{"id": item.id, "readiness": item.readiness} for item in self.games.catalog()],
             "songs": [{"id": item.id, "readiness": item.readiness} for item in self.media.catalog()],
-            "camera": "synthetic_only", "arm": "mock_ack_position_unverified",
+            "camera": "synthetic_only" if self.runtime.simulate else "denied",
+            "arm": "mock_ack_position_unverified" if self.runtime.simulate else "denied",
             "imu": "physical_unverified_no_control"})
         self._voice_lease = self.audio.acquire("conversation", stop=self.cancel_conversation)
         turn_id = f"{self.session.session_id}:{self.session.worker.turn + 1}"
@@ -450,9 +510,30 @@ class FeatureHost:
             return False
         return True
 
+    def start_ptt(self, capture_id):
+        """Injected PCM development path only; no automatic microphone open.
+
+        The source feeds host.pcm with its returned snapshot generation. A ready
+        result uses an injected offline transcriber once, then the same session.
+        """
+        if self._closed or self.modes.mode != "conversation" or self.session.busy:
+            return False
+        self._pcm_sequence += 1
+        if self.pcm.start_ptt(capture_id, generation=self._pcm_sequence):
+            self._pcm_mode_generation = self.modes.generation
+            self._pcm_epoch += 1
+            return True
+        return False
+
     def cancel_conversation(self):
+        with self._records_lock:
+            self._command_epoch += 1
+        self.pcm.cancel("cancelled")
+        self._pcm_mode_generation = None
+        self._pcm_epoch += 1
         self._proposals.clear()
         self._turn_generations.clear()
+        self.gaze.clear("reaction")
         if self.session.busy:
             self.session.cancel()
         self.motion.cancel()
@@ -500,11 +581,22 @@ class FeatureHost:
     def poll(self):
         if self._closed:
             return
+        if self.input_adapter is not None:
+            self.input_adapter.poll()
+        with self._records_lock:
+            safety, self._safety_pending = self._safety_pending, {}
+        for action in ("stop", "cancel"):
+            if action in safety:
+                request, control = safety[action]
+                self.control(control, request)
         for _ in range(32):
             try:
-                _, _, request, intent, generation = self._commands.get_nowait()
+                _, _, request, intent, generation, epoch = self._commands.get_nowait()
             except Empty:
                 break
+            if epoch != self._command_epoch:
+                self._remember(HostResult(request, "rejected", "stale_mode"))
+                continue
             if isinstance(intent, HostControl):
                 if intent.action not in ("stop", "cancel") and generation != self.modes.generation:
                     self._remember(HostResult(request, "rejected", "stale_mode"))
@@ -512,6 +604,25 @@ class FeatureHost:
                     self.control(intent, request)
             else:
                 self.execute(intent, request_id=request, expected_generation=generation)
+        # STOP/cancel admitted before this poll must retire capture before its
+        # result can initiate a new turn. Transcriber callbacks are injected and
+        # may reenter cancellation, so validate the epoch again after returning.
+        for capture in self.pcm.poll():
+            if (capture.status == "ready" and self._pcm_mode_generation == self.modes.generation
+                    and self._pcm_transcriber is not None and not self.session.busy
+                    and self.modes.mode == "conversation"):
+                epoch, generation = self._pcm_epoch, self.modes.generation
+                self._pcm_mode_generation = None
+                try:
+                    message = self._pcm_transcriber(capture)
+                    if (not self._closed and self._pcm_epoch == epoch
+                            and self._pcm_sequence == capture.generation
+                            and self.modes.generation == generation and not self.session.busy
+                            and self.modes.mode == "conversation"
+                            and type(message) is str and 0 < len(message.strip()) <= 512):
+                        self.start_question(message)
+                except Exception:
+                    pass  # No raw PCM, transcript or provider detail in logs.
         finished = self.session.poll()
         for _ in range(64):
             try:
@@ -525,7 +636,13 @@ class FeatureHost:
                 self._proposals[turn] = {"gesture": data[0], "intent": data[1], "ended": False}
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
-                if (proposal["gesture"] != "none" and self.clock() - at <= .5
+                # A single short, deterministic look at actual speech start.
+                # Native activity and tracking retain higher priority; no idle
+                # timer, random motion or emotion/mouth setter is introduced.
+                if self.clock() - at <= .5:
+                    self.gaze.offer("reaction", .12, -.04, generation=generation,
+                                    expires_at=at + .65)
+                if (self.runtime.simulate and proposal["gesture"] != "none" and self.clock() - at <= .5
                         and self.session.snapshot()["playback"] == "started"):
                     request = "gesture_" + uuid5(self._namespace, turn).hex
                     try:
@@ -543,17 +660,26 @@ class FeatureHost:
                 continue
             self.audio.release(self._voice_lease)
             self._voice_lease = None
+            turn = f"{self.session.session_id}:{event.turn}"
+            with self._playback_lock:
+                played = turn in self._voice_started_turns
+                self._voice_started_turns.discard(turn)
             if self._voice_control_request is not None:
                 request, self._voice_control_request = self._voice_control_request, None
-                stopping, self._voice_control_stop = self._voice_control_stop, False
-                resetting, self._voice_control_reset = self._voice_control_reset, False
                 ok = event.code == "ok"
-                if (stopping or resetting) and self.modes.mode == "conversation":
-                    self.modes.last_error = None
-                self._remember(HostResult(request, "simulated" if ok or stopping or resetting else "cancelled" if event.code == "cancelled" else "failed",
-                    "reset_completed" if resetting else "resources_stopped" if stopping else "voice_completed" if ok else "voice_cancelled" if event.code == "cancelled" else "voice_failed",
-                    completed=ok or stopping or resetting, completion="simulated" if ok or stopping or resetting else "unknown"))
-            turn = f"{self.session.session_id}:{event.turn}"
+                self._remember(HostResult(request, ("simulated" if self.runtime.simulate else "succeeded") if ok else "cancelled" if event.code == "cancelled" else "failed",
+                    "voice_completed" if ok else "voice_cancelled" if event.code == "cancelled" else "voice_failed",
+                    simulated=self.runtime.simulate, executed=not self.runtime.simulate and played,
+                    completed=ok, completion=("simulated" if self.runtime.simulate else "voice_playback") if ok else
+                    "partial_playback" if played else "unknown"))
+            cleanup, self._voice_cleanup = self._voice_cleanup, {}
+            stopped = self.stop() if any(action in ("stop", "reset") for action in cleanup.values()) else True
+            for request, action in cleanup.items():
+                done = stopped if action in ("stop", "reset") else True
+                self._remember(HostResult(request, ("simulated" if self.runtime.simulate else "succeeded") if done else "unknown",
+                    ("reset_completed" if action == "reset" else "resources_stopped" if action == "stop" else "voice_cancelled") if done else "cleanup_failed",
+                    simulated=self.runtime.simulate, completed=done,
+                    completion=("simulated" if self.runtime.simulate else "resources_stopped") if done else "unknown"))
             proposal = self._proposals.pop(turn, None)
             generation = self._turn_generations.pop(turn, None)
             if (event.code == "ok" and proposal and proposal["ended"] and proposal["intent"] is not None
@@ -603,8 +729,10 @@ class FeatureHost:
         face = self.session.snapshot()
         camera = self.camera.snapshot()
         with self._records_lock:
-            recent = [dict(value["result"]) for value in list(self._records.values())[-8:]]
-        state = {"version": 1, "sequence": self._state_sequence, "simulation": True, "real_features_enabled": False,
+            recent = ([dict(value["result"]) for value in list(self._records.values())[-8:]]
+                      + [dict(value) for value in self._safety_results.values()])[-8:]
+        state = {"version": 1, "sequence": self._state_sequence, "simulation": self.runtime.simulate,
+            "capabilities": self.runtime.public(), "real_features_enabled": False,
             "mode": self.modes.mode, "mode_generation": self.modes.generation,
             "mode_error": self.modes.last_error, "audio_owner": self.audio.owner,
             "conversation_busy": self.session.busy, "emotion": face["emotion"],
@@ -614,6 +742,9 @@ class FeatureHost:
             "camera": camera, "photo": self._photo_result,
             "photo_countdown": max(0, self._pending_photo["deadline"] - self.clock()) if self._pending_photo else None,
             "motion": self.motion.snapshot(), "imu": self.imu.snapshot(),
+            "input": self.input_adapter.snapshot() if self.input_adapter else
+                     {"enabled": False, "real_input": "NOT_RUN", "device_opens": 0},
+            "ptt": self.pcm.snapshot(), "wake_word": self.wake_word.snapshot(),
             "last_result": self._last_result, "requests": recent,
             "asset_status": {"real_game_pack": "ASSET_PENDING", "user_songs": "ASSET_PENDING"}}
         with self._snapshot_lock:
@@ -651,6 +782,10 @@ class FeatureHost:
             except Exception:
                 errors.append("cleanup_failed")
         self.journal.close()
+        if self.input_adapter is not None:
+            self.input_adapter.close()
+        self.pcm.close()
+        self.wake_word.close()
         self._temporary.cleanup()
         if errors:
             raise FeatureError("cleanup_failed")

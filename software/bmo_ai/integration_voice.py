@@ -24,9 +24,11 @@ from .safe_playback import attenuated_copy, validate_gain
 
 
 def _player_environment():
-    # The player has no reason to inherit credentials used by synthesis/brain.
+    # A child receives only audio/session plumbing, never arbitrary parent keys.
+    allowed = {"PATH", "LANG", "LC_ALL", "LC_CTYPE", "HOME", "XDG_RUNTIME_DIR",
+               "ALSA_CONFIG_PATH", "ALSA_CONFIG_DIR", "PULSE_SERVER"}
     return {name: value for name, value in os.environ.items()
-            if not name.startswith(("OPENAI_", "FISH_"))}
+            if name in allowed}
 
 
 def synthetic_wav():

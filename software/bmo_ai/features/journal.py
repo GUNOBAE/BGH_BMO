@@ -11,7 +11,10 @@ from .contracts import FeatureError, STATUSES, request_id_ok, valid_id
 
 
 class ActionJournal:
-    def __init__(self, directory=None):
+    def __init__(self, directory=None, *, max_entries=4096):
+        if type(max_entries) is not int or not 1 <= max_entries <= 100000:
+            raise FeatureError("invalid_journal_limit")
+        self.max_entries = max_entries
         self._db = None
         self._directory = None
         if directory is None:
@@ -71,6 +74,12 @@ class ActionJournal:
                 raise FeatureError("request_conflict")
             return {"status": row[1], "code": row[2], "duplicate": True}
         try:
+            # Keep receipts instead of silently evicting IDs and reexecuting an
+            # old action. Both memory and persistent journals fail closed when
+            # full; a later supervised archival policy can replace this bound.
+            count = self._db.execute("SELECT count(*) FROM requests").fetchone()[0]
+            if count >= self.max_entries:
+                raise FeatureError("journal_capacity")
             self._db.execute("INSERT INTO requests VALUES (?,?,'accepted','accepted')", (request_id, fingerprint))
             self._db.commit()
         except sqlite3.Error:

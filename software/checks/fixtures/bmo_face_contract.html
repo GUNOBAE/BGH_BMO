@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en" data-synthetic-contract="bmo-face-v1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Synthetic BMOFace API contract — no artwork</title>
+<style>body{margin:0;padding:1rem;background:#fafafa;color:#222;font:16px monospace}pre{white-space:pre-wrap}</style>
+<h1>Synthetic API fixture</h1><p>This is a text state monitor. It contains no BMO artwork.</p><pre id="state"></pre>
+<script>
+(() => {
+  'use strict';
+  const allowed = new Set(['neutral','happy','sad','surprised','angry','crying']);
+  const state = {version:'synthetic-contract-v1',fixture:true,selectedEmotion:'neutral',
+    activity:'idle',speech:'off',mouth:'closed',mouthHref:'#mouth-closed',
+    look:{x:0,y:0},eyes:{x:0,y:0},blinks:0};
+  const events=[];
+  function render(method){events.push({method,emotion:state.selectedEmotion,activity:state.activity,
+    speech:state.speech,mouth:state.mouth});if(events.length>2000)events.shift();
+    document.getElementById('state').textContent=JSON.stringify(state,null,2);}
+  function stop(){state.speech='off';state.mouth='closed';state.mouthHref='#mouth-closed';render('stop');}
+  window.BMOFace={
+    setEmotion(value){if(!allowed.has(value))throw Error('Invalid fixture emotion');
+      state.selectedEmotion=value;state.activity='idle';render('setEmotion');},
+    setActivity(value){if(!['idle','listening','thinking'].includes(value))throw Error('Invalid fixture activity');
+      stop();state.activity=value;state.mouthHref=value==='thinking'?'#mouth-thinking-hmm':'#mouth-closed';render('setActivity');},
+    setSpeaking(value){if(value){state.speech='external';state.activity='idle';render('setSpeaking');}else stop();},
+    setMouth(value){state.mouth=value;state.mouthHref='#mouth-'+value;render('setMouth');},
+    look(x,y){state.look={x,y};render('look');},
+    lookEyes(x,y){state.eyes={x,y};render('lookEyes');},
+    blink(){state.blinks++;render('blink');},
+    stop,getState(){return JSON.parse(JSON.stringify(state));},
+    inspect(){return JSON.parse(JSON.stringify(state));},
+    playAudio(){throw Error('Synthetic fixture has no audio');},
+    playBlob(){throw Error('Synthetic fixture has no audio');},
+  };
+  window.BMOFaceContractEvents=events;render('init');
+})();
+</script></html>

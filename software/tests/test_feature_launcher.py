@@ -217,9 +217,9 @@ class FeatureLauncherTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 0)
         factory.assert_not_called()
 
-    def test_live_and_implicit_execution_or_bad_limits_are_rejected_before_host(self):
+    def test_implicit_conflicting_live_fixtures_or_bad_limits_are_rejected_before_host(self):
         factory = Mock()
-        for arguments in ([], ["--live"], ["--simulate", "--live"],
+        for arguments in ([], ["--live", "--demo-assets"], ["--live", "--turns", "1"], ["--simulate", "--live"],
                           ["--simulate", "--turns", "21"], ["--simulate", "--port", "-1"]):
             with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
                 main(arguments, host_factory=factory)

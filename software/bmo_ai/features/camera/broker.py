@@ -44,28 +44,48 @@ class CameraBroker:
             backend = None
             try:
                 backend = self.factory()
-                backend.open(epoch)
+                if getattr(backend, 'cooperative_cancel', False) is True:
+                    backend.open(epoch, cancel_check=cancel_check)
+                else:
+                    backend.open(epoch)
+                if cancel_check is not None:
+                    cancel_check()
                 with self._state:
                     if epoch != self._epoch:
                         raise FeatureError('camera_cancelled')
                     self._backend = backend
                     self.simulated = backend.simulated is not False
                     self._seq = self._stamp = None
-            except Exception:
+            except BaseException as error:
                 if backend is not None:
                     try:
                         backend.close()
                     except Exception:
                         pass
+                if not isinstance(error, Exception):
+                    raise
                 raise FeatureError('camera_open_failed') from None
 
-    def _call(self, method):
+    def _call(self, method, cancel_check=None):
         with self._operation:
+            if cancel_check is not None:
+                cancel_check()
             with self._state:
                 backend, epoch = self._backend, self._epoch
             if backend is None:
                 raise FeatureError('camera_off')
-            frame = getattr(backend, method)()
+            try:
+                if getattr(backend, 'cooperative_cancel', False) is True:
+                    frame = getattr(backend, method)(cancel_check=cancel_check)
+                else:
+                    frame = getattr(backend, method)()
+            except BaseException:
+                with self._state:
+                    if backend is self._backend:
+                        self.close()
+                raise
+            if cancel_check is not None:
+                cancel_check()
             with self._state:
                 if epoch != self._epoch or backend is not self._backend:
                     raise FeatureError('camera_cancelled')
@@ -76,11 +96,11 @@ class CameraBroker:
                 self._seq, self._stamp = frame.seq, frame.captured_at
                 return frame
 
-    def read_frame(self):
-        return self._call('read_frame')
+    def read_frame(self, *, cancel_check=None):
+        return self._call('read_frame', cancel_check)
 
-    def capture_photo(self):
-        frame = self._call('capture_photo')
+    def capture_photo(self, *, cancel_check=None):
+        frame = self._call('capture_photo', cancel_check)
         if frame is None:
             raise FeatureError('stale_photo')
         return frame
@@ -93,7 +113,8 @@ class CameraBroker:
             self._seq = self._stamp = None
         if backend is not None:
             try:
-                backend.close()
+                if backend.close() is False:
+                    return False
             except Exception:
                 return False
         return True

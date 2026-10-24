@@ -106,7 +106,11 @@ class CameraFeature:
             revision, generation = self._revision, self._generation
             tracking = self._tracking
         try:
-            frame = self.broker.read_frame()
+            def current():
+                with self._lock:
+                    if revision != self._revision or self._closed:
+                        raise _Cancelled()
+            frame = self.broker.read_frame(cancel_check=current)
             now = self.clock()
             if frame is not None and (frame.captured_at > now + .05 or now - frame.captured_at > self.tracker.config.max_age):
                 frame = None
@@ -188,16 +192,19 @@ class CameraFeature:
             simulated = self.broker.simulated
             check()
             capture_attempted = True
-            frame = self.broker.capture_photo()
+            frame = self.broker.capture_photo(cancel_check=check)
             check()
-            if self.clock() - frame.captured_at > self.tracker.config.max_age:
+            now = self.clock()
+            if frame.captured_at > now + .05 or now - frame.captured_at > self.tracker.config.max_age:
                 raise FeatureError('stale_photo')
             result = self.store.save(request_id, frame, simulated=simulated, cancel_check=check)
             reserved = False  # save owns final journal completion after commit.
             return result
         except BaseException as error:
             interrupted = not isinstance(error, Exception)
-            cancelled = isinstance(error, _Cancelled) or self._photo_cancel.is_set() or revision != self._revision or self._closed
+            cancelled = (isinstance(error, _Cancelled)
+                         or isinstance(error, FeatureError) and error.code == 'camera_cancelled'
+                         or self._photo_cancel.is_set() or revision != self._revision or self._closed)
             code = ('photo_interrupted' if interrupted else 'photo_cancelled' if cancelled
                     else error.code if isinstance(error, FeatureError) else 'photo_storage_failed')
             status = 'unknown' if interrupted else 'cancelled' if cancelled else 'failed'
@@ -217,6 +224,12 @@ class CameraFeature:
             with self._lock:
                 self._photo_active, self._photo_id = False, None
                 wanted = (self._tracking or self._preview) and revision == self._revision and not self._closed
+                if wanted and not self.broker.opened:
+                    # A failed real capture must not revive a closed sensor.
+                    self._tracking = self._preview = False
+                    self._frame = None
+                    self.tracker.reset()
+                    self._emit(GazeTarget(self._generation, None, None, self.clock(), None, None, 'off'))
             if not wanted:
                 if not self.broker.close():
                     self._error = 'camera_close_failed'

@@ -1,3 +1,12 @@
+# 현재 통합 실행 안내
+
+Issue #15 후속 통합은 [OFFLINE_INTEGRATION_KR.md](OFFLINE_INTEGRATION_KR.md)와
+[최신 보고서](../docs/reports/OFFLINE_INTEGRATION_V2_LATEST_KR.md)를 따른다.
+아래는 PR #14 당시 모의 기능 묶음의 기록이며, 새 통합 런처의 R10 기본 선택과
+명시적 live 대화 준비 경로는 후속 문서에서 구분한다.
+
+---
+
 # 기능 묶음 v1 — 독립 모의 통합
 
 작업 경로는 `/home/bgh/BMO_FEATURES`, 브랜치는 `feature/bmo-feature-bundle-v1`이다.

@@ -3,6 +3,7 @@ import struct
 import zlib
 
 from ..contracts import FeatureError
+from .limits import MAX_DECODED_BYTES, MAX_IMAGE_SIDE, MAX_PNG_BYTES
 
 
 def png_bytes(width=320, height=240, color=(42, 150, 112)):
@@ -15,7 +16,7 @@ def png_bytes(width=320, height=240, color=(42, 150, 112)):
 
 def validate_png(payload):
     """Check CRC, dimensions, compressed size and full RGB/RGBA scanline data."""
-    if type(payload) is not bytes or len(payload) > 8 * 1024 * 1024 or payload[:8] != b'\x89PNG\r\n\x1a\n':
+    if type(payload) is not bytes or len(payload) > MAX_PNG_BYTES or payload[:8] != b'\x89PNG\r\n\x1a\n':
         raise FeatureError('invalid_photo')
     offset, width, height, channels, compressed, ended = 8, None, None, None, bytearray(), False
     while offset + 12 <= len(payload):
@@ -32,7 +33,7 @@ def validate_png(payload):
             if kind != b'IHDR' or length != 13:
                 raise FeatureError('invalid_photo')
             width, height, depth, color, compression, filtering, interlace = struct.unpack('!2I5B', body)
-            if not (1 <= width <= 4096 and 1 <= height <= 4096 and depth == 8 and color in (2, 6)
+            if not (1 <= width <= MAX_IMAGE_SIDE and 1 <= height <= MAX_IMAGE_SIDE and depth == 8 and color in (2, 6)
                     and compression == filtering == interlace == 0):
                 raise FeatureError('invalid_photo')
             channels = 3 if color == 2 else 4
@@ -49,7 +50,7 @@ def validate_png(payload):
     if not ended or not compressed:
         raise FeatureError('invalid_photo')
     expected = height * (1 + width * channels)
-    if expected > 32 * 1024 * 1024:
+    if expected > MAX_DECODED_BYTES:
         raise FeatureError('invalid_photo')
     try:
         decoder = zlib.decompressobj()
