@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "issue": 30,
+  "draft_pr": 31,
+  "base_sha": "0287bb23c1fafc357c9a18419f62b2ebdf0de767",
+  "tested_source_sha": "88e2c69648e27d0ed48d6d73aaf874a61d2be58e",
+  "source_file_count": 35,
+  "source_files": [
+    {
+      "path": "software/CAMERA_REAL_KR.md",
+      "sha256": "fa3891ac6fbd2de8de38510d5655c38be9d2e460f7cf26de2ac76e138060d5b9"
+    },
+    {
+      "path": "software/REAL_ROBOT_TEST_KR.md",
+      "sha256": "74577e008cf792507bb35e0b531f23bdc6efc083d57156803cafa818d4caf382"
+    },
+    {
+      "path": "software/VOICE_REAL_KR.md",
+      "sha256": "1fc2257ea469795627bfc428347ce86b0630cc87d626ffd2e9e327f4c92d8331"
+    },
+    {
+      "path": "software/bmo_ai/desktop_app.py",
+      "sha256": "e035b8eaeba7f6e7b80a4b1c6f540203e5defba4e813a96bcf36574a443fc1cb"
+    },
+    {
+      "path": "software/bmo_ai/desktop_browser.py",
+      "sha256": "fbaabda244d8ed5a1c13a4ca882179bc0274cdb914cd4aa2e3740f68c871a224"
+    },
+    {
+      "path": "software/bmo_ai/desktop_diagnostics.py",
+      "sha256": "864edeb23539dc23e0392532bced1cd29bbbf49e7c75c087060c96650140b820"
+    },
+    {
+      "path": "software/bmo_ai/desktop_install.py",
+      "sha256": "095d0044b8f37cd2e755d4acb4bffc3cb2ed33d8a1762689103719c28a3403c0"
+    },
+    {
+      "path": "software/bmo_ai/desktop_runtime.py",
+      "sha256": "f063b7af99c581ad6bcfb8e296e59d74a6f7ee37cf26f618b52cfda3a272f237"
+    },
+    {
+      "path": "software/bmo_ai/desktop_web/desktop.js",
+      "sha256": "3a75aca300c5a02d248dd3b4934d6c58d3644277a5f8d34a99876adfc7c5bb03"
+    },
+    {
+      "path": "software/bmo_ai/desktop_web/index.html",
+      "sha256": "65376ff12b4fca031cf07ef4c5e2d94ce2269e1e9486d5971f0702fbe25b6a87"
+    },
+    {
+      "path": "software/bmo_ai/expressive_voice.py",
+      "sha256": "b7f82185fd3eb7969f38ed303999bb8181df43b1f4e995baee6736ba51c8cf97"
+    },
+    {
+      "path": "software/bmo_ai/features/camera/broker.py",
+      "sha256": "e2612873d7dd8c1832123a83d0bc5c05a8bb2023943cbd8790bb36665d036ec9"
+    },
+    {
+      "path": "software/bmo_ai/features/camera/feature.py",
+      "sha256": "472267004f87183bd5221802ce28b2bb39b839e6a3e3903f22c70feb01a8fdea"
+    },
+    {
+      "path": "software/bmo_ai/features/camera/live.py",
+      "sha256": "dfc608dcb811bfb9b9f2e56c3fbabef5e717170727bf4f846bd58af7936dd5d2"
+    },
+    {
+      "path": "software/bmo_ai/features/camera/live_codec.py",
+      "sha256": "dd30ed10756b77a5266d9a815db1216a0ecff81cad22bc4879c2933845c6bcd2"
+    },
+    {
+      "path": "software/bmo_ai/features/camera/live_video.py",
+      "sha256": "95c4cfa13f241c58babfbbb2be0e04846d30c7d96383d8ee38a2b2e569b6c6a0"
+    },
+    {
+      "path": "software/bmo_ai/features/camera/video.py",
+      "sha256": "01c047077118a8ffeedc904963cf411da96603ef3cd5563dfd0573a8904d75b6"
+    },
+    {
+      "path": "software/bmo_ai/features/host.py",
+      "sha256": "2b62f81c42e7563a1cfae3a6da7e5dee3973d97a4a6c92eb9b220fbeb6ece935"
+    },
+    {
+      "path": "software/bmo_ai/features/input/microphone.py",
+      "sha256": "bc6fe164f2ecf2538702d0be42166286b4fd49f9ae754cff559d465f45d96e23"
+    },
+    {
+      "path": "software/bmo_ai/features/motion/admission.py",
+      "sha256": "f8bf91123d1a6f863678c70c8219fae660962a22b0a0311357d7f49645f561bc"
+    },
+    {
+      "path": "software/bmo_ai/features/reply.py",
+      "sha256": "4974da1b888ecca3cc4bf683c0d392f9356a0d24837b5c0917d3555f33c98103"
+    },
+    {
+      "path": "software/bmo_ai/features/runtime.py",
+      "sha256": "e267dfd4b9251ccace7347ee9c55cc13dbaac8c3f3bb7f0069990da538167aa1"
+    },
+    {
+      "path": "software/bmo_ai/integration_session.py",
+      "sha256": "eaa57f88d5532c67b74c3d14ad67a2f53344cbe64248371e62a51681424303f2"
+    },
+    {
+      "path": "software/bmo_ai/integration_voice.py",
+      "sha256": "43a62af886ae8264b7d2b696ed79813582441525d8ab0cdb9681e88e5381c230"
+    },
+    {
+      "path": "software/bmo_ai/ptt_diagnostics.py",
+      "sha256": "24f17c62ca6f14a52fcd3f5818d3bc394b780d8c8f444d77bc7ba8bc46399799"
+    },
+    {
+      "path": "software/bmo_ai/turn_diagnostics.py",
+      "sha256": "f2ceb187bcd322de954d359bd1a55f021c230bd654e3b342ee4856725d867148"
+    },
+    {
+      "path": "software/bmo_ai/voice_benchmark.py",
+      "sha256": "425ea5a8b090ba5fb4989a59177da357ee589c3a85555f9d762931ff6b910be7"
+    },
+    {
+      "path": "software/checks/check_desktop_app_browser.py",
+      "sha256": "0e9b33e30ad38aa74cc76f88aa7e385f580060511d53025aa7593fdbc910ed36"
+    },
+    {
+      "path": "software/checks/check_ptt_vad_browser.py",
+      "sha256": "37bf0be7e12dc546301763d087dcdce3cb117fd2a1aa1896c6afbf70e683e3e9"
+    },
+    {
+      "path": "software/tests/test_expressive_voice.py",
+      "sha256": "88f8d39e724182dc1e066524e2f77e476586b12bfc7df306eb488af68189b70e"
+    },
+    {
+      "path": "software/tests/test_real_arm_admission.py",
+      "sha256": "67edbb2a45366ebcb6c0068677e93f1138b0698ec9396429aeb11263419a1a12"
+    },
+    {
+      "path": "software/tests/test_real_camera_backend.py",
+      "sha256": "aca25e09f18ef51a2b09bdbff9dec494aa57fc2d39629e5736d92c28c4a98cce"
+    },
+    {
+      "path": "software/tests/test_real_camera_host.py",
+      "sha256": "32175985bbefcb78070013b6e590e8d20816729e28ab756eda53d2991f80af97"
+    },
+    {
+      "path": "software/tests/test_real_desktop_milestone.py",
+      "sha256": "7600a21b520ad56a065c5848a4932de88b4251d11226dbcc934bb3681082e97d"
+    },
+    {
+      "path": "software/tests/test_real_ptt_diagnostics.py",
+      "sha256": "c387671806d28f6a919be2d0a02f675a24f7546795f2344c75a1ef5d9a145268"
+    }
+  ],
+  "local_unit": {
+    "python": "3.13.5",
+    "tests": 1160,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 77.023,
+    "result": "PASS"
+  },
+  "new_tests": {
+    "voice": 22,
+    "camera_backend": 21,
+    "arm_admission": 7,
+    "camera_host": 10,
+    "desktop": 13,
+    "ptt": 11,
+    "total": 84
+  },
+  "headless": {
+    "profiles": [
+      "ci-synthetic",
+      "r10",
+      "v13.2"
+    ],
+    "per_profile": {
+      "offline_shell": 6,
+      "desktop": 7,
+      "ptt": 12,
+      "camera_media": 7
+    },
+    "total": 96,
+    "result": "PASS",
+    "physical_gui_tested": false
+  },
+  "ci": {
+    "code_run_url": "https://github.com/GUNOBAE/BGH_BMO/actions/runs/40220019304",
+    "result": "SUCCESS",
+    "unit_python": [
+      "3.11",
+      "3.13"
+    ],
+    "tests_per_python": 1160,
+    "public_browser": "PASS"
+  },
+  "preserved_faces": {
+    "r10": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+    "v13.2": "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932"
+  },
+  "physical": {
+    "gp8_hid": "NOT_RUN",
+    "microphone": "NOT_RUN",
+    "paid_stt": "NOT_RUN",
+    "paid_ai": "NOT_RUN",
+    "paid_fish": "NOT_RUN",
+    "audio_output": "NOT_RUN",
+    "camera_photo": "NOT_RUN",
+    "camera_video": "NOT_RUN",
+    "lcd_labwc_vnc": "NOT_RUN"
+  },
+  "arms": {
+    "status": "BLOCKED",
+    "reason": "arm_live_protocol_unimplemented",
+    "firmware_written": false,
+    "serial_opened": false,
+    "imu_control": false
+  },
+  "protected_services_changed": false,
+  "original_art_changed": false,
+  "existing_test_files_changed": false
+}
