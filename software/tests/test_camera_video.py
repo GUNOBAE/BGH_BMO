@@ -283,6 +283,36 @@ class CameraVideoTests(unittest.TestCase):
         self.assertFalse(self.recorder.close())
         self.assert_code('camera_busy', lambda: self.broker.open())
 
+    def test_failed_first_capture_and_failed_close_keep_unknown_owned_lease(self):
+        with patch.object(self.backend, 'read_frame', side_effect=RuntimeError('capture failed')), \
+                patch.object(self.backend, 'close', return_value=False):
+            result = self.start()
+        self.assertEqual(('unknown', 'video_close_failed'), (result.status, result.code))
+        self.assertEqual('UNVERIFIED', self.recorder.snapshot()['readiness'])
+        self.assertFalse(self.recorder.close())
+        self.assert_code('camera_busy', lambda: self.broker.open())
+        self.assertFalse(list(self.root.glob('*.avi')))
+
+    def test_failed_later_capture_and_failed_close_cannot_be_reopened(self):
+        self.start()
+        self.clock.advance()
+        with patch.object(self.backend, 'read_frame', side_effect=RuntimeError('capture failed')), \
+                patch.object(self.backend, 'close', return_value=False):
+            snapshot = self.recorder.poll(generation=1)
+        self.assertEqual(('unknown', 'video_close_failed'),
+                         (snapshot['result']['status'], snapshot['result']['code']))
+        self.assertEqual('UNVERIFIED', snapshot['readiness'])
+        self.assertFalse(self.recorder.close())
+        self.assert_code('camera_busy', lambda: self.broker.open())
+
+    def test_failed_open_and_failed_close_keep_unknown_owned_lease(self):
+        with patch.object(self.backend, 'open', side_effect=RuntimeError('open failed')), \
+                patch.object(self.backend, 'close', return_value=False):
+            result = self.start()
+        self.assertEqual(('unknown', 'video_close_failed'), (result.status, result.code))
+        self.assertFalse(self.recorder.close())
+        self.assert_code('camera_busy', lambda: self.broker.open())
+
     def test_power_loss_metadata_is_unknown_not_automatic_retry(self):
         self.assertIsNone(self.store.begin('interrupted', config=VideoConfig()))
         self.store.close()  # Process exit drops lock but cannot prove completion.
