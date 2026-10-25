@@ -46,6 +46,20 @@ class ProductNativeCameraTests(unittest.TestCase):
             self.assertEqual(plan["command"][-2:], ["--frontend", "native"])
             self.assertFalse((Path(tmp) / "Desktop" / "BMO.desktop").exists())
 
+    def test_native_desktop_icon_can_explicitly_opt_in_ptt_and_expressive_aaron(self):
+        with TemporaryDirectory() as tmp:
+            plan = desktop_install_plan(
+                project_root=Path(__file__).resolve().parents[2], home=Path(tmp),
+                simulate=False, frontend="native", ptt_microphone=True,
+                expressive_voice=True, vad_profile="sensitive")
+            command = plan["command"]
+            self.assertEqual(plan["status"], "DRY_RUN")
+            self.assertEqual(plan["files_written"], 0)
+            self.assertEqual(command[-6:], [
+                "--frontend", "native", "--ptt-microphone",
+                "--vad-profile", "sensitive", "--expressive-voice"])
+            self.assertFalse((Path(tmp) / "Desktop" / "BMO.desktop").exists())
+
     def test_runtime_capability_never_grants_real_video_or_arms(self):
         policy = RuntimePolicy(simulate=False, camera_live=True)
         policy.require("camera")
