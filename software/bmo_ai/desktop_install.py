@@ -119,7 +119,9 @@ def _source(path, *, limit, executable=False):
                 os.close(value)
 
 
-def _configuration(project_root, home, environ, simulate):
+def _configuration(project_root, home, environ, simulate, frontend="chromium"):
+    if type(frontend) is not str or frontend not in ("chromium", "native"):
+        raise DesktopInstallError("desktop_invalid_config")
     if type(simulate) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     source = os.environ if environ is None else environ
@@ -146,6 +148,8 @@ def _configuration(project_root, home, environ, simulate):
         launcher_verified = False
     icon_path = data / "icons" / "hicolor" / "scalable" / "apps" / "bmo-desktop.svg"
     command = [str(launcher), "--simulate" if simulate else "--live"]
+    if frontend == "native":
+        command.extend(("--frontend", "native"))
     template = ("[Desktop Entry]\nType=Application\nName=BMO\n"
                 "Comment=Start the BMO desktop app manually\n"
                 "Exec=" + " ".join('"' + value + '"' for value in command) + "\n"
@@ -186,8 +190,8 @@ def _existing(directory, name, raw, mode):
             os.close(descriptor)
 
 
-def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate=False):
-    _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate)
+def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate=False, frontend="chromium"):
+    _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, frontend)
     rows = []
     for path, raw, mode in targets:
         directory = _directory(path.parent, home=user_home)
@@ -213,12 +217,12 @@ def _remove_owned(directory, name, identity):
     os.unlink(name, dir_fd=directory)
 
 
-def install_desktop(*, project_root=None, home=None, environ=None, simulate=False, install=False):
+def install_desktop(*, project_root=None, home=None, environ=None, simulate=False, install=False, frontend="chromium"):
     if type(install) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     if not install:
-        return desktop_install_plan(project_root=project_root, home=home, environ=environ, simulate=simulate)
-    _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate)
+        return desktop_install_plan(project_root=project_root, home=home, environ=environ, simulate=simulate, frontend=frontend)
+    _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate, frontend)
     if not verified:
         raise DesktopInstallError("desktop_launcher_pending")
     created, descriptors, stages, published = [], [], [], []
@@ -306,10 +310,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install-desktop", action="store_true")
     parser.add_argument("--simulate", action="store_true")
+    parser.add_argument("--frontend", choices=("chromium", "native"), default="chromium")
     parser.add_argument("--project-root", type=Path)
     args = parser.parse_args(argv)
     try:
         report = install_desktop(project_root=args.project_root, simulate=args.simulate,
+                                 frontend=args.frontend,
                                  install=args.install_desktop)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
