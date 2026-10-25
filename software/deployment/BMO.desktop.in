@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=BMO
+Comment=Start the BMO desktop app manually
+Exec="@PROJECT_ROOT@/launch-desktop" "--live"
+Path=@PROJECT_ROOT@
+Icon=@ICON_PATH@
+Terminal=true
+StartupNotify=false
+Categories=Game;Utility;
+X-GNOME-Autostart-enabled=false

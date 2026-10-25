@@ -1,0 +1,310 @@
+"""Own one Chromium group and an ephemeral profile; never alter a desktop session.
+
+Chromium readiness is the host's face handshake, not merely process creation.
+Call poll regularly and mark_ready only after that handshake. There is no
+automatic relaunch, user-profile reuse, remote debugging or sandbox bypass.
+"""
+import math
+import os
+from pathlib import Path
+import re
+import secrets
+import shutil
+import signal
+import stat
+import subprocess
+import time
+from urllib.parse import urlsplit
+
+
+_MESSAGES = {
+    "browser_invalid_config": "Browser configuration is invalid.",
+    "browser_environment_missing": "A usable Wayland session is required.",
+    "browser_executable_unsafe": "The Chromium executable is unavailable or unsafe.",
+    "browser_profile_failed": "A private browser profile could not be prepared.",
+    "browser_spawn_failed": "The BMO browser could not be started.",
+    "browser_start_failed": "The BMO browser exited before face readiness.",
+    "browser_start_timeout": "The BMO browser did not become ready in time.",
+    "browser_closed": "The BMO browser was closed.",
+    "browser_cleanup_failed": "BMO browser cleanup could not be confirmed.",
+    "browser_stopped": "The BMO browser was stopped.",
+    "browser_ready": "The BMO browser is ready.",
+    "browser_starting": "The BMO browser is starting.",
+}
+
+
+class BrowserError(RuntimeError):
+    def __init__(self, code):
+        self.code = code if code in _MESSAGES else "browser_invalid_config"
+        self.safe_message = _MESSAGES[self.code]
+        super().__init__(self.safe_message)
+
+
+def _directory(path, code):
+    descriptor = None
+    try:
+        path = Path(path)
+        if not path.is_absolute() or ".." in path.parts:
+            raise BrowserError(code)
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        descriptor = os.open("/", flags)
+        for part in path.parts[1:]:
+            following = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = following
+        info = os.fstat(descriptor)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise BrowserError(code)
+        result, descriptor = descriptor, None
+        return result
+    except (OSError, ValueError, TypeError):
+        raise BrowserError(code) from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _executable(path):
+    parent = descriptor = None
+    try:
+        path = Path(path)
+        if (not path.is_absolute() or ".." in path.parts
+                or path.name not in ("chromium", "chromium-browser")):
+            raise BrowserError("browser_executable_unsafe")
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        parent = os.open("/", flags)
+        for part in path.parts[1:-1]:
+            following = os.open(part, flags, dir_fd=parent)
+            os.close(parent)
+            parent = following
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                             dir_fd=parent)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.geteuid()) or info.st_nlink != 1
+                or info.st_mode & 0o6022 or not info.st_mode & 0o111):
+            raise BrowserError("browser_executable_unsafe")
+        return str(path)
+    except (OSError, ValueError, TypeError):
+        raise BrowserError("browser_executable_unsafe") from None
+    finally:
+        for value in (descriptor, parent):
+            if value is not None:
+                os.close(value)
+
+
+def _url(value):
+    try:
+        parsed = urlsplit(value)
+        if (type(value) is not str or len(value) > 160 or parsed.scheme != "http"
+                or parsed.hostname != "127.0.0.1" or parsed.username is not None or parsed.password is not None
+                or not parsed.port or parsed.path not in ("/", "/app", "/desktop")
+                or parsed.query or parsed.fragment
+                or value != "http://127.0.0.1:" + str(parsed.port) + parsed.path):
+            raise BrowserError("browser_invalid_config")
+        return value
+    except (TypeError, ValueError, AttributeError):
+        raise BrowserError("browser_invalid_config") from None
+
+
+def _finite(value, low, high):
+    return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
+
+
+class DesktopBrowser:
+    def __init__(self, url, *, windowed=False, executable=None, runtime_root=None, environ=None,
+                 process_factory=None, group_signaler=None, clock=time.monotonic,
+                 startup_timeout=10.0, stop_timeout=2.0):
+        self._url = _url(url)
+        if (type(windowed) is not bool or not _finite(startup_timeout, 1, 60)
+                or not _finite(stop_timeout, .05, 10) or not callable(clock)):
+            raise BrowserError("browser_invalid_config")
+        self.windowed, self.clock = windowed, clock
+        self.startup_timeout, self.stop_timeout = startup_timeout, stop_timeout
+        source = os.environ if environ is None else environ
+        self._environ = {name: source.get(name) for name in (
+            "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "XAUTHORITY")}
+        self._executable, self._runtime_root = executable, runtime_root
+        self._factory = process_factory or subprocess.Popen
+        self._signal_group = group_signaler or os.killpg
+        self._process = self._profile_parent = self._profile_name = self._profile_info = None
+        self._pgid = None
+        self._started = None
+        self._state, self._code, self._ready, self._cleaned = "idle", "browser_stopped", False, True
+
+    def snapshot(self):
+        return {"state": self._state, "code": self._code, "ready": self._ready,
+                "windowed": self.windowed, "owned_child": self._pgid is not None and not self._cleaned,
+                "private_profile": self._profile_name is not None, "cleanup_complete": self._cleaned,
+                "automatic_relaunch": False}
+
+    def _environment(self, profile):
+        source = self._environ
+        display = source.get("WAYLAND_DISPLAY")
+        runtime = source.get("XDG_RUNTIME_DIR")
+        if (type(display) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", display) is None
+                or type(runtime) is not str):
+            raise BrowserError("browser_environment_missing")
+        checked = _directory(runtime, "browser_environment_missing")
+        os.close(checked)
+        result = {"PATH": os.defpath, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+                  "WAYLAND_DISPLAY": display, "XDG_RUNTIME_DIR": runtime,
+                  "HOME": str(profile), "XDG_CONFIG_HOME": str(profile / "config"),
+                  "XDG_CACHE_HOME": str(profile / "cache"), "XDG_DATA_HOME": str(profile / "data")}
+        bus = source.get("DBUS_SESSION_BUS_ADDRESS")
+        if (type(bus) is str and 1 <= len(bus) <= 4096 and bus.startswith(("unix:path=", "unix:abstract="))
+                and ";" not in bus and all(32 <= ord(char) < 127 for char in bus)):
+            result["DBUS_SESSION_BUS_ADDRESS"] = bus
+        local_display = source.get("DISPLAY")
+        if type(local_display) is str and re.fullmatch(r":[0-9]{1,4}(?:\.[0-9]{1,2})?", local_display):
+            result["DISPLAY"] = local_display
+        # No XAUTHORITY body is read; an explicitly supplied regular owned
+        # authority file is passed only as session metadata for VNC setups.
+        authority = source.get("XAUTHORITY")
+        if type(authority) is str and len(authority) <= 512 and "\0" not in authority:
+            try:
+                path, info = Path(authority), Path(authority).lstat()
+                authority_name = path.name == ".Xauthority" or re.fullmatch(r"(?:xauth|Xauthority)[A-Za-z0-9_.-]{0,80}", path.name)
+                if (authority_name and path.is_absolute() and ".." not in path.parts and stat.S_ISREG(info.st_mode)
+                        and info.st_uid == os.geteuid() and info.st_nlink == 1 and not info.st_mode & 0o022):
+                    result["XAUTHORITY"] = authority
+            except OSError:
+                pass
+        return result
+
+    def _profile(self):
+        runtime = self._runtime_root if self._runtime_root is not None else self._environ.get("XDG_RUNTIME_DIR")
+        parent = _directory(runtime, "browser_profile_failed")
+        try:
+            for _ in range(10):
+                name = "bmo-chromium-" + secrets.token_hex(12)
+                try:
+                    os.mkdir(name, 0o700, dir_fd=parent)
+                except FileExistsError:
+                    continue
+                self._profile_parent, self._profile_name = parent, name
+                self._profile_info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+                self._cleaned = False
+                return Path(runtime) / name
+            raise BrowserError("browser_profile_failed")
+        finally:
+            if self._profile_parent is None:
+                os.close(parent)
+
+    def _cleanup_profile(self):
+        if self._profile_parent is None:
+            self._cleaned = True
+            return
+        try:
+            info = os.stat(self._profile_name, dir_fd=self._profile_parent, follow_symlinks=False)
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                    or (info.st_dev, info.st_ino) != (self._profile_info.st_dev, self._profile_info.st_ino)):
+                raise BrowserError("browser_cleanup_failed")
+            shutil.rmtree(self._profile_name, dir_fd=self._profile_parent)
+            os.close(self._profile_parent)
+            self._profile_parent = self._profile_name = self._profile_info = None
+            self._cleaned = True
+        except (OSError, TypeError, ValueError):
+            raise BrowserError("browser_cleanup_failed") from None
+
+    def start(self):
+        if self._state in ("starting", "running"):
+            return self
+        if self._state != "idle":
+            raise BrowserError("browser_invalid_config")
+        try:
+            candidates = (self._executable,) if self._executable is not None else (
+                "/usr/lib/chromium/chromium", "/usr/bin/chromium", "/usr/bin/chromium-browser")
+            executable = None
+            for candidate in candidates:
+                try:
+                    executable = _executable(candidate)
+                    break
+                except BrowserError:
+                    continue
+            if executable is None:
+                raise BrowserError("browser_executable_unsafe")
+            profile = self._profile()
+            environment = self._environment(profile)
+            arguments = [executable, "--ozone-platform=wayland", "--user-data-dir=" + str(profile),
+                         "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
+                         "--disable-background-networking", "--disable-component-update", "--disable-sync",
+                         "--disable-extensions", "--mute-audio", "--window-size=800,480", "--app=" + self._url]
+            if not self.windowed:
+                arguments.extend(("--kiosk", "--start-fullscreen"))
+            self._process = self._factory(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                          stderr=subprocess.DEVNULL, env=environment, close_fds=True,
+                                          start_new_session=True)
+            if type(self._process.pid) is not int or self._process.pid <= 1:
+                raise BrowserError("browser_spawn_failed")
+            self._pgid = self._process.pid
+            self._started, self._state, self._code = self.clock(), "starting", "browser_starting"
+            self.poll()
+            if self._state == "failed":
+                raise BrowserError(self._code)
+            return self
+        except BrowserError as error:
+            self._state, self._code = "failed", error.code
+            if self._process is None:
+                self._cleanup_profile()
+            raise
+        except (OSError, ValueError, TypeError, AttributeError):
+            self._state, self._code = "failed", "browser_spawn_failed"
+            if self._process is None:
+                self._cleanup_profile()
+            raise BrowserError(self._code) from None
+
+    def mark_ready(self):
+        if self._state != "starting":
+            return self._ready and self._state == "running"
+        self.poll()
+        if self._state != "starting":
+            return False
+        self._ready, self._state, self._code = True, "running", "browser_ready"
+        return True
+
+    def poll(self):
+        if self._process is None or self._state in ("stopped", "failed", "exited"):
+            return self.snapshot()
+        try:
+            if self._process.poll() is not None:
+                self._process.wait(timeout=self.stop_timeout)
+                self._state, self._code = (("exited", "browser_closed") if self._ready
+                                          else ("failed", "browser_start_failed"))
+                self._cleanup_profile()
+            elif not self._ready and self.clock() - self._started >= self.startup_timeout:
+                self._stop("failed", "browser_start_timeout")
+        except (OSError, ValueError, subprocess.TimeoutExpired, BrowserError):
+            self._state, self._code, self._cleaned = "failed", "browser_cleanup_failed", False
+        return self.snapshot()
+
+    def _stop(self, state, code):
+        try:
+            if self._process is not None:
+                if self._process.poll() is None:
+                    if self._pgid is None:
+                        raise BrowserError("browser_cleanup_failed")
+                    try:
+                        self._signal_group(self._pgid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        self._process.wait(timeout=self.stop_timeout)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            self._signal_group(self._pgid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        self._process.wait(timeout=self.stop_timeout)
+                else:
+                    self._process.wait(timeout=self.stop_timeout)
+            self._cleanup_profile()
+            self._state, self._code = state, code
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired, BrowserError):
+            self._state, self._code, self._cleaned = "failed", "browser_cleanup_failed", False
+            raise BrowserError("browser_cleanup_failed") from None
+
+    def stop(self):
+        self._stop("stopped", "browser_stopped")
+        return self.snapshot()
+
+    close = stop
