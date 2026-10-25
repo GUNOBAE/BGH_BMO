@@ -254,6 +254,15 @@ class CameraVideoTests(unittest.TestCase):
         self.assertEqual('video_clock_invalid', snapshot['result']['code'])
         self.assertFalse(snapshot['recording'])
 
+    def test_invalid_clock_at_first_frame_fails_and_cleans_reservation(self):
+        calls = [10., float('nan')]
+        recorder = VideoRecorder(self.broker, store=self.store, clock=lambda: calls.pop(0))
+        self.addCleanup(recorder.close)
+        result = self.start(recorder=recorder)
+        self.assertEqual(('failed', 'video_clock_invalid'), (result.status, result.code))
+        self.assertFalse(self.broker.opened)
+        self.assertFalse(list(self.root.glob('*.avi')))
+
     def test_source_failure_is_sanitized_and_cleans_lease(self):
         self.start()
         self.clock.advance()
