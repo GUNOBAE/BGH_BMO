@@ -37,3 +37,6 @@ jobs:
       - run: python -B software/checks/check_offline_shell_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_desktop_app_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'

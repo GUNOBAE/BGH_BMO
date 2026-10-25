@@ -24,10 +24,11 @@ def _unique(pairs):
 
 
 class FeatureServer:
-    def __init__(self, host, face_file, *, screen_profile="v13.2", port=0):
+    def __init__(self, host, face_file, *, screen_profile="v13.2", port=0,
+                 desktop=None, developer=False):
         if type(port) is not int or not 0 <= port <= 65535:
             raise FeatureError("invalid_port")
-        self.host, self.port = host, port
+        self.host, self.port, self.desktop = host, port, desktop
         self._bridge = FaceServer(face_file, snapshot=host.face_snapshot, screen_profile=screen_profile)
         self._token = secrets.token_urlsafe(32)
         root = Path(__file__).with_name("web")
@@ -36,6 +37,19 @@ class FeatureServer:
         self._resources.update({"/": ("text/html; charset=utf-8", page),
             "/feature.js": ("text/javascript; charset=utf-8", root.joinpath("feature.js").read_bytes()),
             "/feature.css": ("text/css; charset=utf-8", root.joinpath("feature.css").read_bytes())})
+        if desktop is not None:
+            product = root.parent.parent / "desktop_web"
+            self._resources["/"] = ("text/html; charset=utf-8",
+                product.joinpath("index.html").read_text().replace("__COMMAND_TOKEN__", self._token).encode())
+            for name, mime in (("desktop.js", "text/javascript; charset=utf-8"),
+                               ("desktop.css", "text/css; charset=utf-8")):
+                self._resources["/" + name] = (mime, product.joinpath(name).read_bytes())
+            if developer:
+                development_page = page.replace(b"<body>", b'<body><a href="/">BMO product screen</a>')
+                self._resources["/developer"] = ("text/html; charset=utf-8", development_page)
+            else:
+                self._resources.pop("/feature.js", None)
+                self._resources.pop("/feature.css", None)
         self._server = self._thread = None
 
     @property
@@ -95,6 +109,9 @@ class FeatureServer:
                         self._send(200, owner.host.snapshot())
                     elif path == "/api/screen":
                         self._send(200, owner._bridge._screen_metadata, "application/json")
+                    elif path == "/api/desktop" and owner.desktop is not None:
+                        owner.host.heartbeat()
+                        self._send(200, owner.desktop.startup_snapshot())
                     elif path == "/api/preview":
                         image = owner.host.preview_bytes()
                         self._send(200, image, "image/png") if image else self._send(404)
@@ -116,7 +133,8 @@ class FeatureServer:
                         or not token.isascii() or not hmac.compare_digest(token, owner._token)):
                     self._send(403)
                     return
-                if urlsplit(self.path).path not in ("/api/intent", "/api/control"):
+                endpoints = ("/api/intent", "/api/control") + (("/api/desktop",) if owner.desktop is not None else ())
+                if urlsplit(self.path).path not in endpoints:
                     self._send(404)
                     return
                 if (self.headers.get_content_type() != "application/json"
@@ -137,7 +155,11 @@ class FeatureServer:
                             or type(value["payload"]) is not dict):
                         raise FeatureError("invalid_request")
                     payload = value["payload"]
-                    if urlsplit(self.path).path == "/api/intent":
+                    if urlsplit(self.path).path == "/api/desktop":
+                        result = owner.desktop.queue_desktop_control(value["nonce"], payload)
+                        self._send(202, result)
+                        return
+                    elif urlsplit(self.path).path == "/api/intent":
                         if set(payload) != {"name", "target"}:
                             raise FeatureError("invalid_request")
                         command = HostIntent(**payload)

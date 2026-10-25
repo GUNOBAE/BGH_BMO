@@ -1,0 +1,14 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="bmo-command-token" content="__COMMAND_TOKEN__">
+<title>BMO</title><link rel="stylesheet" href="/desktop.css">
+<script src="/adapter.js" defer></script><script src="/desktop.js" defer></script></head>
+<body><main><iframe id="face" title="BMO" src="/face.html?kiosk=1"></iframe></main>
+<section id="splash" aria-live="polite"><h1>BMO Loading...</h1><p id="loading-stage">화면을 준비하고 있어요.</p></section>
+<section id="notice" role="status" hidden><span id="notice-message"></span><button id="notice-menu">메뉴</button></section>
+<dialog id="menu"><h2>BMO</h2><button id="talk">한 번 듣기</button><button id="repeat">다시 듣기</button>
+<button id="stop">정지</button><button id="games">게임 목록</button><button id="greeting-retry">인사 캐시 재시도</button>
+<button id="resume">얼굴로 돌아가기</button><button id="exit">종료</button><p id="diagnostic"></p></dialog>
+<dialog id="game-menu"><h2>게임 목록</h2><div id="game-list"></div><button id="game-back">얼굴로 돌아가기</button></dialog>
+<section id="foreground" hidden><p id="foreground-status"></p><button id="foreground-back">얼굴로 돌아가기</button></section>
+<span id="status" hidden></span></body></html>
