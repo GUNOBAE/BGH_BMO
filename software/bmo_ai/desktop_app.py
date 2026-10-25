@@ -270,8 +270,9 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         if app is not None:
             try:
                 app.close()
-            except Exception:
-                print("BMO owned cleanup needs review.", file=sys.stderr)
+            except Exception as error:
+                from .desktop_diagnostics import failure
+                print(failure("cleanup", error), file=sys.stderr)
                 outcome = 1
         elif client is not None:
             client.close()
