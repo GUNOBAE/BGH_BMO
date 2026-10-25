@@ -174,6 +174,37 @@ class RecorderTests(unittest.TestCase):
         self.assertFalse(recorder.snapshot()["microphone_open"])
         self.assertEqual(recorder.snapshot()["state"], "idle")
 
+    def test_stalled_initial_source_is_conservatively_shown_active_until_cancelled(self):
+        admitted = Event()
+        class BlockingSource:
+            closed = False
+            def frames(self, capture_id, *, generation, cancel_check):
+                admitted.set()
+                while True:
+                    cancel_check()
+                    time.sleep(.005)
+                yield  # This is a generator; it intentionally never emits PCM.
+            def close(self):
+                self.closed = True
+                return True
+        source = BlockingSource()
+        recorder = PttRecorder(self.focus, lambda: source)
+        self.addCleanup(recorder.close)
+        outcomes = []
+        worker = Thread(target=lambda: outcomes.append(recorder.capture("ptt:1", generation=1)))
+        worker.start()
+        self.assertTrue(admitted.wait(1))
+        try:
+            self.assertEqual(recorder.snapshot()["state"], "calibrating")
+            self.assertTrue(recorder.snapshot()["microphone_open"])
+        finally:
+            recorder.cancel()
+            worker.join(1)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcomes[0].code, "user_cancelled")
+        self.assertTrue(source.closed)
+        self.assertFalse(recorder.snapshot()["microphone_open"])
+
     def test_busy_output_denies_source_creation_and_never_preempts_focus(self):
         recorder = self.recorder()
         stop = Mock()
@@ -554,6 +585,30 @@ class MicPcmSourceTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "microphone_busy")
         self.assertEqual(len(self.calls), 1)
         iterator.close()
+
+    def test_selector_setup_and_close_failure_still_reaps_child_and_unlocks_capture(self):
+        class BadSelector:
+            broken = True
+            def register(self, *args):
+                raise OSError("private selector registration")
+            def close(self):
+                if self.broken:
+                    raise OSError("private selector close")
+        selector = BadSelector()
+        source = self.source("import time; time.sleep(5)")
+        with patch("selectors.DefaultSelector", return_value=selector):
+            with self.assertRaises(MicError) as caught:
+                next(source.frames("ptt:1", generation=1))
+        self.assertEqual(caught.exception.code, "pcm_cleanup_failed")
+        self.assertNotIn("private", str(caught.exception))
+        self.assertIsNotNone(self.processes[0].returncode)
+        self.assertTrue(self.processes[0].stdout.closed)
+        self.assertFalse(source._capture_lock.locked())
+        self.assertIs(source._selector, selector)
+        self.assertFalse(source.close())
+        selector.broken = False
+        self.assertTrue(source.close())
+        self.assertIsNone(source._selector)
 
     def test_missing_tool_and_spawn_failures_have_only_fixed_codes(self):
         for failure, expected in ((FileNotFoundError("secret path"), "microphone_tool_unavailable"),
