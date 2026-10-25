@@ -17,7 +17,13 @@ async function ready(){if(!state||handshakeFrame===frame.contentDocument)return;
  await desktop('face_ready',{run_id:state.run_id,screen_sha256:screen.sha256,frame_version:version});handshakeFrame=frame.contentDocument;}
 function render(next){state=next;window.BMODesktop.state=next;
  const loading=next.phase==='loading';$('splash').hidden=!loading;
- $('loading-stage').textContent=next.server_ready?'대화 엔진과 얼굴을 준비하고 있어요.':'화면을 준비하고 있어요.';
+ // Values are achieved backend checkpoints, not an elapsed-time progress guess.
+ const progress=Number.isInteger(next.progress_percent)?Math.max(0,Math.min(100,next.progress_percent)):0;
+ $('progress-percent').textContent=progress+'%';
+ $('progress-track').setAttribute('aria-valuenow',String(progress));
+ $('progress-fill').style.width=progress+'%';
+ const stages={lock_acquired:'BMO 실행을 시작했어요.',server_ready:'얼굴 서버 준비 완료',browser_registered:'화면 창을 준비하고 있어요.',browser_spawned:'화면 창 실행 완료',engine_ready:'대화 엔진 준비 완료',face_handshake_verified:'BMO 얼굴 연결 확인',local_app_ready:'시작 준비 완료'};
+ $('loading-stage').textContent=stages[next.progress_stage]||'실행 상태를 확인하고 있어요.';
  const problem=next.phase==='error'||next.phase==='ready'&&next.code!=='greeting_completed';
  $('notice').hidden=!problem;if(problem)$('notice-message').textContent=messages[next.code]||'준비 상태를 확인해 주세요. 메뉴에서 재시도하거나 종료할 수 있어요.';
  $('diagnostic').textContent=next.code;$('talk').disabled=next.phase!=='ready';$('repeat').disabled=next.phase!=='ready';

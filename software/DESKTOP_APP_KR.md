@@ -10,7 +10,7 @@
 ## 기본 화면과 실행 수명주기
 
 최종 흐름은 바탕화면 BMO 아이콘 → 외부 `BMO Loading...` → 얼굴 준비 확인 →
-승인된 고정 음성으로 `난 비모야~!` 한 번 → R10 얼굴 전용 화면이다.
+승인된 새 고정 환영 음성으로 `돌아왔구나! 비모가 기다렸어!` 한 번 → R10 얼굴 전용 화면이다.
 Loading에는 가짜 퍼센트를 표시하지 않는다. 로컬 서버/엔진/브라우저/iframe 준비를
 구분하며, 서버가 떴다고 유료 API가 준비됐다고 표시하지 않는다.
 
@@ -86,19 +86,21 @@ cd /home/bgh/BMO_FEATURES
 ./launch-desktop --live
 ```
 
-고정 문장은 `난 비모야~!`이며 Fish Aaron Soft / beemo / gain 0.25를 유지한다.
+새 고정 문장은 `돌아왔구나! 비모가 기다렸어!`이며 Fish Aaron Soft / beemo / gain 0.25를 유지한다.
 이 성우의 한국어 지원·발음·음질은 실제 청취 **NOT_RUN**이다. Piper로 무단 대체하지
 않는다. `--offline-voice`는 기존 대화용 원본 Piper opt-in이며 시작 인사의 음색을
 자동 변경하지 않는다. USB mic와 MAX98357A ALSA 기기 기본값도 기존 통합 런처와
 같고 `--mic-device`/`--speaker-device`의 명시 변경만 지원한다.
 
-캐시는 기본 `$XDG_CACHE_HOME/bmo/greeting/greeting.cache` 또는
-`~/.cache/bmo/greeting/greeting.cache`다. private 디렉터리/0600 단일 bundle에
+캐시는 기본 `$XDG_CACHE_HOME/bmo/greeting-welcome-v2/greeting.cache` 또는
+`~/.cache/bmo/greeting-welcome-v2/greeting.cache`다. private 디렉터리/0600 단일 bundle에
 텍스트·voice/model/delivery/name/gain/version fingerprint, gained WAV와 SHA,
 cue와 SHA, 승인·synthetic 구분을 함께 저장한다. 검증 후 별도 소유 WAV snapshot으로
 재생하여 경합을 막는다. gain은 저장 시 한 번만 적용한다. synthetic cache는 승인해도
 live로 재생할 수 없다. 준비 실패 시 이전 캐시를 보존하고 매 실행마다 유료 합성을
 강요하지 않는다. 인사 재생은 AudioFocus 하나를 잡으며 대화와 겹치지 않는다.
+
+이전 `난 비모야~!` 음성 캐시(legacy `bmo/greeting/greeting.cache`)는 자동 삭제·덮어쓰기하지 않는다. 새 환영 문구의 SHA 청취 승인을 별도로 진행한다.
 
 ## 입회 단계: 사용자 홈에 수동 아이콘 설치
 

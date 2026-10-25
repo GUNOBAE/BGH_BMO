@@ -148,6 +148,7 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                                   startup_timeout=args.startup_timeout, clock=clock)
         app.set_browser(browser)
         browser.start()
+        app.browser_started()
         try:
             settings = {"config": config, "runtime": RuntimePolicy(simulate=args.simulate),
                         "demo_assets": args.demo_assets, "clock": clock}

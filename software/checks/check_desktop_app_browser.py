@@ -361,13 +361,23 @@ def run(profile="ci-synthetic", face=None, chromium="/usr/bin/chromium"):
                     page.wait_for_function("()=>BMODesktop.state?.phase==='loading'")
                     assert page.locator("#splash").is_visible()
                     assert page.locator("#splash").inner_text().startswith("BMO Loading...")
-                    assert "%" not in page.locator("#splash").inner_text()
+                    # User-requested percentage supersedes the old no-percent contract.
+                    # It must reflect a verified backend checkpoint, not elapsed time.
+                    loading_percent = int(page.locator("#progress-percent").inner_text().rstrip("%"))
+                    assert 10 <= loading_percent < 100
+                    assert page.locator("#progress-track").get_attribute("role") == "progressbar"
+                    assert page.locator("#progress-track").get_attribute("aria-valuenow") == str(loading_percent)
+                    assert page.locator("#progress-fill").evaluate("(el)=>el.style.width") == str(loading_percent) + "%"
                     assert fixture.features()["test_fixture"]["greeting_calls"] == 0
                     assert held
                     page.unroute("**/face.html?kiosk=1")
                     held.pop().continue_()
                     page.wait_for_function("()=>BMOIntegration.state?.source==='cached_greeting'&&document.querySelector('#face').contentWindow.BMOFace.getState().speech==='external'")
                     page.wait_for_function("()=>BMODesktop.state?.phase==='ready'&&BMODesktop.state.code==='greeting_completed'")
+                    assert page.evaluate("()=>BMODesktop.state.progress_percent") == 100
+                    assert page.evaluate("()=>BMODesktop.state.progress_stage") == "local_app_ready"
+                    assert page.locator("#progress-track").get_attribute("aria-valuenow") == "100"
+                    checks.append("rectangular percent bar tracks backend checkpoints; 100 only after face readiness")
                     audit = fixture.features()["test_fixture"]
                     assert audit["greeting_calls"] == audit["greeting_started"] == audit["greeting_ended"] == audit["players"] == 1
                     assert audit["brain"] == audit["synthesis"] == audit["history_messages"] == 0
