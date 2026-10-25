@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>BMO application generic text icon</title>
+  <rect x="4" y="4" width="120" height="120" rx="20" fill="#20766d"/>
+  <text x="64" y="76" text-anchor="middle" font-family="sans-serif" font-size="35" font-weight="700" fill="#ffffff">BMO</text>
+</svg>
