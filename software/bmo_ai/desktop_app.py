@@ -24,6 +24,8 @@ def parser():
     mode.add_argument("--simulate", action="store_true")
     mode.add_argument("--live", action="store_true")
     p.add_argument("--windowed", action="store_true", help="explicit development window, default kiosk")
+    p.add_argument("--frontend", choices=("chromium", "native"), default="chromium",
+                   help="native uses a dedicated Qt BMO desktop window; chromium remains the verified fallback")
     p.add_argument("--developer", action="store_true", help="enable /developer and hidden Ctrl+Alt+D")
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
     p.add_argument("--video-directory", type=Path, help="user-selected private local synthetic-video storage; live camera video remains denied")
@@ -63,6 +65,7 @@ def public_plan(args):
     return {"version": 1, "mode": "simulate" if args.simulate else "live" if args.live else "not_selected",
         "screen_profile": args.screen_profile, "screen_sha256": SCREEN_PROFILES[args.screen_profile]["sha256"],
         "window": "windowed" if args.windowed else "kiosk", "developer_enabled": args.developer,
+        "frontend": args.frontend,
         "expressive_voice": args.expressive_voice,
         "greeting": {"text": GREETING_TEXT, "asset_version": "welcome-v2", "source": "approved_private_cache", "automatic_synthesis": False},
         "configuration": effective_config(config, emotion_mode="auto"),
@@ -106,7 +109,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
     if args.install_desktop:
         from .desktop_install import install_desktop
         try:
-            result = install_desktop(install=not args.dry_run, simulate=args.simulate)
+            options = {"install": not args.dry_run, "simulate": args.simulate}
+            if args.frontend != "chromium":
+                options["frontend"] = args.frontend
+            result = install_desktop(**options)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         except Exception:
@@ -175,8 +181,11 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             from .desktop_browser import DesktopBrowser
             browser_factory = DesktopBrowser
         stage = "browser_init"
-        browser = browser_factory(server.url, windowed=args.windowed,
-                                  startup_timeout=args.startup_timeout, clock=clock)
+        browser_options = {"windowed": args.windowed,
+                           "startup_timeout": args.startup_timeout, "clock": clock}
+        if args.frontend != "chromium":
+            browser_options["renderer"] = args.frontend
+        browser = browser_factory(server.url, **browser_options)
         app.set_browser(browser)
         stage = "browser_start"
         browser.start()
