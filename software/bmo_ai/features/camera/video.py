@@ -448,6 +448,8 @@ class VideoRecorder:
         if frame is None:
             return
         now = self.clock()
+        if not _finite(now) or now < self._started:
+            raise FeatureError('video_clock_invalid')
         if frame.captured_at > now + .05 or now - frame.captured_at > 2:
             raise FeatureError('stale_video_frame')
         if validate_png(frame.payload) != (frame.width, frame.height):
