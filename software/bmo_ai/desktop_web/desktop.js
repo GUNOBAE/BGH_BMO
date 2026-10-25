@@ -86,8 +86,9 @@ function renderFeatures(next){
  const result=video?.result,saved=result?.completed===true;
  $('video-result').textContent=saved?'모의 영상 저장과 검증을 완료했어요.':result&&['failed','unknown','rejected'].includes(result.status)?'영상 결과를 확인해 주세요. 자동 재시도하지 않아요.':'';
  $('video-download').hidden=!saved;if(saved)$('video-download').href='/api/video/'+encodeURIComponent(result.video_id);
- const cameraReady=next.capabilities?.camera==='mock';
- $('camera-readiness').textContent=cameraReady?'합성 사진·미리보기·위치 추적을 검사해요.':'실물 카메라는 사용자 검수 전 사용할 수 없어요.';
+ const cameraReal=next.capabilities?.camera==='explicit_live';
+ const cameraReady=cameraReal||next.capabilities?.camera==='mock';
+ $('camera-readiness').textContent=cameraReal?'실제 카메라 사용이 허용됐어요. 촬영·미리보기를 명시적으로 눌러 시작합니다.':cameraReady?'합성 사진·미리보기·위치 추적을 검사해요.':'실물 카메라는 사용자 검수 전 사용할 수 없어요.';
  for(const id of ['photo-take','camera-preview','camera-track'])$(id).disabled=!cameraReady||next.conversation_busy;
  const preview=next.camera?.preview_available&&$('camera-dialog').open;
  $('camera-image').hidden=!preview;if(preview)$('camera-image').src='/api/preview?sequence='+next.sequence;
