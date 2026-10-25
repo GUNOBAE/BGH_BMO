@@ -3,6 +3,7 @@
 const $=id=>document.getElementById(id),frame=$('face'),token=document.querySelector('meta[name="bmo-command-token"]').content;
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null;
 let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0;
+let featureState=null,musicCatalogKey=null,lastFeatureMode=null;
 const messages={credentials_missing:'최초 키 설정이 필요해요. 실행 가이드를 확인해 주세요.',greeting_missing:'시작 인사 캐시가 아직 준비되지 않았어요.',greeting_unapproved:'시작 인사의 청취 승인이 필요해요.',greeting_corrupt:'시작 인사 캐시를 확인해 주세요.',face_ready_timeout:'얼굴 준비 시간이 초과됐어요.',host_startup_timeout:'대화 엔진 준비 시간이 초과됐어요.',greeting_timeout:'시작 인사 재생 정리를 기다리고 있어요.',browser_disconnected:'연결을 다시 확인하고 있어요.'};
 async function post(path,payload){const response=await fetch(path,{method:'POST',keepalive:payload.action==='cancel',headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce:crypto.randomUUID(),payload})});if(!response.ok)throw Error('요청을 완료하지 못했어요.');return response.json();}
 const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(action,value=null)=>post('/api/control',{action,value}),intent=(name,target=null)=>post('/api/intent',{name,target});
@@ -37,6 +38,8 @@ function render(next){state=next;window.BMODesktop.state=next;
  $('diagnostic').textContent=next.code;$('talk').disabled=next.phase!=='ready';$('repeat').disabled=next.phase!=='ready';
  $('greeting-retry').disabled=next.phase!=='ready'||next.code==='greeting_completed';}
 async function modes(){if(state?.phase!=='ready')return;const r=await fetch('/api/features',{cache:'no-store'});if(!r.ok)return;const next=await r.json();currentMode=next.mode;
+ window.BMODesktop.features=next;
+ featureState=next;renderFeatures(next);
  pttEnabled=next.ptt?.enabled===true&&next.capabilities?.conversation_ptt_microphone!=='denied';
  // Bind completion to THIS admitted command, rather than a stale snapshot's
  // idle phase or a previous capture generation. Queued input stays cancellable.
@@ -47,12 +50,37 @@ async function modes(){if(state?.phase!=='ready')return;const r=await fetch('/ap
  $('ptt-state').hidden=!inputFailed&&!['calibrating','listening','speech','transcribing'].includes(capture);
  $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.'):
   ({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
- if(next.mode==='game_menu'&&!$('menu').open){if(!$('game-menu').open)$('game-menu').showModal();$('game-list').replaceChildren();if(!next.games.catalog.length)$('game-list').textContent='게임 자료가 아직 준비되지 않았어요.';for(const item of next.games.catalog){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY';b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}}
+ if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){if(!$('game-menu').open)$('game-menu').showModal();$('game-list').replaceChildren();if(!next.games.catalog.length)$('game-list').textContent='게임 자료가 아직 준비되지 않았어요.';for(const item of next.games.catalog){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY';b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}}
  else if($('game-menu').open)$('game-menu').close();
  $('foreground').hidden=!['game','photo'].includes(next.mode);$('foreground-status').textContent=next.mode==='game'?'게임 실행 중':next.photo_countdown!==null?'사진을 준비하고 있어요.':'사진 처리 결과를 확인해 주세요.';
  const face=frame.contentWindow?.BMOFace,gaze=next.gaze,phase=window.BMOIntegration?.state?.phase;
  if(face&&gaze){const native=[phase,face.getState().activity].some(p=>['listening','thinking'].includes(p));if(native&&gaze.owner!=='manual')lastGaze=null;
  else if(gaze.apply){const id=JSON.stringify([gaze.owner,gaze.x,gaze.y,next.mode_generation]);if(id!==lastGaze){face.look(gaze.x,gaze.y);face.lookEyes(gaze.x*.15,gaze.y*.15);if(gaze.owner==='reaction')face.blink();lastGaze=id;}}}
+}
+function renderFeatures(next){
+ if(lastFeatureMode==='music'&&next.mode==='conversation'&&$('music-dialog').open)$('music-dialog').close();
+ lastFeatureMode=next.mode;
+ const video=next.camera_video,recording=video?.recording===true,unknown=video?.code==='video_close_failed';
+ $('video-indicator').hidden=!recording&&!unknown;
+ $('video-indicator').textContent=unknown?'영상 종료를 확인하지 못했어요. 검수가 필요해요.':'● 모의 영상 녹화 중 · 소리 없음';
+ const videoReady=next.simulation===true&&video?.readiness==='READY';
+ $('video-readiness').textContent=!next.simulation?'실물 영상 기능은 사용자 검수 전 사용할 수 없어요.':video?.readiness==='ASSET_PENDING'?'실행 전에 저장 위치를 선택해 주세요.':unknown?'영상 정리가 확인되지 않았어요. 새 녹화를 시작하지 마세요.':'선택한 저장 위치에 합성 테스트 영상만 저장해요.';
+ $('video-start').disabled=!videoReady||recording||!$('video-consent').checked||next.conversation_busy||next.mode!=='conversation';
+ $('video-stop').disabled=!recording;
+ const result=video?.result,saved=result?.completed===true;
+ $('video-result').textContent=saved?'모의 영상 저장과 검증을 완료했어요.':result&&['failed','unknown','rejected'].includes(result.status)?'영상 결과를 확인해 주세요. 자동 재시도하지 않아요.':'';
+ $('video-download').hidden=!saved;if(saved)$('video-download').href='/api/video/'+encodeURIComponent(result.video_id);
+ const cameraReady=next.capabilities?.camera==='mock';
+ $('camera-readiness').textContent=cameraReady?'합성 사진·미리보기·위치 추적을 검사해요.':'실물 카메라는 사용자 검수 전 사용할 수 없어요.';
+ for(const id of ['photo-take','camera-preview','camera-track'])$(id).disabled=!cameraReady||next.conversation_busy;
+ const preview=next.camera?.preview_available&&$('camera-dialog').open;
+ $('camera-image').hidden=!preview;if(preview)$('camera-image').src='/api/preview?sequence='+next.sequence;
+ $('music-readiness').textContent=next.media?.catalog?.length?'현재 목록은 검증된 모의 재생 자료예요. 실제 음원·출력은 별도 검수가 필요해요.':'사용자 음원과 출처·라이선스 검토가 필요해요.';
+ const catalogKey=JSON.stringify(next.media?.catalog||[]);
+ if(catalogKey!==musicCatalogKey){musicCatalogKey=catalogKey;$('music-list').replaceChildren();for(const item of next.media?.catalog||[]){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY'||next.capabilities?.music!=='mock';b.onclick=()=>intent('play_song',item.id).catch(()=>error('음악을 시작하지 못했어요.'));$('music-list').append(b);}}
+ for(const id of ['music-pause','music-resume','music-next','music-stop'])$(id).disabled=next.mode!=='music';
+ const telemetry=next.system_diagnostics?.telemetry;
+ $('system-readiness').textContent=telemetry?.power?.status==='OBSERVED'?('전원 현재 이상: '+(telemetry.power.current_fault?'있음':'없음')+' · 과거 기록: '+(telemetry.power.historical_fault?'있음':'없음')):'온도·전원 실측은 아직 실행하지 않았어요. 자동 설정 변경은 하지 않아요.';
 }
 async function poll(){if(closed||document.hidden)return;const current=epoch;controller=new AbortController();const abort=setTimeout(()=>controller?.abort(),1200);try{
  const r=await fetch('/api/desktop',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error();const next=await r.json();if(current!==epoch||closed)return;
@@ -68,13 +96,31 @@ function cancelPTT(){enterDown=false;if(pttPending){pttEpoch++;pttPending=false;
 $('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));$('menu').close();};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
 $('games').onclick=()=>{intent('open_game_menu').catch(()=>error('게임 목록을 열지 못했어요.'));$('menu').close();};$('greeting-retry').onclick=()=>desktop('retry_greeting').catch(()=>error('인사 캐시를 확인해 주세요.'));
+function openPanel(id){cancelPTT();$('menu').close();$(id).showModal();if(featureState)renderFeatures(featureState);}
+for(const [id,panel] of [['camera-menu','camera-dialog'],['video-menu','video-dialog'],['music-menu','music-dialog'],['system-menu','system-dialog']])$(id).onclick=()=>openPanel(panel);
+for(const button of document.querySelectorAll('.dialog-close'))button.onclick=()=>button.closest('dialog').close();
+$('video-consent').onchange=()=>{if(featureState)renderFeatures(featureState);};
+$('video-start').onclick=()=>{control('video_start',{consent:$('video-consent').checked}).catch(()=>error('영상 준비 상태를 확인해 주세요.'));$('video-consent').checked=false;};
+$('video-stop').onclick=()=>control('video_stop').catch(()=>error('영상 저장 상태를 확인해 주세요.'));
+$('photo-take').onclick=()=>{intent('take_photo').catch(()=>error('사진 상태를 확인해 주세요.'));$('camera-dialog').close();};
+$('camera-preview').onclick=()=>control('preview',true).catch(()=>error('미리보기를 준비하지 못했어요.'));
+$('camera-track').onclick=()=>intent('start_face_tracking').catch(()=>error('시선 추적을 준비하지 못했어요.'));
+$('camera-off').onclick=()=>intent('stop_face_tracking').catch(()=>error('카메라 종료를 확인해 주세요.'));
+for(const [id,action] of [['music-pause','pause'],['music-resume','resume'],['music-next','next']])$(id).onclick=()=>control(action).catch(()=>error('음악 상태를 확인해 주세요.'));
+$('music-stop').onclick=()=>intent('stop_media').catch(()=>error('음악 종료를 확인해 주세요.'));
 for(const id of ['game-back','foreground-back'])$(id).onclick=()=>intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
-const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',b:'B',Enter:'START',Shift:'SELECT',Escape:'ESC'};
-function key(event,pressed){if(event.key==='Enter'&&!pressed)enterDown=false;if(event.repeat||['BUTTON','INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;
+const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',z:'A',b:'B',Enter:'START',Shift:'SELECT',Escape:'ESC'};
+function key(event,pressed){if(event.key==='Enter'&&!pressed)enterDown=false;if(event.repeat)return;
  if(pressed&&event.ctrlKey&&event.altKey&&event.code==='KeyD'&&state?.developer_enabled&&state.phase==='ready'){event.preventDefault();location.assign('/developer');return;}
- if(event.key==='Enter'&&currentMode==='conversation'&&!$('menu').open&&!$('game-menu').open&&state?.phase==='ready'){
+ if(event.key==='Escape'){
+  event.preventDefault();event.stopPropagation();
+  const covering=document.querySelector('dialog[open]:not(#game-menu)');
+  if(covering){if(pressed){cancelPTT();covering.close();}return;}
+  if(['game','game_menu'].includes(currentMode)){control('input',{key:'ESC',pressed}).catch(()=>error('게임 종료 상태를 확인해 주세요.'));return;}
+  if(pressed){cancelPTT();for(const d of document.querySelectorAll('dialog[open]'))d.close();menu();}return;}
+ if(['BUTTON','INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;
+ if(event.key==='Enter'&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&state?.phase==='ready'){
   event.preventDefault();event.stopPropagation();if(!pressed){enterDown=false;return;}if(enterDown)return;enterDown=true;ptt();return;}
- if(pressed&&event.key==='Escape'&&currentMode!=='game'){event.preventDefault();event.stopPropagation();cancelPTT();if($('game-menu').open)$('game-menu').close();menu();return;}
  if(['game','game_menu'].includes(currentMode)&&keys[event.key]){event.preventDefault();event.stopPropagation();control('input',{key:keys[event.key],pressed}).catch(()=>error('게임 입력 상태를 확인해 주세요.'));return;}}
 window.addEventListener('keydown',event=>key(event,true));window.addEventListener('keyup',event=>key(event,false));
 window.addEventListener('blur',cancelPTT);

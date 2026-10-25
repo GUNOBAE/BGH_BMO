@@ -327,7 +327,7 @@ class GamesFeature:
         if self._items and key in ("UP", "LEFT", "DOWN", "RIGHT"):
             self._selected = (self._selected + (-1 if key in ("UP", "LEFT") else 1)) % len(self._items)
         item = self._items[self._selected] if self._items else None
-        return {"consumed": True, "action": "launch" if key == "A" and item and item.readiness == "READY" else "select",
+        return {"consumed": True, "action": "launch" if key in ("A", "START") and item and item.readiness == "READY" else "select",
                 "catalog_id": item.id if item else None,
                 "code": "ok" if item and item.readiness == "READY" else item.reason_code if item else "game_pack_missing"}
 

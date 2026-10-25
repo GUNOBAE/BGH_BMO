@@ -5,6 +5,7 @@ Runtime policy is injected explicitly; live conversation never enables devices.
 from collections import deque
 from dataclasses import dataclass
 import json
+import hashlib
 from pathlib import Path
 from queue import Empty, Full, Queue, PriorityQueue
 from tempfile import TemporaryDirectory
@@ -39,8 +40,11 @@ class HostControl:
             valid = type(self.value) is str and self.value in (*EMOTIONS, "auto", "manual")
         elif self.action == "preview":
             valid = type(self.value) is bool
+        elif self.action == "video_start":
+            valid = (type(self.value) is dict and set(self.value) == {"consent"}
+                     and type(self.value["consent"]) is bool)
         else:
-            valid = (self.action in ("cancel", "reset", "repeat", "pause", "resume", "next", "stop", "ptt", "ptt_cancel")
+            valid = (self.action in ("cancel", "reset", "repeat", "pause", "resume", "next", "stop", "ptt", "ptt_cancel", "video_stop")
                      and self.value is None)
         if not valid:
             raise FeatureError("invalid_control")
@@ -74,7 +78,7 @@ class FeatureHost:
                  games=None, media=None, camera=None, motion=None, journal=None,
                  config=None, brain=None, runtime=None, fish_api_key=None,
                  input_source=None, input_mapping=None, pcm_transcriber=None,
-                 ptt_source_factory=None, ptt_transcriber=None):
+                 ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -89,6 +93,12 @@ class FeatureHost:
         if ((ptt_source_factory is not None or ptt_transcriber is not None)
                 and not self.runtime.conversation_ptt_microphone):
             raise FeatureError("microphone_opt_in_required")
+        if music_directory is not None and (demo_assets or media is not None):
+            raise FeatureError("media_library_conflict")
+        selected_music = None
+        if music_directory is not None:
+            from .media.library import load_library
+            selected_music = load_library(Path(music_directory))
         self.config = config if config is not None else integration_config()
         self.clock = clock
         self.modes, self.audio = ModeManager(), AudioFocus()
@@ -99,11 +109,23 @@ class FeatureHost:
         content.mkdir(mode=0o700)
         photos.mkdir(mode=0o700)
         self.games = games or GamesFeature(fixture=demo_assets, clock=clock)
-        self.media = media or MediaFeature(content,
-            items=make_fixture_media(content) if demo_assets else (),
+        if music_directory is not None:
+            content = Path(music_directory)
+            media_items = selected_music
+        else:
+            media_items = make_fixture_media(content) if demo_assets and media is None else ()
+        self._music_library_selected = music_directory is not None
+        self.media = media or MediaFeature(content, items=media_items,
             backend=FakeMediaBackend(clock=clock, pausable=True), clock=clock)
         self.camera = camera or CameraFeature(backend_factory=lambda: DemoBackend(clock=clock), detector=FixtureDetector(),
             store=PhotoStore(photos), clock=clock, on_target=self._camera_target)
+        from .camera.video import VideoRecorder, VideoStore
+        self.video = VideoRecorder(self.camera.broker,
+            store=VideoStore(video_directory) if video_directory is not None else None,
+            simulated=self.runtime.simulate, clock=clock)
+        self._active_video_request = None
+        from ..system_readiness import telemetry_snapshot, button_inventory
+        self._system_diagnostics = {"telemetry": telemetry_snapshot(), "buttons": button_inventory()}
         self.motion = motion or MotionFeature(clock=clock)
         self.imu = IMUHealthMonitor(clock=clock)
         self.journal = journal or ActionJournal()
@@ -202,6 +224,7 @@ class FeatureHost:
 
     def _transition(self, mode, context=None, *, force=False):
         if mode != self.modes.mode or force:
+            self._cancel_video("video_mode_changed")
             if self.microphone is not None:
                 self.microphone.cancel()
             self.pcm.cancel("mode_changed")
@@ -347,6 +370,7 @@ class FeatureHost:
             elif name == "exit_game":
                 self._transition("game_menu")
             elif name == "return_to_face":
+                self._cancel_video("video_return_to_face")
                 self._transition("conversation")
             elif name == "play_song":
                 self._transition("music", {"target": intent.target, "request_id": request}, force=True)
@@ -356,6 +380,7 @@ class FeatureHost:
                 else:
                     self.media.stop()
             elif name == "take_photo":
+                self._cancel_video("video_photo_transition")
                 state = self.camera.snapshot()
                 restore = (self._photo_restore if self.modes.mode == "photo" else
                            (state.get("tracking", False), state.get("preview", False)))
@@ -363,9 +388,11 @@ class FeatureHost:
                 result = HostResult(request, "running", "photo_countdown")
                 return self._finish_result(result)
             elif name == "start_face_tracking":
+                self._cancel_video("video_tracking_transition")
                 self._transition("conversation")
                 self.camera.set_tracking(True, generation=self.modes.generation)
             elif name == "stop_face_tracking":
+                self._cancel_video("video_camera_off")
                 self.camera.off()
                 self.gaze.clear("camera")
             elif name == "arm_gesture":
@@ -448,8 +475,30 @@ class FeatureHost:
             elif action == "ptt_cancel":
                 if self._ptt_turn_active:
                     self.cancel_conversation()
+            elif action == "video_start":
+                self.runtime.require("camera_video")
+                if self.modes.mode != "conversation" or self.session.busy or self.audio.owner is not None:
+                    raise FeatureError("video_mode_busy")
+                result = self.video.start_video_recording(request,
+                    generation=self.modes.generation, consent=value["consent"])
+                if result.status == "running" and not self.video.snapshot()["recording"]:
+                    raise FeatureError("video_busy")
+                if result.status == "running":
+                    self._active_video_request = request
+                return self._remember(self._video_host_result(result))
+            elif action == "video_stop":
+                self.runtime.require("camera_video")
+                state = self.video.snapshot()
+                original = state["result"]
+                if original is None or original["status"] == "running" and not state["recording"]:
+                    raise FeatureError("video_not_recording")
+                result = self.video.stop_video_recording(original["request_id"], generation=self.modes.generation)
+                self._remember(self._video_host_result(result))
+                self._active_video_request = None
+                return self._remember(self._video_host_result(result, request=request))
             elif action == "cancel":
                 self.cancel_conversation()
+                self._cancel_video("video_cancelled")
                 if self.modes.mode == "photo":
                     self._transition("conversation")
                 if self.session.busy:
@@ -471,6 +520,8 @@ class FeatureHost:
             elif action == "repeat":
                 if self._ptt_cleanup_fault:
                     raise FeatureError("pcm_cleanup_failed")
+                if self.video.snapshot()["recording"]:
+                    raise FeatureError("video_mode_busy")
                 if self.session.busy or not self.session.voice.has_cache:
                     raise FeatureError("no_cached_voice")
                 self._transition("conversation")
@@ -486,6 +537,7 @@ class FeatureHost:
             elif action == "preview":
                 if value:
                     self.runtime.require("camera")
+                    self._cancel_video("video_preview_transition")
                 if self.modes.mode not in ("conversation", "photo"):
                     raise FeatureError("camera_mode_unsupported")
                 self.camera.set_preview(value, generation=self.modes.generation)
@@ -529,11 +581,26 @@ class FeatureHost:
     def _game_input(self, key, pressed, now):
         return self.games.game_input("PAD_DISCONNECTED" if key == "PAD_LOST" else key, pressed, now)
 
+    @staticmethod
+    def _video_host_result(result, *, request=None):
+        return HostResult(request or result.request_id, result.status, result.code,
+            simulated=True, executed=False, completed=result.completed,
+            completion="simulated" if result.completed else "unknown" if result.status == "unknown" else "not_started")
+
+    def _cancel_video(self, reason):
+        state = self.video.snapshot()
+        if state["recording"]:
+            result = self.video.cancel(reason)
+            self._remember(self._video_host_result(result))
+            self._active_video_request = None
+        if self.video.snapshot()["code"] == "video_close_failed":
+            raise FeatureError("video_close_failed")
+
     def start_question(self, message="Synthetic feature question."):
         return self._begin_conversation(message=message)
 
     def _begin_conversation(self, *, message=None, input_provider=None):
-        if self._closed or self.session.busy or self._ptt_cleanup_fault:
+        if self._closed or self.session.busy or self._ptt_cleanup_fault or self.video.snapshot()["recording"]:
             return False
         self._transition("conversation")
         self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
@@ -574,7 +641,8 @@ class FeatureHost:
         HID Enter identity is verified by the human later. No RP2040 pin or
         GP7 binding is changed here. Games keep their existing Enter controls.
         """
-        if self._closed or self.modes.mode != "conversation" or self.microphone is None or self._ptt_cleanup_fault:
+        if (self._closed or self.modes.mode != "conversation" or self.microphone is None
+                or self._ptt_cleanup_fault or self.video.snapshot()["recording"]):
             return False
         self.runtime.require("conversation_ptt_microphone")
         now = self.clock()
@@ -646,6 +714,7 @@ class FeatureHost:
         self.cancel_conversation()
         success = True
         try:
+            self._cancel_video("video_cancelled")
             # A stop also retires commands admitted before it. A late queued
             # launch must not immediately reactivate a stopped resource.
             self._transition("conversation", force=True)
@@ -803,6 +872,14 @@ class FeatureHost:
                     and event.request_id == self._active_media_request
                     and event.kind in ("media_ended", "media_failed")):
                 self._transition("conversation")
+        video = self.video.poll(generation=self.modes.generation)
+        if self._active_video_request is not None and not video["recording"]:
+            if video["result"] is not None:
+                from .camera.video import VideoResult
+                data = dict(video["result"])
+                data.pop("contract")
+                self._remember(self._video_host_result(VideoResult(**data)))
+            self._active_video_request = None
         self.camera.poll()
         for event in self.motion.poll():
             if event.kind == "motion_result":
@@ -846,7 +923,8 @@ class FeatureHost:
             "phase": face["phase"], "gaze": self.gaze.resolve(phase=face["phase"], generation=self.modes.generation),
             "games": {"catalog": [item.public() for item in self.games.catalog()], **self.games.snapshot()},
             "media": {"catalog": [item.public() for item in self.media.catalog()], **self.media.snapshot()},
-            "camera": camera, "photo": self._photo_result,
+            "camera": camera, "camera_video": self.video.snapshot(), "photo": self._photo_result,
+            "system_diagnostics": self._system_diagnostics,
             "photo_countdown": max(0, self._pending_photo["deadline"] - self.clock()) if self._pending_photo else None,
             "motion": self.motion.snapshot(), "imu": self.imu.snapshot(),
             "input": self.input_adapter.snapshot() if self.input_adapter else
@@ -858,7 +936,10 @@ class FeatureHost:
                     if self.microphone is not None else self.pcm.snapshot()),
             "wake_word": self.wake_word.snapshot(),
             "last_result": self._last_result, "requests": recent,
-            "asset_status": {"real_game_pack": "ASSET_PENDING", "user_songs": "ASSET_PENDING"}}
+            "asset_status": {"real_game_pack": "ASSET_PENDING",
+                "user_songs": "AVAILABLE_FOR_REVIEW" if self._music_library_selected and self.media.catalog() else "ASSET_PENDING",
+                "music_playback": "SILENT_MOCK" if self.runtime.simulate else "DENIED",
+                "real_camera_video": "NOT_RUN"}}
         with self._snapshot_lock:
             self._public = state
             self._preview = self.camera.preview_bytes()
@@ -875,6 +956,20 @@ class FeatureHost:
     def photo_bytes(self, photo_id):
         with self._snapshot_lock:
             return self._photo_png if self._photo_result and self._photo_result["photo_id"] == photo_id else None
+
+    def video_bytes(self, video_id):
+        state = self.video.snapshot()
+        result = state["result"]
+        if (not self.runtime.simulate or self.video.store is None or result is None
+                or not result["completed"] or result["video_id"] != video_id):
+            return None
+        try:
+            payload = self.video.store.read(video_id)
+            if len(payload) != result["bytes"] or hashlib.sha256(payload).hexdigest() != result["sha256"]:
+                return None
+            return payload
+        except Exception:
+            return None
 
     def close(self):
         if self._closed:
@@ -899,6 +994,11 @@ class FeatureHost:
                 self._voice_lease = None
         except Exception:
             errors.append("cleanup_failed")
+        try:
+            if self.video.close() is not True:
+                errors.append("video_close_failed")
+        except Exception:
+            errors.append("video_close_failed")
         for feature in (self.games, self.media, self.camera, self.motion, self.imu):
             try:
                 feature.close()

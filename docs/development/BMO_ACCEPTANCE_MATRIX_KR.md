@@ -40,3 +40,23 @@ Mock PASS, CI PASS, 디자인 승인, 실제 Pi 검수는 서로 다른 칸이�
 
 기존 펌웨어·팬·SSH·서비스·다른 프로젝트·백업·PR #13/#14·main은 변경하지 않는다.
 코드가 준비됐다는 이유로 실물 장치를 자동 활성화하거나 기존 앱을 종료하지 않는다.
+
+## 야간 큐 #23 후속 (2026-10-26 KST)
+
+위 표는 PR #16 시점의 기준으로 보존한다. 다음은 Issue #19~#22의 추가 구현이다.
+정확한 source SHA/최종 테스트 수/CI/PR은
+[야간 인계서](../reports/BMO_NIGHTLY_20261025_INTEGRATION_KR.md)를 따른다.
+
+| 항목 | 현재 코드 / 모의 증거 | 원본·자산 상태 | 실제 검수 |
+|---|---|---|---|
+| 부팅 진단·로딩·환영 | PR #24 인수, stage/code allowlist, 읽기 전용 preflight, 얼굴 표시 확인 뒤 cache greeting1 | legacy/welcome-v2 분리, 한국어 문구 고정 | Fish prepare/청취/승인·LCD/kiosk NOT_RUN |
+| GP8 Enter PTT/VAD | 같은 worker 입력 provider, finite16kPCM, RMS calibration/silence, STT1/무음0, cancel/stale/queue/lease 회귀 | GP7 변경0, 현재 HID 펌웨어 미확인 | mic/ALSA/VAD/USB/VNC focus·유료 API NOT_RUN |
+| 별도 영상 v1 | 명시 consent+선택 dir, shared broker, 합성16×16 무음 AVI, SHA/private atomic store·recovery | `camera_video` live 항상 denied, 실제 영상 encoder 없음 | Camera3Wide/AF/codec/driver/hotplug NOT_RUN |
+| 사진·시선 | 기존 demo camera/photo/tracker 외부 메뉴와 mode 복귀, 합성 PNG/headless | 기본 off, 기본 사진은 이전의 임시 합성 fixture; 실제 사용자 사진 생성 없음 | 실물·영구 사용자 사진 경로 NOT_RUN |
+| 게임 | 기존 mock/owned runner/import 재사용, menu START/Enter 선택·B·ESC·복귀 | 실제 ZIP/Tetris3개 알려진 후보 ASSET_PENDING | 실제 게임·emulator·pad/exit NOT_RUN |
+| 음악 | 검토 WAV private import/retirement, 명시 music-directory 인수, 무음 fake pause/resume/next/stop | 기본 빈 목록, 실제 사용자 음원 ASSET_PENDING, live music denied | 실제 음량/codec/노래/echo NOT_RUN |
+| 프로세스·복구 | direct child WNOWAIT, 같은 group 종료 확인 후 reap, 영상·마이크 cleanup UNKNOWN 보존 | 전역 kill·subreaper·OS/서비스 변경 없음 | native 드라이버 hang/정전/장기 안정성 NOT_RUN |
+| 전원·버튼 상태 | 순수 parser/injected runner, `0x50000` 과거/현재 구분, 메뉴 NOT_RUN 표시 | 실제 vcgencmd/USB/serial 실행0, GP7/팔/IMU preserved | 전원·발열·장시간 CPU/RAM 계측 NOT_RUN |
+
+Mock/CI PASS는 위 마지막 열을 자동으로 통과시키지 않는다. 실제 장치나 유료 API를
+승인 없이 켜지 않으며, 콘텐츠 소유·라이선스는 도구가 추정하지 않는다.

@@ -53,7 +53,10 @@ private 0700이 아니면 자동 chmod하지 않는다. 새 파일은 0600이고
 API는 `review_wav(path, expected_sha256=...)`,
 `install_wav(review, root, id, title=..., license_id=..., license_reviewed=True)`,
 `load_library(root) -> tuple[MediaAsset]`다. 마지막 튜플은 기존 `MediaFeature`에
-연결할 수 있지만 제품 앱의 runtime/music deny를 해제하지 않는다.
+연결한다. 제품의 `--music-directory /absolute/private/bmo-media`는 사용자가 명시한
+검토된 목록을 읽기 전용으로 인수한다. `--simulate`는 무음 fake backend로만
+선택/정지/일시정지/이어서/다음을 검증하며 실제 스피커를 열지 않는다.
+`--demo-assets`와 동시에 고를 수 없다. live의 runtime/music deny는 해제하지 않는다.
 라이브러리를 읽는 동작은 경로를 새로 만들지 않는다.
 
 검토 후 import된 노래를 목록에서 빼려면 같은 SHA를 지정해 metadata만 보존

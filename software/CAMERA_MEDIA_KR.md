@@ -123,6 +123,16 @@ PYTHONPATH=software "$BMO_PYTHON" -B -m bmo_ai.game_assets --dry-run
 웹/native/RetroArch의 실물 종료 hotkey·USB gamepad·출력은 별도 검수다.
 게임 메뉴/게임의 GP8 Enter는 선택·게임 입력으로 남고 PTT를 시작하지 않는다.
 
+검토된 PCM WAV는 `media_assets`의 private import 뒤
+`--simulate --music-directory /absolute/private/library`로 읽기 전용 목록을 인수할 수 있다.
+무음 fake backend만 사용하며 실제 음악 출력은 계속 denied다. `--demo-assets`와 동시에
+선택할 수 없다. 기본은 빈 사용자 목록이며 자동 다운로드·음원 탐색은 없다.
+
+사진은 기존 PhotoStore/PhotoFeature를 재사용한다. 기본 앱의 사진은 기존처럼 테스트용
+임시 합성 fixture이고 종료 시 해당 테스트 자원만 정리한다. 실제 사용자 사진을 만들거나
+지우지 않았다. 사용자 영구 사진 저장소·실물 사진 backend 연결은 별도 검수 전 미완성이다.
+사용자가 선택한 영상 디렉터리의 완료 AVI는 이 임시 사진 경로와 달리 종료 후 보존한다.
+
 음악은 stop/pause/resume/next와 AudioFocus 한 명의 소유·얼굴 복귀를 검사한다.
 cue가 있으면 같은 playback clock을 쓰며, cue가 없으면 RMS로 노래 립싱크를 꾸미지 않는다.
 미디어 중 마이크 입력을 막아 BMO 자신의 출력을 새 질문으로 만들지 않는다.

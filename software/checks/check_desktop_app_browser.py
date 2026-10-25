@@ -165,6 +165,12 @@ def host_factory(**settings):
             return 'Synthetic button question.'
         settings.update(ptt_source_factory=Source,ptt_transcriber=transcribe)
     host=FeatureHost(**settings,client=client);hosts.append(host)
+    if scenario=='media':
+        # Pause/next UI gets an explicitly frozen synthetic media clock. The
+        # original clock-driven end behavior is covered by feature regressions.
+        host.media.backend.clock=lambda:0.0
+        host.session.set_emotion('sad');host.session.set_emotion('auto')
+        host.microphone.source_factory=forbidden
     if scenario.startswith('ptt'):
         original_poll=host.poll
         def poll():
@@ -261,6 +267,7 @@ class DesktopFixture:
             "BMO_TEST_ROOT": str(self.root), "BMO_TEST_PROFILE": profile, "BMO_TEST_SCENARIO": scenario}
         command = [*entry_command, "--windowed", "--demo-assets", "--screen-profile", profile,
                    "--face-file", str(self.face)]
+        if scenario=='media':command.extend(['--video-directory',str(self.root/'video-content')])
         if developer:command.append("--developer")
         self.command, self.environment = command, environment
         self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

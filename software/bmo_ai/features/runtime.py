@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from .contracts import FeatureError
 
 
-DEVICE_CAPABILITIES = ("arms", "imu", "camera", "external_games", "music")
+DEVICE_CAPABILITIES = ("arms", "imu", "camera", "camera_video", "external_games", "music")
 
 
 @dataclass(frozen=True, slots=True)
