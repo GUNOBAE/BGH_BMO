@@ -87,6 +87,7 @@ class MicPcmSource:
         self._lock, self._capture_lock = RLock(), Lock()
         self._closed, self._failed = Event(), False
         self._process, self._state, self._code = None, "idle", "disabled" if not live_opt_in else "ok"
+        self._selector = None
         self._bytes = 0
 
     def snapshot(self):
@@ -129,6 +130,8 @@ class MicPcmSource:
                 os.set_inheritable(fd, False)
                 os.set_blocking(fd, False)
                 selector = selectors.DefaultSelector()
+                with self._lock:
+                    self._selector = selector
                 selector.register(fd, selectors.EVENT_READ)
             except FileNotFoundError:
                 raise MicError("microphone_tool_unavailable") from None
@@ -173,8 +176,6 @@ class MicPcmSource:
                     self._code = error.code
             raise
         finally:
-            if selector is not None:
-                selector.close()
             try:
                 cleaned = self.close()
             finally:
@@ -183,36 +184,47 @@ class MicPcmSource:
                 raise MicError("pcm_cleanup_failed") from None
 
     def close(self):
-        """Bounded termination/reap. False keeps ownership and latches failure."""
+        """Bounded termination/reap; one cleanup failure never skips another.
+
+        False retains uncertain process/selector ownership for a safe retry.
+        """
         self._closed.set()
         with self._lock:
             process = self._process
-            if process is None:
-                self._state = "closed"
-                return not self._failed
-            try:
+            failed = False
+            if process is not None:
                 try:
-                    process.wait(timeout=0)
-                except subprocess.TimeoutExpired:
                     try:
-                        process.terminate()
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        process.wait(timeout=.2)
+                        process.wait(timeout=0)
                     except subprocess.TimeoutExpired:
                         try:
-                            process.kill()
+                            process.terminate()
                         except ProcessLookupError:
                             pass
-                        process.wait(timeout=.2)
-                if process.stdout is not None:
-                    process.stdout.close()
-                self._process, self._state, self._failed = None, "closed", False
-                return True
-            except (OSError, subprocess.TimeoutExpired):
+                        try:
+                            process.wait(timeout=.2)
+                        except subprocess.TimeoutExpired:
+                            try:
+                                process.kill()
+                            except ProcessLookupError:
+                                pass
+                            process.wait(timeout=.2)
+                    if process.stdout is not None:
+                        process.stdout.close()
+                    self._process = None
+                except BaseException:
+                    failed = True
+            if self._selector is not None:
+                try:
+                    self._selector.close()
+                    self._selector = None
+                except BaseException:
+                    failed = True
+            if failed:
                 self._failed, self._state, self._code = True, "failed", "pcm_cleanup_failed"
                 return False
+            self._failed, self._state = False, "closed"
+            return True
 
 
 class SyntheticPcmSource:
@@ -397,7 +409,8 @@ class PttRecorder:
             check()
             self._publish("calibrating")
             source = self.source_factory()
-            self._source = source
+            with self._lock:
+                self._source, self._microphone_open = source, True
             frames = iter(source.frames(capture_id, generation=generation, cancel_check=check))
             noise_squares, noise_count = 0, 0
             calibration_samples = round(16000 * self.calibration)
