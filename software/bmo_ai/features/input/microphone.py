@@ -327,6 +327,10 @@ class PttRecorder:
         self._state, self._code, self._microphone_open = "idle", "ok", False
         self._last_generation, self._ready = -1, None
         self._source, self._captured_bytes = None, 0
+        # Only coarse PCM energy metadata is observable; never speech text/bytes.
+        self._vad_frames = self._vad_speech_frames = 0
+        self._vad_noise_band = self._vad_input_band = "unmeasured"
+        self._vad_threshold = None
         self._cleanup_failed = False
         self._pending_wav = None
 
@@ -338,8 +342,22 @@ class PttRecorder:
                         automatic_capture=False, wake_word_enabled=False,
                         cleanup_pending=self._cleanup_failed or self._pending_wav is not None,
                         vad="rms_energy", calibration_seconds=self.calibration,
+                        vad_frames=self._vad_frames, speech_frames=self._vad_speech_frames,
+                        input_level=self._vad_input_band, noise_level=self._vad_noise_band,
+                        effective_threshold=self._vad_threshold,
                         silence_seconds=self.settings["silence_timeout"],
                         max_seconds=self.settings["max_duration"])
+
+    @staticmethod
+    def _rms_band(value):
+        # Coarse non-reversible volume indicators, not recorded sample content.
+        if value < .004:
+            return "silent"
+        if value < .015:
+            return "quiet"
+        if value < .08:
+            return "audible"
+        return "loud"
 
     def _publish(self, state, code="ok", *, microphone_open=None):
         with self._lock:
@@ -380,6 +398,9 @@ class PttRecorder:
                 if generation <= self._last_generation:
                     raise MicError("duplicate_capture")
                 self._last_generation, self._ready, self._captured_bytes = generation, None, 0
+                self._vad_frames = self._vad_speech_frames = 0
+                self._vad_noise_band = self._vad_input_band = "unmeasured"
+                self._vad_threshold = None
                 self._cancel.clear()
                 self._finish.clear()
             self._idle.clear()
@@ -433,20 +454,34 @@ class PttRecorder:
                     self._microphone_open = True
                 if self._captured_bytes > int(16000 * 2 * self.settings["max_duration"]):
                     raise MicError("pcm_byte_limit")
+                with self._lock:
+                    self._vad_frames += 1
                 if not gate_started:
                     samples = tuple(v[0] for v in struct.iter_unpack("<h", frame.pcm))
                     noise_squares += sum(sample * sample for sample in samples)
                     noise_count += len(samples)
                     if noise_count >= calibration_samples:
                         noise = math.sqrt(noise_squares / noise_count) / 32768
+                        with self._lock:
+                            self._vad_noise_band = self._rms_band(noise)
                         if noise > self.max_noise:
                             raise MicError("calibration_noisy")
                         gate.threshold = max(self.settings["threshold"], noise * self.noise_multiplier)
+                        with self._lock:
+                            self._vad_threshold = round(gate.threshold, 4)
                         if not gate.start_ptt(capture_id, generation=generation):
                             raise MicError(gate.snapshot()["reason_code"])
                         gate_started = True
                         self._publish("listening", microphone_open=True)
                     continue
+                # This level is deliberately bucketed for safe field diagnosis.
+                # Never expose a waveform, utterance, timing fingerprint or mic path.
+                level = math.sqrt(sum(sample[0] * sample[0] for sample in
+                    struct.iter_unpack("<h", frame.pcm)) / (len(frame.pcm) // 2)) / 32768
+                with self._lock:
+                    self._vad_input_band = self._rms_band(level)
+                    if level >= gate.threshold:
+                        self._vad_speech_frames += 1
                 accepted = gate.feed(frame.pcm, sequence=frame.sequence,
                                      timestamp=frame.timestamp, generation=generation)
                 pending = gate.poll()
