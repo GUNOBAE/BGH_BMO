@@ -362,6 +362,37 @@ class CameraVideoTests(unittest.TestCase):
         self.assertEqual('unknown', self.start(recorder=recorder).status)
         self.assertEqual(1, self.backend.open_count)
 
+    def test_stage_unlink_failure_after_publish_is_unknown_and_preserves_artifacts(self):
+        self.start()
+        original_unlink = os.unlink
+        def fail_stage_unlink(name, *args, **kwargs):
+            if str(name).startswith('.video-stage-'):
+                raise PermissionError('synthetic stage cleanup fault')
+            return original_unlink(name, *args, **kwargs)
+        with patch('os.unlink', side_effect=fail_stage_unlink):
+            result = self.stop()
+        self.assertEqual(('unknown', 'video_saved_state_unknown'), (result.status, result.code))
+        self.assertFalse(result.completed)
+        self.assertEqual(1, len(list(self.root.glob('*.avi'))))
+        self.assertEqual(1, len(list(self.root.glob('.video-stage-*.tmp'))))
+        raw = next(self.root.glob('*.avi')).read_bytes()
+        self.assertEqual(1, validate_avi_bytes(raw)['frames'])
+        self.assertEqual(result, self.start())
+        self.assertEqual(1, self.backend.open_count)
+        records = json.loads((self.root / '.video-journal.json').read_text())['records']
+        self.assertEqual('unknown', records['record-1']['result']['status'])
+        self.assertFalse(self.broker.opened)
+
+    def test_read_does_not_recreate_a_removed_or_moved_selected_directory(self):
+        self.start()
+        saved = self.stop()
+        moved = self.root.with_name('moved_by_user')
+        self.root.rename(moved)
+        with patch('os.mkdir', side_effect=AssertionError('read cannot create directory')):
+            self.assert_code('unsafe_video_root', lambda: self.store.read(saved.video_id))
+        self.assertFalse(self.root.exists())
+        self.assertTrue((moved / (saved.video_id + '.avi')).is_file())
+
     def test_original_camera_preview_and_photo_are_excluded_by_video_claim(self):
         camera = CameraFeature(backend_factory=lambda: self.backend, clock=self.clock)
         recorder = VideoRecorder(camera.broker, store=self.store, clock=self.clock)
