@@ -39,14 +39,12 @@ class ProductNativeCameraTests(unittest.TestCase):
 
     def test_install_plan_can_choose_native_BMO_icon_without_installing(self):
         with TemporaryDirectory() as tmp:
-            with patch("bmo_ai.desktop_install.os.open", wraps=__import__("os").open) if False else patch(
-                "bmo_ai.desktop_install._source", return_value=b"<svg/>"
-            ):
-                # Real icon SHA validation still applies, so this synthetic
-                # injection deliberately must not be mistaken for installed.
-                with self.assertRaises(Exception):
-                    desktop_install_plan(project_root=Path(__file__).resolve().parents[2],
-                                         home=Path(tmp), simulate=False, frontend="native")
+            plan = desktop_install_plan(project_root=Path(__file__).resolve().parents[2],
+                                        home=Path(tmp), simulate=False, frontend="native")
+            self.assertEqual(plan["status"], "DRY_RUN")
+            self.assertEqual(plan["files_written"], 0)
+            self.assertEqual(plan["command"][-2:], ["--frontend", "native"])
+            self.assertFalse((Path(tmp) / "Desktop" / "BMO.desktop").exists())
 
     def test_runtime_capability_never_grants_real_video_or_arms(self):
         policy = RuntimePolicy(simulate=False, camera_live=True)
@@ -62,9 +60,12 @@ class ProductNativeCameraTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             policy = RuntimePolicy(simulate=False, camera_live=True)
             client = FeatureSimulatedClient()
-            with patch("builtins.__import__", side_effect=lambda *a, **kw:
-                       (_ for _ in ()).throw(AssertionError("camera library loaded")) if
-                       a and a[0] in ("picamera2", "cv2") else __import__(*a, **kw)):
+            original_import = __import__
+            def no_real_camera_import(name, *args, **kwargs):
+                if name in ("picamera2", "cv2"):
+                    raise AssertionError("camera library imported during idle")
+                return original_import(name, *args, **kwargs)
+            with patch("builtins.__import__", side_effect=no_real_camera_import):
                 host = FeatureHost(runtime=policy, client=client, camera_photo_directory=Path(tmp))
             try:
                 snap = host.snapshot()
