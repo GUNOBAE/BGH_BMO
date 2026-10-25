@@ -2,7 +2,7 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id),frame=$('face'),token=document.querySelector('meta[name="bmo-command-token"]').content;
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null;
-let enterDown=false,pttEnabled=false,pttPending=false,lastPttGeneration=-1,pendingPttGeneration=-1;
+let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0;
 const messages={credentials_missing:'최초 키 설정이 필요해요. 실행 가이드를 확인해 주세요.',greeting_missing:'시작 인사 캐시가 아직 준비되지 않았어요.',greeting_unapproved:'시작 인사의 청취 승인이 필요해요.',greeting_corrupt:'시작 인사 캐시를 확인해 주세요.',face_ready_timeout:'얼굴 준비 시간이 초과됐어요.',host_startup_timeout:'대화 엔진 준비 시간이 초과됐어요.',greeting_timeout:'시작 인사 재생 정리를 기다리고 있어요.',browser_disconnected:'연결을 다시 확인하고 있어요.'};
 async function post(path,payload){const response=await fetch(path,{method:'POST',keepalive:payload.action==='cancel',headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce:crypto.randomUUID(),payload})});if(!response.ok)throw Error('요청을 완료하지 못했어요.');return response.json();}
 const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(action,value=null)=>post('/api/control',{action,value}),intent=(name,target=null)=>post('/api/intent',{name,target});
@@ -38,10 +38,10 @@ function render(next){state=next;window.BMODesktop.state=next;
  $('greeting-retry').disabled=next.phase!=='ready'||next.code==='greeting_completed';}
 async function modes(){if(state?.phase!=='ready')return;const r=await fetch('/api/features',{cache:'no-store'});if(!r.ok)return;const next=await r.json();currentMode=next.mode;
  pttEnabled=next.ptt?.enabled===true&&next.capabilities?.conversation_ptt_microphone!=='denied';
- lastPttGeneration=Number.isInteger(next.ptt?.generation)?next.ptt.generation:-1;
- // An idle snapshot can precede execution of an accepted queued input. Keep
- // its safety cancellation armed until that capture generation has completed.
- if(!next.conversation_busy&&lastPttGeneration>pendingPttGeneration)pttPending=false;
+ // Bind completion to THIS admitted command, rather than a stale snapshot's
+ // idle phase or a previous capture generation. Queued input stays cancellable.
+ const receipt=pttRequest&&(next.requests||[]).find(item=>item.request_id===pttRequest);
+ if(receipt&&!['accepted','running'].includes(receipt.status)){pttPending=false;pttRequest=null;}
  const capture=next.ptt?.state;
  const inputFailed=capture==='failed'||next.ptt?.cleanup_fault===true;
  $('ptt-state').hidden=!inputFailed&&!['calibrating','listening','speech','transcribing'].includes(capture);
@@ -60,8 +60,11 @@ async function poll(){if(closed||document.hidden)return;const current=epoch;cont
 }catch(_){if(performance.now()-lastSuccess>2500){$('splash').hidden=true;error('BMO 연결이 끊겼어요. 창을 닫고 수동으로 다시 실행해 주세요.');}}
 finally{clearTimeout(abort);controller=null;if(!closed&&current===epoch&&!document.hidden)timer=setTimeout(poll,100);}}
 $('notice-menu').onclick=menu;$('resume').onclick=()=>$('menu').close();$('exit').onclick=()=>desktop('exit').catch(()=>{error('BMO가 종료된 상태예요. 창을 닫아 주세요.');window.close();});
-function ptt(){if(!pttEnabled){error('버튼 녹음은 사용자 검수용 마이크 opt-in이 필요해요.');return;}if(!pttPending)pendingPttGeneration=lastPttGeneration;pttPending=true;control('ptt').catch(()=>{pttPending=false;error('버튼 녹음을 시작하지 못했어요.');});}
-function cancelPTT(){enterDown=false;if(pttPending){pttPending=false;control('cancel').catch(()=>{});}}
+function ptt(){if(!pttEnabled){error('버튼 녹음은 사용자 검수용 마이크 opt-in이 필요해요.');return;}
+ if(pttPending){control('ptt').catch(()=>error('버튼 입력을 확인해 주세요.'));return;}
+ pttPending=true;pttRequest=null;const current=++pttEpoch;
+ control('ptt').then(result=>{if(current===pttEpoch&&pttPending)pttRequest=result.request_id;}).catch(()=>{if(current===pttEpoch){pttPending=false;error('버튼 녹음을 시작하지 못했어요.');}});}
+function cancelPTT(){enterDown=false;if(pttPending){pttEpoch++;pttPending=false;pttRequest=null;control('cancel').catch(()=>{});}}
 $('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));$('menu').close();};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
 $('games').onclick=()=>{intent('open_game_menu').catch(()=>error('게임 목록을 열지 못했어요.'));$('menu').close();};$('greeting-retry').onclick=()=>desktop('retry_greeting').catch(()=>error('인사 캐시를 확인해 주세요.'));

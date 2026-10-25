@@ -111,7 +111,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     hold.unlink()
                     page.wait_for_timeout(250)
                     audit=fixture.features()['test_fixture']
-                    assert audit['mic_sources']==2 and audit['stt']==1
+                    assert audit['mic_sources']==2 and audit['stt']==1, audit
                     checks.append('queued Enter survives idle snapshots until blur cancellation retires it; zero source opens after owner resumes')
 
                     # A fake disconnected recorder is visible and has a final
