@@ -149,7 +149,7 @@ def _configuration(project_root, home, environ, simulate):
     template = ("[Desktop Entry]\nType=Application\nName=BMO\n"
                 "Comment=Start the BMO desktop app manually\n"
                 "Exec=" + " ".join('"' + value + '"' for value in command) + "\n"
-                "Path=" + str(project) + "\nIcon=" + str(icon_path) + "\nTerminal=true\n"
+                "Path=" + str(project) + "\nIcon=" + str(icon_path) + "\nTerminal=false\n"
                 "StartupNotify=false\nCategories=Game;Utility;\nX-GNOME-Autostart-enabled=false\n")
     targets = ((desktop / "BMO.desktop", template.encode("utf-8"), 0o700),
                (data / "applications" / "BMO.desktop", template.encode("utf-8"), 0o600),

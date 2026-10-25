@@ -54,7 +54,7 @@ class DesktopInstallTests(unittest.TestCase):
         self.assertTrue(report["launcher_verified"])
         self.assertEqual([row["status"] for row in report["targets"]], ["ABSENT"] * 3)
         self.assertIn('Exec="' + str(self.launcher) + '" "--live"', report["template"])
-        self.assertIn("Terminal=true", report["template"])
+        self.assertIn("Terminal=false", report["template"])
         self.assertFalse(report["autostart"] or report["services_changed"])
         self.assertNotIn("synthetic_private", json.dumps(report))
         self.assertEqual(set(self.home.rglob("*")), before)
