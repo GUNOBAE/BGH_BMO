@@ -79,7 +79,7 @@ class FeatureHost:
                  config=None, brain=None, runtime=None, fish_api_key=None,
                  input_source=None, input_mapping=None, pcm_transcriber=None,
                  ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None,
-                 ptt_vad_profile="normal"):
+                 ptt_vad_profile="normal", voice_expressive=False):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -94,6 +94,8 @@ class FeatureHost:
         if ((ptt_source_factory is not None or ptt_transcriber is not None)
                 and not self.runtime.conversation_ptt_microphone):
             raise FeatureError("microphone_opt_in_required")
+        if type(voice_expressive) is not bool:
+            raise FeatureError("invalid_voice_performance")
         if type(ptt_vad_profile) is not str or ptt_vad_profile not in ("normal", "sensitive"):
             raise FeatureError("invalid_vad_profile")
         if music_directory is not None and (demo_assets or media is not None):
@@ -164,6 +166,7 @@ class FeatureHost:
         self.session = IntegrationSession(self.config, self.client, simulate=self.runtime.simulate,
             brain=brain, fish_api_key=fish_api_key,
             voice=voice, clock=clock, emotion_mode="auto", reply_client=FeatureClient(self.client),
+            voice_expressive=voice_expressive,
             on_reply=self._reply, on_playback_event=self._playback)
         self.modes.register("conversation", enter=self._enter_conversation, leave=self._leave_conversation)
         self.modes.register("game_menu", enter=lambda _: None, leave=lambda: None)
