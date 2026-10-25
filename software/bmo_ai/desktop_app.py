@@ -38,6 +38,8 @@ def parser():
     p.add_argument("--offline-voice", action="store_true")
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--ptt-microphone", action="store_true", help="explicit supervised opt-in: HID/keyboard Enter starts finite mic/VAD capture; no idle listening")
+    p.add_argument("--vad-profile", choices=("normal", "sensitive"), default="normal",
+                   help="local RMS speech threshold; sensitive is an explicit test profile, not wake-word detection")
     p.add_argument("--speaker-device", default="plughw:CARD=MAX98357A,DEV=0")
     p.add_argument("--startup-timeout", type=float, default=15.)
     p.add_argument("--greeting-timeout", type=float, default=30.)
@@ -63,7 +65,7 @@ def public_plan(args):
         "configuration": effective_config(config, emotion_mode="auto"),
         "credentials_accessed": False, "ports_opened": False, "processes_started": False,
         "desktop_installed": False, "autostart": False, "physical_features_enabled": False,
-        "ptt": {"enabled": args.simulate or args.ptt_microphone,
+        "ptt": {"enabled": args.simulate or args.ptt_microphone, "vad_profile": args.vad_profile,
                 "source": "synthetic_pcm" if args.simulate else "explicit_microphone" if args.ptt_microphone else "disabled",
                 "automatic_capture": False, "wake_word_enabled": False, "physical_verified": False},
         "camera_video": {"storage_selected": args.video_directory is not None,
@@ -181,6 +183,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             settings = {"config": config, "runtime": RuntimePolicy(simulate=args.simulate,
                         conversation_ptt_microphone=args.simulate or args.ptt_microphone),
                         "demo_assets": args.demo_assets, "clock": clock}
+            if args.vad_profile != "normal":
+                settings["ptt_vad_profile"] = args.vad_profile
             if args.video_directory is not None:
                 settings["video_directory"] = args.video_directory
             if args.music_directory is not None:
