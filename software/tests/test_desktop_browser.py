@@ -1,14 +1,17 @@
 """Fake child/process-group only; never launch an interactive browser."""
 import json
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import signal
 import subprocess
 import tempfile
+import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from bmo_ai.desktop_browser import BrowserError, DesktopBrowser
+from bmo_ai.desktop_browser import BrowserError, DesktopBrowser, _active_owned_group, _observe_exit
 
 
 class FakeProcess:
@@ -46,9 +49,14 @@ class DesktopBrowserTests(unittest.TestCase):
 
     def browser(self, process=None, **changes):
         process = process or FakeProcess()
-        factory, signaler = Mock(return_value=process), Mock()
+        factory = Mock(return_value=process)
+        def terminate_fake_group(pgid, value):
+            process.returncode = 0
+        signaler = Mock(side_effect=terminate_fake_group)
         settings = {"executable": self.executable, "environ": self.env, "process_factory": factory,
-                    "group_signaler": signaler, "clock": lambda: self.now}
+                    "group_signaler": signaler, "clock": lambda: self.now,
+                    "observer": lambda child: child.returncode is not None,
+                    "group_probe": lambda pgid, sid: process.returncode is None}
         settings.update(changes)
         browser = DesktopBrowser("http://127.0.0.1:32145/", **settings)
         def cleanup():
@@ -128,20 +136,26 @@ class DesktopBrowserTests(unittest.TestCase):
         signaler.assert_not_called()
 
     def test_owned_stop_escalates_after_bounded_wait_and_is_idempotent(self):
-        timeout = subprocess.TimeoutExpired("synthetic", .1)
-        browser, process, _, signaler = self.browser(FakeProcess(waits=(timeout, 0)), stop_timeout=.1)
+        active = [True]
+        process = FakeProcess()
+        def signal_group(pgid, value):
+            if value == signal.SIGKILL:
+                active[0], process.returncode = False, 0
+        signaler = Mock(side_effect=signal_group)
+        browser, process, _, _ = self.browser(process, stop_timeout=.05,
+            group_signaler=signaler, group_probe=lambda pgid, sid: active[0])
         browser.start()
         state = browser.stop()
         self.assertEqual(signaler.call_args_list[0].args, (process.pid, signal.SIGTERM))
         self.assertEqual(signaler.call_args_list[1].args, (process.pid, signal.SIGKILL))
-        self.assertEqual(process.wait_calls, [.1, .1])
+        self.assertEqual(process.wait_calls, [.05])
         self.assertTrue(state["cleanup_complete"])
         self.assertFalse(state["owned_child"])
         browser.close()
         self.assertEqual(signaler.call_count, 2)
 
     def test_unreaped_child_preserves_profile_and_reports_cleanup_failure(self):
-        timeouts = (subprocess.TimeoutExpired("private_data", .1), subprocess.TimeoutExpired("private_data", .1))
+        timeouts = (subprocess.TimeoutExpired("private_data", .1),)
         browser, _, _, _ = self.browser(FakeProcess(waits=timeouts), stop_timeout=.1)
         browser.start()
         with self.assertRaises(BrowserError) as caught:
@@ -244,6 +258,142 @@ class DesktopBrowserTests(unittest.TestCase):
         self.assertNotIn("XAUTHORITY", child)
         self.assertNotIn("DBUS_SESSION_BUS_ADDRESS", child)
         self.assertNotIn("synthetic_private", json.dumps(child))
+
+    def test_exited_leader_with_active_descendants_is_cleaned_before_reap(self):
+        process, active, order = FakeProcess(returncode=0), [True], []
+        def signal_group(pgid, value):
+            self.assertEqual(process.wait_calls, [])
+            order.append((pgid, value))
+            active[0] = False
+        signaler = Mock(side_effect=signal_group)
+        browser, _, _, _ = self.browser(process, group_probe=lambda pgid, sid: active[0], group_signaler=signaler)
+        with patch.object(process, "poll", side_effect=AssertionError("Do not reap via poll")), \
+             self.assertRaises(BrowserError) as caught:
+            browser.start()
+        self.assertEqual(caught.exception.code, "browser_start_failed")
+        self.assertEqual(order, [(process.pid, signal.SIGTERM)])
+        self.assertEqual(process.wait_calls, [browser.stop_timeout])
+        self.assertTrue(browser.snapshot()["cleanup_complete"])
+        browser.stop()
+        self.assertEqual(len(order), 1)  # No signals after the leader was reaped.
+
+    def test_uncertain_or_persistent_group_preserves_profile_and_unreaped_leader(self):
+        active = [True]
+        browser, process, _, _ = self.browser(stop_timeout=.05,
+            group_probe=lambda pgid, sid: active[0], group_signaler=Mock())
+        browser.start()
+        with self.assertRaises(BrowserError) as caught:
+            browser.stop()
+        self.assertEqual(caught.exception.code, "browser_cleanup_failed")
+        self.assertEqual(process.wait_calls, [])
+        self.assertTrue(browser.snapshot()["private_profile"])
+        active[0], process.returncode = False, 0
+        self.assertTrue(browser.stop()["cleanup_complete"])
+
+    def test_unavailable_nonreaping_observer_fails_closed_without_signals(self):
+        browser, process, _, signaler = self.browser(observer=Mock(side_effect=BrowserError("browser_cleanup_failed")))
+        with self.assertRaises(BrowserError) as caught:
+            browser.start()
+        self.assertEqual(caught.exception.code, "browser_cleanup_failed")
+        signaler.assert_not_called()
+        self.assertEqual(process.wait_calls, [])
+        self.assertFalse(browser.snapshot()["cleanup_complete"])
+
+    def test_real_observer_uses_wnowait_and_has_no_reaping_fallback(self):
+        process = SimpleNamespace(pid=43127)
+        with patch("bmo_ai.desktop_browser.os.waitid", return_value=None) as observe:
+            self.assertFalse(_observe_exit(process))
+        self.assertEqual(observe.call_args.args, (os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG))
+        with patch("bmo_ai.desktop_browser.os.waitid", side_effect=NotImplementedError()), \
+             self.assertRaises(BrowserError):
+            _observe_exit(process)
+
+    def test_group_probe_reads_only_bounded_stat_metadata_and_checks_session(self):
+        entries = [SimpleNamespace(name="43127", path="/proc/43127")]
+        for session, state, active in ((43127, "S", True), (43127, "Z", False)):
+            raw = f"43127 (synthetic child) {state} 1 43127 {session} 0 0\n".encode()
+            with patch("bmo_ai.desktop_browser.os.scandir", return_value=nullcontext(iter(entries))), \
+                 patch("bmo_ai.desktop_browser.os.open", side_effect=(80, 81)) as opened, \
+                 patch("bmo_ai.desktop_browser.os.read", return_value=raw), \
+                 patch("bmo_ai.desktop_browser.os.close"):
+                self.assertEqual(_active_owned_group(43127, 43127), active)
+                self.assertEqual(opened.call_args_list[1].args[0], "stat")
+        with patch("bmo_ai.desktop_browser.os.scandir", return_value=nullcontext(iter(entries))), \
+             patch("bmo_ai.desktop_browser.os.open", side_effect=(80, 81)), \
+             patch("bmo_ai.desktop_browser.os.read", return_value=b"43127 (synthetic) S 1 43127 999 0\n"), \
+             patch("bmo_ai.desktop_browser.os.close"), self.assertRaises(BrowserError):
+            _active_owned_group(43127, 43127)
+        many = (SimpleNamespace(name="not_numeric") for _ in range(8193))
+        with patch("bmo_ai.desktop_browser.os.scandir", return_value=nullcontext(many)), \
+             patch("bmo_ai.desktop_browser.time.monotonic", return_value=0), self.assertRaises(BrowserError):
+            _active_owned_group(43127, 43127)
+
+
+class OwnedGroupSubprocessTests(unittest.TestCase):
+    def test_fresh_harmless_orphan_group_is_killed_and_reaped_in_isolated_subreaper(self):
+        # The subreaper applies ONLY inside this short-lived test Python child,
+        # never to the application or the user's desktop session.
+        script = r'''
+import ctypes,json,os,signal,subprocess,sys,tempfile,time
+from unittest.mock import patch
+from bmo_ai.desktop_browser import BrowserError,DesktopBrowser
+if ctypes.CDLL(None).prctl(36,1,0,0,0) != 0:
+    raise RuntimeError("Synthetic subreaper unavailable")
+leader=child=None
+events=[]
+child_code="import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);print('ready',flush=True);time.sleep(30)"
+leader_code="import subprocess,sys;p=subprocess.Popen([sys.executable,'-B','-c',"+repr(child_code)+"],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True);p.stdout.readline();print(p.pid,flush=True)"
+def factory(*args,**kwargs):
+    global leader,child
+    leader=subprocess.Popen([sys.executable,'-B','-c',leader_code],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,start_new_session=True,env={'PATH':os.defpath})
+    child=int(leader.stdout.readline())
+    deadline=time.monotonic()+3
+    while os.waitid(os.P_PID,leader.pid,os.WEXITED|os.WNOWAIT|os.WNOHANG) is None:
+        if time.monotonic()>deadline: raise RuntimeError('Fresh leader exit timeout')
+        time.sleep(.01)
+    leader.poll=lambda: (_ for _ in ()).throw(AssertionError('Popen.poll must not reap'))
+    return leader
+def signal_group(pgid,value):
+    assert pgid==leader.pid and leader.returncode is None
+    assert os.waitid(os.P_PID,leader.pid,os.WEXITED|os.WNOWAIT|os.WNOHANG) is not None
+    events.append(value)
+    os.killpg(pgid,value)
+with tempfile.TemporaryDirectory(prefix='bmo-owned-group-test-') as runtime:
+    browser=DesktopBrowser('http://127.0.0.1:12345/',process_factory=factory,group_signaler=signal_group,stop_timeout=.1,environ={'XDG_RUNTIME_DIR':runtime,'WAYLAND_DISPLAY':'wayland-0'})
+    try:
+        with patch('bmo_ai.desktop_browser._executable',return_value=sys.executable):
+            try: browser.start()
+            except BrowserError as error: assert error.code=='browser_start_failed'
+            else: raise AssertionError('Exited leader must fail startup')
+        assert events==[signal.SIGTERM,signal.SIGKILL]
+        assert browser.snapshot()['cleanup_complete']
+        deadline=time.monotonic()+3
+        while True:
+            pid,status=os.waitpid(child,os.WNOHANG)
+            if pid==child: break
+            if time.monotonic()>deadline: raise RuntimeError('Fresh child reap timeout')
+            time.sleep(.01)
+        child=None
+        assert leader.returncode==0
+        browser.stop()
+        assert len(events)==2
+        print(json.dumps({'owned_group_cleaned':True,'all_toy_children_reaped':True,'interactive_browser':False}))
+    finally:
+        if child is not None:
+            try:
+                if os.getpgid(child)==leader.pid: os.killpg(leader.pid,signal.SIGKILL)
+            except ProcessLookupError: pass
+            os.waitpid(child,0)
+        if leader is not None:
+            if leader.returncode is None: leader.wait(timeout=3)
+            leader.stdout.close()
+'''
+        result = subprocess.run([sys.executable, "-B", "-c", script], cwd=Path(__file__).resolve().parents[1],
+                                env={"PATH": os.defpath, "LC_ALL": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"},
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, "Isolated owned-group regression failed")
+        self.assertEqual(json.loads(result.stdout), {"owned_group_cleaned": True,
+            "all_toy_children_reaped": True, "interactive_browser": False})
 
 
 if __name__ == "__main__":

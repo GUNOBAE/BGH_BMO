@@ -236,5 +236,56 @@ class DesktopRuntimeFailureTests(unittest.TestCase):
         self.assertTrue(app.startup_snapshot()['greeting_played'])
         self.assertEqual(greeting.calls,1)
 
+    def test_ready_disconnect_recovers_only_on_fresh_heartbeat_without_replaying_greeting(self):
+        app,clock=self.app();self.ready(app);app.heartbeat()
+        history=[{'role':'assistant','content':'Synthetic retained dialogue answer.'}]
+        app.host.session.brain=SimpleNamespace(history=history)
+        app.poll();self.drain(app)
+        before=app.startup_snapshot()
+        self.assertEqual((before['phase'],before['code']),('ready','greeting_completed'))
+        self.assertEqual((before['greeting_attempts'],app.greeting.calls),(1,1))
+        clock.now=6.;app.poll()
+        self.assertEqual((app.startup_snapshot()['phase'],app.startup_snapshot()['code']),
+                         ('error','browser_disconnected'))
+        app.poll()  # Owner polling alone is not browser recovery evidence.
+        self.assertEqual(app.startup_snapshot()['code'],'browser_disconnected')
+        app.heartbeat();app.poll()
+        state=app.startup_snapshot()
+        self.assertEqual((state['phase'],state['code']),('ready','greeting_completed'))
+        self.assertEqual((state['run_id'],state['greeting_attempts'],app.greeting.calls),
+                         (before['run_id'],1,1))
+        self.assertIs(app.host.session.brain.history,history)
+        self.assertEqual(history,[{'role':'assistant','content':'Synthetic retained dialogue answer.'}])
+        self.assertEqual(app.queue_command('after_reconnect',HostControl('question','Synthetic question.'))['status'],
+                         'accepted')
+
+    def test_fatal_face_timeout_is_first_cause_and_late_greeting_cannot_clear_disconnect(self):
+        with self.subTest(boundary='fatal startup cause'):
+            app,clock=self.app();app.heartbeat()
+            clock.now=3.;app.poll()
+            self.assertEqual((app.startup_snapshot()['phase'],app.startup_snapshot()['code']),
+                             ('error','face_ready_timeout'))
+            clock.now=6.;app.poll()
+            self.assertEqual(app.startup_snapshot()['code'],'face_ready_timeout')
+            self.ready(app);app.heartbeat();app.poll()
+            self.assertEqual((app.startup_snapshot()['phase'],app.startup_snapshot()['code']),
+                             ('error','face_ready_timeout'))
+            self.assertEqual(app.greeting.calls,0)
+        with self.subTest(boundary='late greeting during transient disconnect'):
+            greeting=Greeting(blocked=True);app,clock=self.app(greeting)
+            app.greeting_timeout=30.  # Isolate browser loss from greeting timeout.
+            self.ready(app);app.heartbeat();app.poll()
+            self.assertTrue(greeting.entered.wait(1));app.poll()
+            clock.now=6.;app.poll()
+            self.assertEqual((app.startup_snapshot()['phase'],app.startup_snapshot()['code']),
+                             ('error','browser_disconnected'))
+            greeting.release.set();self.drain(app)
+            self.assertEqual((app.startup_snapshot()['phase'],app.startup_snapshot()['code']),
+                             ('error','browser_disconnected'))
+            self.assertIsNone(app.host.audio.owner)
+            app.heartbeat();app.poll()
+            self.assertEqual(app.startup_snapshot()['phase'],'ready')
+            self.assertEqual((app.startup_snapshot()['greeting_attempts'],greeting.calls),(1,1))
+
 
 if __name__=='__main__':unittest.main()

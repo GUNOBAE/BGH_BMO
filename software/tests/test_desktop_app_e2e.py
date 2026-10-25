@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from threading import Event, Thread
 import time
 import unittest
 from unittest.mock import Mock, patch
@@ -220,7 +221,37 @@ class DesktopAppEndToEndTests(unittest.TestCase):
 
     def test_face_timeout_stops_loading_and_stays_diagnostic_until_explicit_exit(self):
         fixture = self.fixture()
-        (self.root / "clock.txt").write_text("20")
+        fixture.set_clock(0)
+        staged, release, failures = Event(), Event(), []
+        real_replace = os.replace
+
+        def publish(source, target):
+            # The actual child keeps polling clock.txt throughout this gate.
+            # A partially written new offset must never replace its old value.
+            self.assertEqual(Path(source).read_text(), "20.0")
+            self.assertEqual(Path(target), self.root / "clock.txt")
+            staged.set()
+            if not release.wait(3):raise AssertionError("Clock publication gate timed out")
+            real_replace(source, target)
+
+        def update():
+            try:fixture.set_clock(20)
+            except BaseException as error:failures.append(error)
+
+        with patch("checks.check_desktop_app_browser.os.replace", side_effect=publish):
+            writer = Thread(target=update)
+            writer.start()
+            try:
+                self.assertTrue(staged.wait(3), "New clock offset was not staged")
+                for _ in range(200):self.assertEqual(float((self.root / "clock.txt").read_text()), 0.)
+                self.assertEqual(fixture.state()["phase"], "loading")
+            finally:
+                release.set()
+                writer.join(3)
+            self.assertFalse(writer.is_alive())
+        self.assertEqual(failures, [])
+        self.assertEqual(float((self.root / "clock.txt").read_text()), 20.)
+        self.assertEqual(tuple(self.root.glob(".clock-*")), ())
         state = fixture.wait(lambda state: state["phase"] == "error")
         self.assertEqual(state["code"], "face_ready_timeout")
         self.assertEqual(fixture.features()["test_fixture"]["greeting_calls"], 0)

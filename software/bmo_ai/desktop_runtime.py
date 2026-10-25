@@ -57,6 +57,7 @@ class DesktopRuntime:
         self._greeting_timed_out = False
         self._greeting_suppressed = False
         self._audit = deque(maxlen=64)
+        self._disconnect_restore_code = None
 
     def _state(self, phase, code):
         with self._lock:
@@ -85,7 +86,8 @@ class DesktopRuntime:
     def fail(self, code="startup_failed"):
         self._cancel.set()
         self.failed = True
-        self._state("error", public_code(code))
+        if self._phase != "error":
+            self._state("error", public_code(code))
 
     def startup_snapshot(self):
         with self._lock:
@@ -234,6 +236,15 @@ class DesktopRuntime:
     def poll(self):
         if self._closed or self.exiting:
             return
+        if (self._phase == "error" and self._code == "browser_disconnected"
+                and self._last_browser is not None
+                and self.clock() - self._last_browser <= self.disconnect_timeout
+                and self._worker is None):
+            # Reconnection restores controls, never greeting playback. Active
+            # work was cancelled on loss and requires a fresh user request.
+            self.failed = False
+            self._state("ready", self._disconnect_restore_code or "greeting_cancelled")
+            self._disconnect_restore_code = None
         suppress_greeting = self._user_cancel.is_set()
         if suppress_greeting:
             self._user_cancel.clear()
@@ -311,13 +322,18 @@ class DesktopRuntime:
                     result = self._result or (False, "greeting_failed")
                     if self._greeting_timed_out:
                         result = (False, "greeting_timeout")
-                self._state("ready", result[1])
+                if self._phase == "error" and self._code == "browser_disconnected":
+                    self._disconnect_restore_code = result[1]
+                elif self._phase != "error" or self._code == "greeting_timeout":
+                    self._state("ready", result[1])
         if self.host is not None:
             self.host.poll()
-        if self._last_browser is not None and self.clock() - self._last_browser > self.disconnect_timeout:
+        if (self._phase != "error" and self._last_browser is not None
+                and self.clock() - self._last_browser > self.disconnect_timeout):
             self._cancel.set()
             if self.host is not None:
                 self.host.stop()
+            self._disconnect_restore_code = (self._code if self._phase == "ready" else "greeting_cancelled")
             self.fail("browser_disconnected")
 
     def close(self):

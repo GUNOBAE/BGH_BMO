@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import http.client
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -293,6 +294,22 @@ class DesktopFixture:
             if predicate(value):return value
             time.sleep(.01)
         raise AssertionError("Desktop state did not reach expected boundary: " + json.dumps(value))
+
+    def set_clock(self, value):
+        """Publish one complete offset while the launcher concurrently reads it."""
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("Fixture clock offset must be finite")
+        staged = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="ascii", dir=self.root,
+                                             prefix=".clock-", delete=False) as output:
+                staged = Path(output.name)
+                output.write(repr(float(value)))
+            os.replace(staged, self.root / "clock.txt")
+            staged = None
+        finally:
+            if staged is not None:
+                staged.unlink(missing_ok=True)
 
     def finish(self, *, request_exit=True):
         if self.process.poll() is None and request_exit and self.url is not None:

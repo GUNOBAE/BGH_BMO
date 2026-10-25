@@ -110,10 +110,60 @@ def _finite(value, low, high):
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
 
 
+def _observe_exit(process):
+    """Observe our direct child without releasing its PID/session identity."""
+    try:
+        options = os.WEXITED | os.WNOWAIT | os.WNOHANG
+        result = os.waitid(os.P_PID, process.pid, options)
+        return result is not None
+    except (OSError, ValueError, AttributeError, NotImplementedError):
+        # Do not substitute Popen.poll(): it reaps the leader and permits PID
+        # reuse before the group has been cleaned up.
+        raise BrowserError("browser_cleanup_failed") from None
+
+
+def _active_owned_group(pgid, sid):
+    """Bounded /proc stat metadata scan; no cmdline, environment or user files."""
+    deadline, examined = time.monotonic() + .25, 0
+    try:
+        with os.scandir("/proc") as entries:
+            for entry in entries:
+                examined += 1
+                if examined > 8192 or time.monotonic() > deadline:
+                    raise BrowserError("browser_cleanup_failed")
+                if not entry.name.isascii() or not entry.name.isdigit():
+                    continue
+                parent = descriptor = None
+                try:
+                    parent = os.open(entry.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                    descriptor = os.open("stat", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                                         dir_fd=parent)
+                    raw = os.read(descriptor, 8193)
+                    boundary = raw.rfind(b")")
+                    if len(raw) > 8192 or boundary < 0 or raw.split(b" ", 1)[0] != entry.name.encode("ascii"):
+                        raise BrowserError("browser_cleanup_failed")
+                    fields = raw[boundary + 2:].split()
+                    state, group, session = fields[0], int(fields[2]), int(fields[3])
+                    if group == pgid:
+                        if session != sid:
+                            raise BrowserError("browser_cleanup_failed")
+                        if state not in (b"Z", b"X", b"x"):
+                            return True
+                except (FileNotFoundError, ProcessLookupError):
+                    pass  # An unrelated process may have exited while scanning.
+                finally:
+                    for value in (descriptor, parent):
+                        if value is not None:
+                            os.close(value)
+        return False
+    except (OSError, ValueError, TypeError, IndexError):
+        raise BrowserError("browser_cleanup_failed") from None
+
+
 class DesktopBrowser:
     def __init__(self, url, *, windowed=False, executable=None, runtime_root=None, environ=None,
                  process_factory=None, group_signaler=None, clock=time.monotonic,
-                 startup_timeout=10.0, stop_timeout=2.0):
+                 startup_timeout=10.0, stop_timeout=2.0, observer=None, group_probe=None):
         self._url = _url(url)
         if (type(windowed) is not bool or not _finite(startup_timeout, 1, 60)
                 or not _finite(stop_timeout, .05, 10) or not callable(clock)):
@@ -126,8 +176,12 @@ class DesktopBrowser:
         self._executable, self._runtime_root = executable, runtime_root
         self._factory = process_factory or subprocess.Popen
         self._signal_group = group_signaler or os.killpg
+        self._observer = observer or _observe_exit
+        self._group_probe = group_probe or _active_owned_group
+        self._real_observation = observer is None and group_probe is None
         self._process = self._profile_parent = self._profile_name = self._profile_info = None
         self._pgid = None
+        self._reaped = False
         self._started = None
         self._state, self._code, self._ready, self._cleaned = "idle", "browser_stopped", False, True
 
@@ -237,6 +291,12 @@ class DesktopBrowser:
             if type(self._process.pid) is not int or self._process.pid <= 1:
                 raise BrowserError("browser_spawn_failed")
             self._pgid = self._process.pid
+            if self._real_observation:
+                # start_new_session guarantees both identities. Verify before
+                # accepting the handle; an unreaped child pins this numeric ID.
+                self._observer(self._process)
+                if os.getpgid(self._pgid) != self._pgid or os.getsid(self._pgid) != self._pgid:
+                    raise BrowserError("browser_cleanup_failed")
             self._started, self._state, self._code = self.clock(), "starting", "browser_starting"
             self.poll()
             if self._state == "failed":
@@ -266,37 +326,58 @@ class DesktopBrowser:
         if self._process is None or self._state in ("stopped", "failed", "exited"):
             return self.snapshot()
         try:
-            if self._process.poll() is not None:
-                self._process.wait(timeout=self.stop_timeout)
-                self._state, self._code = (("exited", "browser_closed") if self._ready
-                                          else ("failed", "browser_start_failed"))
-                self._cleanup_profile()
+            if self._observer(self._process):
+                state, code = (("exited", "browser_closed") if self._ready
+                               else ("failed", "browser_start_failed"))
+                self._stop(state, code)
             elif not self._ready and self.clock() - self._started >= self.startup_timeout:
                 self._stop("failed", "browser_start_timeout")
         except (OSError, ValueError, subprocess.TimeoutExpired, BrowserError):
             self._state, self._code, self._cleaned = "failed", "browser_cleanup_failed", False
         return self.snapshot()
 
+    def _wait_group_quiet(self):
+        deadline = time.monotonic() + self.stop_timeout
+        while True:
+            self._observer(self._process)  # Fail closed if the PID is no longer pinned.
+            if not self._group_probe(self._pgid, self._pgid):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(.02, remaining))
+
+    def _signal_owned_group(self, value):
+        # No signal is sent after wait/reap. Until then the direct child pins
+        # the new-session leader PID, even when it has already become a zombie.
+        if self._reaped or self._pgid is None:
+            raise BrowserError("browser_cleanup_failed")
+        self._observer(self._process)
+        try:
+            self._signal_group(self._pgid, value)
+        except ProcessLookupError:
+            pass
+
     def _stop(self, state, code):
         try:
-            if self._process is not None:
-                if self._process.poll() is None:
-                    if self._pgid is None:
-                        raise BrowserError("browser_cleanup_failed")
-                    try:
-                        self._signal_group(self._pgid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                    try:
-                        self._process.wait(timeout=self.stop_timeout)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            self._signal_group(self._pgid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                        self._process.wait(timeout=self.stop_timeout)
-                else:
-                    self._process.wait(timeout=self.stop_timeout)
+            if self._process is not None and not self._reaped:
+                if self._pgid is None:
+                    raise BrowserError("browser_cleanup_failed")
+                self._observer(self._process)
+                if self._group_probe(self._pgid, self._pgid):
+                    self._signal_owned_group(signal.SIGTERM)
+                    if not self._wait_group_quiet():
+                        self._signal_owned_group(signal.SIGKILL)
+                        if not self._wait_group_quiet():
+                            raise BrowserError("browser_cleanup_failed")
+                # Do not release the PID before both direct-child exit and an
+                # inactive group have been observed. Nonchild zombies are left
+                # for their OS parent to reap; no app-global subreaper is set.
+                if not self._observer(self._process):
+                    raise BrowserError("browser_cleanup_failed")
+                self._process.wait(timeout=self.stop_timeout)
+                self._reaped = True
+                self._pgid = None
             self._cleanup_profile()
             self._state, self._code = state, code
         except (OSError, ValueError, TypeError, subprocess.TimeoutExpired, BrowserError):
