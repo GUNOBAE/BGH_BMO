@@ -39,7 +39,8 @@ HTML/JS를 렌더링하는 건 원본 R10 보존을 위한 의도된 구조다.
 이 Native GUI의 실제 Wayland/VNC/800x480 작화와 부하 성능은 NOT_RUN.
 Chrome fallback은 --frontend chromium. 사용자가 바탕화면 실행을 승인하기 전에는:
 
-    ./launch-desktop --install-desktop --frontend native --dry-run
+    ./launch-desktop --install-desktop --frontend native --ptt-microphone \
+      --vad-profile sensitive --expressive-voice --dry-run
 
 에서 정확한 새 파일·Exec를 검토하고, 실기 합격 뒤에만 명시적인
 --install-desktop --frontend native로 사용자 홈의 BMO.desktop을 생성한다.
@@ -66,6 +67,13 @@ happy/sad/crying/surprised/angry metadata와 안전한 음성 지시를 합성 �
 추가한다. 기본은 기존 Aaron Soft, 표현 기능은 --expressive-voice opt-in.
 원본 목소리 유지, 유료 Fish 추가 호출 없음. 부자연스러운 웃음/울음/삐침은
 사용자가 2~3개 A/B 후 다듬는다. PTT 무응답의 실물 root cause는 아직 NOT_RUN.
+
+녹음 중 `PTT` 공개 snapshot에는 안전한 `reason_code`, `vad_frames`,
+`speech_frames`, `noise_level`, `input_level`, `effective_threshold`만
+포함한다. PCM/WAV·문장·개별 프레임·마이크 장치 경로는 이 화면 상태에 실리지 않는다.
+예를 들어 녹음 프레임은 증가하는데 speech_frames=0이면 RMS 감지 실패와
+실제 발화를 구분할 수 있다. 실제 사용자 환경에서 실패 원인 코드를 확인하기
+전에는 normal/sensitive 중 어느 쪽이 좋은지 확정하지 않는다.
 
 사진/미리보기/사람 위치 추적 (별도 사용자가 허용한 실물 테스트):
 
