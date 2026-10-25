@@ -78,7 +78,8 @@ class FeatureHost:
                  games=None, media=None, camera=None, motion=None, journal=None,
                  config=None, brain=None, runtime=None, fish_api_key=None,
                  input_source=None, input_mapping=None, pcm_transcriber=None,
-                 ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None):
+                 ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None,
+                 ptt_vad_profile="normal"):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -93,6 +94,8 @@ class FeatureHost:
         if ((ptt_source_factory is not None or ptt_transcriber is not None)
                 and not self.runtime.conversation_ptt_microphone):
             raise FeatureError("microphone_opt_in_required")
+        if type(ptt_vad_profile) is not str or ptt_vad_profile not in ("normal", "sensitive"):
+            raise FeatureError("invalid_vad_profile")
         if music_directory is not None and (demo_assets or media is not None):
             raise FeatureError("media_library_conflict")
         selected_music = None
@@ -194,7 +197,10 @@ class FeatureHost:
                 (lambda *_a, **_kw: "Synthetic button question.") if self.runtime.simulate else None)
             self.microphone = PttRecorder(self.audio, source, clock=clock,
                 allowed_focus=lambda: self._ptt_lease is not None and self.audio.lease is self._ptt_lease,
-                playback_active=lambda: self.session.snapshot()["playback"] == "started")
+                playback_active=lambda: self.session.snapshot()["playback"] == "started",
+                **({"threshold": .007, "min_speech": .16, "silence_timeout": 1.0,
+                    "no_speech_timeout": 5.0, "calibration": .3,
+                    "noise_multiplier": 1.6} if ptt_vad_profile == "sensitive" else {}))
         self.motion.set_context(self.session.session_id, "idle", self.modes.generation)
         self._refresh()
 
