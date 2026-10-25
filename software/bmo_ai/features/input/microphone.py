@@ -328,6 +328,7 @@ class PttRecorder:
         self._last_generation, self._ready = -1, None
         self._source, self._captured_bytes = None, 0
         self._cleanup_failed = False
+        self._pending_wav = None
 
     def snapshot(self):
         with self._lock:
@@ -335,6 +336,7 @@ class PttRecorder:
                         generation=self._last_generation, captured_bytes=self._captured_bytes,
                         speech_detected=self._state in ("speech", "ready", "transcribing"),
                         automatic_capture=False, wake_word_enabled=False,
+                        cleanup_pending=self._cleanup_failed or self._pending_wav is not None,
                         vad="rms_energy", calibration_seconds=self.calibration,
                         silence_seconds=self.settings["silence_timeout"],
                         max_seconds=self.settings["max_duration"])
@@ -585,7 +587,13 @@ class PttRecorder:
         finally:
             try:
                 if path is not None:
-                    audio._discard(Path(path))
+                    try:
+                        audio._discard(Path(path))
+                    except BaseException:
+                        with self._lock:
+                            self._pending_wav, self._cleanup_failed = Path(path), True
+                        self._publish("failed", "audio_cleanup_failed")
+                        raise
             finally:
                 self._idle.set()
                 self._operation.release()
@@ -622,6 +630,14 @@ class PttRecorder:
                 if not cleaned:
                     self._publish("failed", "pcm_cleanup_failed")
                     return False
-                self._source, self._cleanup_failed = None, False
+                self._source = None
+            if self._pending_wav is not None:
+                try:
+                    audio._discard(self._pending_wav)
+                except BaseException:
+                    self._publish("failed", "audio_cleanup_failed")
+                    return False
+                self._pending_wav = None
+            self._cleanup_failed = False
         self._publish("closed", "input_closed", microphone_open=False)
         return True
