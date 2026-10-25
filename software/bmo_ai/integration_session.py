@@ -44,6 +44,7 @@ class SimulatedClient:
 class IntegrationApp(ConversationApp):
     """Keep existing fixed unavailability notices on the same owned output."""
     stage_reply = None
+    input_provider = None
     def _notice(self, error):
         if self.config.offline_voice and error.code in ("connection", "timeout", "server", "rate_limit"):
             try:
@@ -55,6 +56,13 @@ class IntegrationApp(ConversationApp):
 
     def voice_input(self):
         try:
+            if self.input_provider is not None:
+                self._record_end_monotonic = None
+                self._state(FaceState.LISTENING)
+                self._check_cancelled()
+                message = self.input_provider(self._check_cancelled)
+                self._check_cancelled()
+                return message
             return super().voice_input()
         except CloudError as error:
             self._notice(error)
@@ -121,6 +129,7 @@ class IntegrationSession:
         self._lock = Lock()
         self._closed = self._active = self._pending_reset = False
         self._repeat = False
+        self._turn_input = None
         self._emotion_generation = 0
         self._turn_mode = emotion_mode
         self._turn_emotion_generation = 0
@@ -318,10 +327,22 @@ class IntegrationSession:
                        face=SessionFace(), voice=self.voice, cancel_check=check)
         if not self._repeat:
             instance.stage_reply = stage_reply
+            instance.input_provider = self._turn_input
         return instance
 
     def start(self, message="A synthetic question"):
         return self._start_turn(message=message)
+
+    def start_with_input(self, provider):
+        """One request-local input provider in the SAME worker, brain and voice.
+
+        Provider receives the current cancellation check. It may return an
+        empty transcript; it must never call start() or create another engine.
+        Ordinary start/repeat clear this provider, preventing stale reuse.
+        """
+        if not callable(provider):
+            return False
+        return self._start_turn(input_provider=provider)
 
     def repeat(self):
         """Admit one cached playback turn; empty/closed/busy returns False."""
@@ -329,10 +350,11 @@ class IntegrationSession:
             return False
         return self._start_turn(repeat=True)
 
-    def _start_turn(self, *, message=None, repeat=False):
+    def _start_turn(self, *, message=None, repeat=False, input_provider=None):
         if self._closed or self.worker.busy:
             return False
         self._repeat = repeat
+        self._turn_input = input_provider
         with self._lock:
             self._invalidate_expression()
             self._turn_mode = self._data["emotion_mode"]
@@ -372,6 +394,7 @@ class IntegrationSession:
                     self._idle("cancelled")
                     self._record(item.code or "cancelled")
             if item.kind == "finished":
+                self._turn_input = None
                 with self._lock:
                     self._active = False
                     status = self._data["playback"]

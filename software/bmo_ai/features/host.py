@@ -40,7 +40,7 @@ class HostControl:
         elif self.action == "preview":
             valid = type(self.value) is bool
         else:
-            valid = (self.action in ("cancel", "reset", "repeat", "pause", "resume", "next", "stop")
+            valid = (self.action in ("cancel", "reset", "repeat", "pause", "resume", "next", "stop", "ptt", "ptt_cancel")
                      and self.value is None)
         if not valid:
             raise FeatureError("invalid_control")
@@ -73,7 +73,8 @@ class FeatureHost:
     def __init__(self, *, demo_assets=False, clock=time.monotonic, client=None, voice=None,
                  games=None, media=None, camera=None, motion=None, journal=None,
                  config=None, brain=None, runtime=None, fish_api_key=None,
-                 input_source=None, input_mapping=None, pcm_transcriber=None):
+                 input_source=None, input_mapping=None, pcm_transcriber=None,
+                 ptt_source_factory=None, ptt_transcriber=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -85,6 +86,9 @@ class FeatureHost:
             raise FeatureError("invalid_runtime")
         if not self.runtime.simulate and (input_source is not None or pcm_transcriber is not None):
             raise FeatureError("input_disabled")
+        if ((ptt_source_factory is not None or ptt_transcriber is not None)
+                and not self.runtime.conversation_ptt_microphone):
+            raise FeatureError("microphone_opt_in_required")
         self.config = config if config is not None else integration_config()
         self.clock = clock
         self.modes, self.audio = ModeManager(), AudioFocus()
@@ -141,7 +145,7 @@ class FeatureHost:
         self.modes.register("game", enter=self._enter_game, leave=self._leave_game)
         self.modes.register("music", enter=self._enter_music, leave=self._leave_music)
         self.modes.register("photo", enter=self._enter_photo, leave=self._leave_photo)
-        self.inputs = InputRouter(self.modes, stop=self.stop, talk=self.start_question)
+        self.inputs = InputRouter(self.modes, stop=self.stop, talk=self._talk_input)
         self.inputs.bind("game_menu", self._menu_input)
         self.inputs.bind("game", self._game_input)
         from .input import InputAdapter, PcmTurnGate, WakeWordGate
@@ -152,6 +156,23 @@ class FeatureHost:
         self.pcm = PcmTurnGate(self.audio, enabled=pcm_transcriber is not None, clock=clock,
                               playback_active=lambda: self.session.busy)
         self.wake_word = WakeWordGate()
+        self.microphone = None
+        self._ptt_generation, self._ptt_lease, self._last_ptt_press = 0, None, None
+        self._ptt_turn_active = False
+        self._ptt_cleanup_fault = False
+        if self.runtime.conversation_ptt_microphone:
+            from .input.microphone import MicPcmSource, SyntheticPcmSource, PttRecorder
+            if ptt_source_factory is not None:
+                source = ptt_source_factory
+            elif self.runtime.simulate:
+                source = lambda: SyntheticPcmSource(clock=clock)
+            else:
+                source = lambda: MicPcmSource(self.config.mic_device, live_opt_in=True, clock=clock)
+            self._ptt_transcriber = ptt_transcriber or (
+                (lambda *_a, **_kw: "Synthetic button question.") if self.runtime.simulate else None)
+            self.microphone = PttRecorder(self.audio, source, clock=clock,
+                allowed_focus=lambda: self._ptt_lease is not None and self.audio.lease is self._ptt_lease,
+                playback_active=lambda: self.session.snapshot()["playback"] == "started")
         self.motion.set_context(self.session.session_id, "idle", self.modes.generation)
         self._refresh()
 
@@ -181,6 +202,8 @@ class FeatureHost:
 
     def _transition(self, mode, context=None, *, force=False):
         if mode != self.modes.mode or force:
+            if self.microphone is not None:
+                self.microphone.cancel()
             self.pcm.cancel("mode_changed")
             self._pcm_mode_generation = None
             self._pcm_epoch += 1
@@ -412,12 +435,27 @@ class FeatureHost:
                     raise FeatureError("conversation_busy")
                 self._voice_control_request = request
                 return self._remember(HostResult(request, "running", "question_started"))
+            elif action == "ptt":
+                previous_turn = self.session.worker.turn
+                if not self.ptt_button():
+                    raise FeatureError("microphone_opt_in_required" if self.microphone is None else "ptt_unavailable")
+                if self.session.worker.turn != previous_turn:
+                    self._voice_control_request = request
+                    return self._remember(HostResult(request, "running", "ptt_started",
+                                                     simulated=self.runtime.simulate))
+                return self._remember(HostResult(request, "accepted", "ptt_input_accepted",
+                                                 simulated=self.runtime.simulate))
+            elif action == "ptt_cancel":
+                if self._ptt_turn_active:
+                    self.cancel_conversation()
             elif action == "cancel":
                 self.cancel_conversation()
                 if self.modes.mode == "photo":
                     self._transition("conversation")
                 if self.session.busy:
                     return self._await_voice_cleanup(request, "cancel")
+                if self._ptt_cleanup_fault:
+                    raise FeatureError("pcm_cleanup_failed")
             elif action == "reset":
                 stopped = self.stop()
                 self.session.reset()
@@ -431,6 +469,8 @@ class FeatureHost:
                         return self._await_voice_cleanup(request, "stop")
                     raise FeatureError("cleanup_failed")
             elif action == "repeat":
+                if self._ptt_cleanup_fault:
+                    raise FeatureError("pcm_cleanup_failed")
                 if self.session.busy or not self.session.voice.has_cache:
                     raise FeatureError("no_cached_voice")
                 self._transition("conversation")
@@ -490,7 +530,10 @@ class FeatureHost:
         return self.games.game_input("PAD_DISCONNECTED" if key == "PAD_LOST" else key, pressed, now)
 
     def start_question(self, message="Synthetic feature question."):
-        if self._closed or self.session.busy:
+        return self._begin_conversation(message=message)
+
+    def _begin_conversation(self, *, message=None, input_provider=None):
+        if self._closed or self.session.busy or self._ptt_cleanup_fault:
             return False
         self._transition("conversation")
         self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
@@ -501,14 +544,72 @@ class FeatureHost:
             "arm": "mock_ack_position_unverified" if self.runtime.simulate else "denied",
             "imu": "physical_unverified_no_control"})
         self._voice_lease = self.audio.acquire("conversation", stop=self.cancel_conversation)
+        if input_provider is not None:
+            self._ptt_lease = self._voice_lease
         turn_id = f"{self.session.session_id}:{self.session.worker.turn + 1}"
         self._turn_generations[turn_id] = self.modes.generation
         self.motion.set_context(self.session.session_id, turn_id, self.modes.generation)
-        if not self.session.start(message):
+        try:
+            started = (self.session.start_with_input(input_provider) if input_provider is not None
+                       else self.session.start(message))
+        except BaseException:
             self.audio.release(self._voice_lease)
-            self._voice_lease = None
+            self._voice_lease = self._ptt_lease = None
+            self._ptt_turn_active = False
+            raise
+        if not started:
+            self.audio.release(self._voice_lease)
+            self._voice_lease = self._ptt_lease = None
             return False
         return True
+
+    def _talk_input(self):
+        if self.modes.mode != "conversation":
+            return False
+        return self.ptt_button() if self.microphone is not None else self.start_question()
+
+    def ptt_button(self):
+        """One edge starts input; another ends capture or cancels output.
+
+        HID Enter identity is verified by the human later. No RP2040 pin or
+        GP7 binding is changed here. Games keep their existing Enter controls.
+        """
+        if self._closed or self.modes.mode != "conversation" or self.microphone is None or self._ptt_cleanup_fault:
+            return False
+        self.runtime.require("conversation_ptt_microphone")
+        now = self.clock()
+        if self._last_ptt_press is not None and 0 <= now - self._last_ptt_press < .25:
+            return True  # Coalesce duplicate browser/queued edges, never auto recapture.
+        self._last_ptt_press = now
+        if self.session.busy:
+            if self._ptt_turn_active and self.microphone.finish():
+                return True
+            self.cancel_conversation()
+            return True
+        if self.audio.owner is not None:
+            return False
+        self._ptt_generation += 1
+        generation = self._ptt_generation
+        capture_id = "ptt_" + uuid4().hex
+        self._ptt_turn_active = True
+        def provider(check):
+            check()
+            capture = self.microphone.capture(capture_id, generation=generation, cancel_check=check)
+            check()
+            if capture.status != "ready":
+                return ""  # No speech means zero STT/brain/TTS calls.
+            text = self.microphone.transcribe_capture(capture, self.client,
+                model=self.config.stt_model, language="ko" if self.config.language == "ko" else None,
+                cancel_check=check, transcriber=self._ptt_transcriber)
+            check()
+            return text or ""
+        try:
+            result = self._begin_conversation(input_provider=provider)
+        except FeatureError:
+            result = False
+        if not result:
+            self._ptt_turn_active = False
+        return result
 
     def start_ptt(self, capture_id):
         """Injected PCM development path only; no automatic microphone open.
@@ -529,6 +630,8 @@ class FeatureHost:
         with self._records_lock:
             self._command_epoch += 1
         self.pcm.cancel("cancelled")
+        if self.microphone is not None:
+            self.microphone.cancel()
         self._pcm_mode_generation = None
         self._pcm_epoch += 1
         self._proposals.clear()
@@ -537,7 +640,7 @@ class FeatureHost:
         if self.session.busy:
             self.session.cancel()
         self.motion.cancel()
-        return not self.session.busy
+        return not self.session.busy and not self._ptt_cleanup_fault
 
     def stop(self):
         self.cancel_conversation()
@@ -555,7 +658,7 @@ class FeatureHost:
         except Exception:
             success = False
         self.gaze.clear()
-        return success and not self.session.busy
+        return success and not self.session.busy and not self._ptt_cleanup_fault
 
     def heartbeat(self):
         # Shell liveness is independent of whether the retained face iframe is
@@ -658,8 +761,12 @@ class FeatureHost:
         for event in finished:
             if event.kind != "finished":
                 continue
-            self.audio.release(self._voice_lease)
-            self._voice_lease = None
+            if self.microphone is not None and self.microphone.snapshot().get("cleanup_pending"):
+                self._ptt_cleanup_fault = True
+            else:
+                self.audio.release(self._voice_lease)
+                self._voice_lease = self._ptt_lease = None
+            self._ptt_turn_active = False
             turn = f"{self.session.session_id}:{event.turn}"
             with self._playback_lock:
                 played = turn in self._voice_started_turns
@@ -675,7 +782,7 @@ class FeatureHost:
             cleanup, self._voice_cleanup = self._voice_cleanup, {}
             stopped = self.stop() if any(action in ("stop", "reset") for action in cleanup.values()) else True
             for request, action in cleanup.items():
-                done = stopped if action in ("stop", "reset") else True
+                done = (stopped if action in ("stop", "reset") else True) and not self._ptt_cleanup_fault
                 self._remember(HostResult(request, ("simulated" if self.runtime.simulate else "succeeded") if done else "unknown",
                     ("reset_completed" if action == "reset" else "resources_stopped" if action == "stop" else "voice_cancelled") if done else "cleanup_failed",
                     simulated=self.runtime.simulate, completed=done,
@@ -744,7 +851,12 @@ class FeatureHost:
             "motion": self.motion.snapshot(), "imu": self.imu.snapshot(),
             "input": self.input_adapter.snapshot() if self.input_adapter else
                      {"enabled": False, "real_input": "NOT_RUN", "device_opens": 0},
-            "ptt": self.pcm.snapshot(), "wake_word": self.wake_word.snapshot(),
+            "ptt": (dict(self.microphone.snapshot(), enabled=True,
+                        cleanup_fault=self._ptt_cleanup_fault,
+                        source="synthetic_pcm" if self.runtime.simulate else "explicit_microphone",
+                        hid_identity="keyboard_or_gp8_unverified", physical_verified=False)
+                    if self.microphone is not None else self.pcm.snapshot()),
+            "wake_word": self.wake_word.snapshot(),
             "last_result": self._last_result, "requests": recent,
             "asset_status": {"real_game_pack": "ASSET_PENDING", "user_songs": "ASSET_PENDING"}}
         with self._snapshot_lock:
@@ -770,10 +882,21 @@ class FeatureHost:
         self._closed = True
         self.stop()
         errors = []
+        if self.microphone is not None:
+            try:
+                if self.microphone.close() is not True:
+                    errors.append("pcm_cleanup_failed")
+                    self._ptt_cleanup_fault = True
+                else:
+                    self._ptt_cleanup_fault = False  # Closing app only; no fresh turn is admitted.
+            except Exception:
+                errors.append("pcm_cleanup_failed")
+                self._ptt_cleanup_fault = True
         try:
             self.session.close()
-            self.audio.release(self._voice_lease)
-            self._voice_lease = None
+            if not self._ptt_cleanup_fault:
+                self.audio.release(self._voice_lease)
+                self._voice_lease = None
         except Exception:
             errors.append("cleanup_failed")
         for feature in (self.games, self.media, self.camera, self.motion, self.imu):
