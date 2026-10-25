@@ -369,6 +369,30 @@ class RecorderTests(unittest.TestCase):
             recorder.transcribe_capture(capture, None, transcriber=lambda *a, **k: "synthetic")
         self.assertFalse(paths[0].exists())
 
+    def test_failed_wav_unlink_retains_private_path_for_close_retry_and_blocks_new_input(self):
+        from bmo_ai import audio
+        recorder = self.recorder()
+        capture = recorder.capture("ptt:1", generation=1)
+        paths = []
+        def reject(path, **options):
+            paths.append(path)
+            raise audio.AudioCleanupError("safe fixed cleanup", "audio_cleanup_failed")
+        with patch.object(audio, "_discard", side_effect=reject):
+            with self.assertRaises(audio.AudioCleanupError):
+                recorder.transcribe_capture(capture, None, transcriber=lambda *a, **k: "synthetic")
+            self.assertEqual(recorder.snapshot()["reason_code"], "audio_cleanup_failed")
+            self.assertTrue(recorder.snapshot()["cleanup_pending"])
+            self.assertFalse(recorder.snapshot()["microphone_open"])
+            self.assertNotIn("path", recorder.snapshot())
+            with self.assertRaises(MicError) as caught:
+                recorder.capture("ptt:2", generation=2)
+            self.assertEqual(caught.exception.code, "pcm_cleanup_failed")
+            self.assertFalse(recorder.close())
+            self.assertTrue(paths[0].exists())
+        self.assertTrue(recorder.close())
+        self.assertFalse(paths[0].exists())
+        self.assertFalse(recorder.snapshot()["cleanup_pending"])
+
     def test_stt_error_unlinks_private_wav_and_cannot_retranscribe(self):
         recorder = self.recorder()
         capture = recorder.capture("ptt:1", generation=1)
