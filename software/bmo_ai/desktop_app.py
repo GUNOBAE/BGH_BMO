@@ -40,6 +40,10 @@ def parser():
     p.add_argument("--offline-voice", action="store_true")
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--ptt-microphone", action="store_true", help="explicit supervised opt-in: HID/keyboard Enter starts finite mic/VAD capture; no idle listening")
+    p.add_argument("--camera-live", action="store_true",
+                   help="supervised Picamera2 photo/preview/tracking opt-in; video and arms remain denied")
+    p.add_argument("--photo-directory", type=Path,
+                   help="explicit private photo storage location required for camera-live")
     p.add_argument("--expressive-voice", action="store_true",
                    help="opt-in Fish S2 emotional performance from validated BMO emotion; no extra API call")
     p.add_argument("--vad-profile", choices=("normal", "sensitive"), default="normal",
@@ -74,6 +78,8 @@ def public_plan(args):
         "ptt": {"enabled": args.simulate or args.ptt_microphone, "vad_profile": args.vad_profile,
                 "source": "synthetic_pcm" if args.simulate else "explicit_microphone" if args.ptt_microphone else "disabled",
                 "automatic_capture": False, "wake_word_enabled": False, "physical_verified": False},
+        "camera_live": {"enabled": args.camera_live, "storage_selected": args.photo_directory is not None,
+                        "physical_verified": False, "automatic_capture": False},
         "camera_video": {"storage_selected": args.video_directory is not None,
                          "live_enabled": False, "automatic_capture": False},
         "music_library": {"selected": args.music_directory is not None,
@@ -91,6 +97,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             p.error("timeouts must be finite and from 0 to 120 seconds")
     if args.demo_assets and not args.simulate:
         p.error("--demo-assets requires --simulate")
+    if args.camera_live and (not args.live or args.photo_directory is None):
+        p.error("--camera-live requires --live and an explicit --photo-directory")
+    if args.photo_directory is not None and not args.camera_live:
+        p.error("--photo-directory requires explicit --camera-live")
     if args.music_directory is not None and args.demo_assets:
         p.error("--music-directory and --demo-assets are separate catalogs")
     preparing = args.prepare_greeting or args.audition_greeting or args.approve_greeting is not None
@@ -193,7 +203,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         try:
             stage = "engine_init"
             settings = {"config": config, "runtime": RuntimePolicy(simulate=args.simulate,
-                        conversation_ptt_microphone=args.simulate or args.ptt_microphone),
+                        conversation_ptt_microphone=args.simulate or args.ptt_microphone,
+                        camera_live=args.camera_live),
                         "demo_assets": args.demo_assets, "clock": clock}
             if args.vad_profile != "normal":
                 settings["ptt_vad_profile"] = args.vad_profile
@@ -201,6 +212,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 settings["voice_expressive"] = True
             if args.video_directory is not None:
                 settings["video_directory"] = args.video_directory
+            if args.camera_live:
+                settings["camera_photo_directory"] = args.photo_directory
             if args.music_directory is not None:
                 settings["music_directory"] = args.music_directory
             if args.live:
