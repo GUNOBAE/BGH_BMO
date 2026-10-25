@@ -63,7 +63,8 @@ class OwnedProcessRunner:
     """Explicit native/RetroArch adapter; app-specific verification is required.
 
     command is trusted host configuration, never an intent/catalog field. The
-    readiness probe must verify this backend's own startup contract. Tests use
+    readiness probe must verify startup without reaping the child (no poll/wait).
+    Tests use
     a harmless Python child; no actual external game is run by the test suite.
     """
     simulated = False
@@ -87,7 +88,7 @@ class OwnedProcessRunner:
         self.pass_fds = pass_fds
         self.capabilities = frozenset({"audio_stop", "runner_" + backend})
         # A desktop process does not automatically receive browser pad events.
-        self.process = None
+        self.process = self._pgid = None
 
     def start(self, item):
         if not self.verified:
@@ -99,9 +100,10 @@ class OwnedProcessRunner:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True, pass_fds=self.pass_fds,
                 env={"PATH": os.defpath, "LANG": "C.UTF-8"})
+            self._pgid = self.process.pid
             deadline = time.monotonic() + self.startup_timeout
             while time.monotonic() < deadline:
-                if self.process.poll() is not None:
+                if self._exit_status() is not None:
                     raise FeatureError("game_crashed")
                 if self.ready_probe(self.process):
                     return
@@ -113,43 +115,73 @@ class OwnedProcessRunner:
                 raise
             raise FeatureError("runner_start_failed") from None
 
-    def _signal(self, value):
+    def _exit_status(self):
+        # WNOWAIT pins the direct child PID/session until all owned group
+        # members have stopped, including when the parent exited first.
         try:
-            os.killpg(self.process.pid, value)
+            result = os.waitid(os.P_PID, self.process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+            return None if result is None else (0 if result.si_code == os.CLD_EXITED and result.si_status == 0 else 1)
+        except (OSError, ValueError, AttributeError, NotImplementedError):
+            raise FeatureError("cleanup_failed") from None
+
+    def _signal(self, value):
+        if self.process is None or self._pgid is None:
+            raise FeatureError("cleanup_failed")
+        self._exit_status()  # Fail closed if another owner reaped the leader.
+        try:
+            os.killpg(self._pgid, value)
         except ProcessLookupError:
             pass
+
+    def _wait_quiet(self):
+        # Reuse the established bounded /proc stat-only probe. No command
+        # line, environment or app-global subreaper policy is accessed.
+        from ...desktop_browser import _active_owned_group, BrowserError
+        deadline = time.monotonic() + self.stop_timeout
+        try:
+            while True:
+                self._exit_status()
+                if not _active_owned_group(self._pgid, self._pgid):
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                time.sleep(min(.005, remaining))
+        except BrowserError:
+            raise FeatureError("cleanup_failed") from None
 
     def stop(self):
         process = self.process
         if process is None:
             return
         try:
-            if self.graceful_quit is not None and process.poll() is None:
+            if self.graceful_quit is not None and self._exit_status() is None:
                 try:
                     self.graceful_quit(process)
-                    process.wait(timeout=self.stop_timeout)
+                    self._wait_quiet()
                 except Exception:
                     pass
             # The process owns a new session/group; descendants belong to this
             # group even if their parent crashed. Never signal another group.
             self._signal(signal.SIGTERM)
-            try:
-                process.wait(timeout=self.stop_timeout)
-            except subprocess.TimeoutExpired:
+            if not self._wait_quiet():
                 self._signal(signal.SIGKILL)
-                process.wait(timeout=1)
-            # A cooperative parent can exit before its descendants.
-            self._signal(signal.SIGKILL)
-        except (OSError, subprocess.TimeoutExpired):
+                if not self._wait_quiet():
+                    raise FeatureError("cleanup_failed")
+            if self._exit_status() is None:
+                raise FeatureError("cleanup_failed")
+            process.wait(timeout=self.stop_timeout)
+            # Never signal a numeric process group after releasing its PID.
+        except (OSError, subprocess.TimeoutExpired, FeatureError):
             raise FeatureError("cleanup_failed") from None
-        self.process = None
+        self.process = self._pgid = None
 
     close = stop
 
     def poll(self):
         if self.process is None:
             return None
-        code = self.process.poll()
+        code = self._exit_status()
         return None if code is None else "ended" if code == 0 else "failed"
 
 
