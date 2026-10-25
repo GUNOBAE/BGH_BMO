@@ -78,7 +78,9 @@ class FeatureHost:
                  games=None, media=None, camera=None, motion=None, journal=None,
                  config=None, brain=None, runtime=None, fish_api_key=None,
                  input_source=None, input_mapping=None, pcm_transcriber=None,
-                 ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None):
+                 ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None,
+                 ptt_vad_profile="normal", voice_expressive=False,
+                 camera_photo_directory=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -93,6 +95,16 @@ class FeatureHost:
         if ((ptt_source_factory is not None or ptt_transcriber is not None)
                 and not self.runtime.conversation_ptt_microphone):
             raise FeatureError("microphone_opt_in_required")
+        if type(voice_expressive) is not bool:
+            raise FeatureError("invalid_voice_performance")
+        if type(ptt_vad_profile) is not str or ptt_vad_profile not in ("normal", "sensitive"):
+            raise FeatureError("invalid_vad_profile")
+        if self.runtime.camera_live and camera_photo_directory is None:
+            raise FeatureError("photo_directory_required")
+        if camera_photo_directory is not None and not self.runtime.camera_live:
+            raise FeatureError("camera_opt_in_required")
+        if self.runtime.camera_live and camera is not None:
+            raise FeatureError("camera_backend_conflict")
         if music_directory is not None and (demo_assets or media is not None):
             raise FeatureError("media_library_conflict")
         selected_music = None
@@ -117,8 +129,18 @@ class FeatureHost:
         self._music_library_selected = music_directory is not None
         self.media = media or MediaFeature(content, items=media_items,
             backend=FakeMediaBackend(clock=clock, pausable=True), clock=clock)
-        self.camera = camera or CameraFeature(backend_factory=lambda: DemoBackend(clock=clock), detector=FixtureDetector(),
-            store=PhotoStore(photos), clock=clock, on_target=self._camera_target)
+        if self.runtime.camera_live:
+            from .camera import Picamera2Backend, OpenCVFaceDetector
+            def physical_camera_factory():
+                return Picamera2Backend(enabled=True, clock=clock, size=(320, 240))
+            physical_camera_factory.simulated = False
+            self.camera = CameraFeature(backend_factory=physical_camera_factory,
+                detector=OpenCVFaceDetector(enabled=True),
+                store=PhotoStore(Path(camera_photo_directory)), clock=clock, on_target=self._camera_target)
+        else:
+            self.camera = camera or CameraFeature(backend_factory=lambda: DemoBackend(clock=clock),
+                detector=FixtureDetector(), store=PhotoStore(photos),
+                clock=clock, on_target=self._camera_target)
         from .camera.video import VideoRecorder, VideoStore
         self.video = VideoRecorder(self.camera.broker,
             store=VideoStore(video_directory) if video_directory is not None else None,
@@ -161,6 +183,7 @@ class FeatureHost:
         self.session = IntegrationSession(self.config, self.client, simulate=self.runtime.simulate,
             brain=brain, fish_api_key=fish_api_key,
             voice=voice, clock=clock, emotion_mode="auto", reply_client=FeatureClient(self.client),
+            voice_expressive=voice_expressive,
             on_reply=self._reply, on_playback_event=self._playback)
         self.modes.register("conversation", enter=self._enter_conversation, leave=self._leave_conversation)
         self.modes.register("game_menu", enter=lambda _: None, leave=lambda: None)
@@ -194,7 +217,10 @@ class FeatureHost:
                 (lambda *_a, **_kw: "Synthetic button question.") if self.runtime.simulate else None)
             self.microphone = PttRecorder(self.audio, source, clock=clock,
                 allowed_focus=lambda: self._ptt_lease is not None and self.audio.lease is self._ptt_lease,
-                playback_active=lambda: self.session.snapshot()["playback"] == "started")
+                playback_active=lambda: self.session.snapshot()["playback"] == "started",
+                **({"threshold": .007, "min_speech": .16, "silence_timeout": 1.0,
+                    "no_speech_timeout": 5.0, "calibration": .3,
+                    "noise_multiplier": 1.6} if ptt_vad_profile == "sensitive" else {}))
         self.motion.set_context(self.session.session_id, "idle", self.modes.generation)
         self._refresh()
 
@@ -607,7 +633,7 @@ class FeatureHost:
             "real_features_enabled": False,
             "games": [{"id": item.id, "readiness": item.readiness} for item in self.games.catalog()],
             "songs": [{"id": item.id, "readiness": item.readiness} for item in self.media.catalog()],
-            "camera": "synthetic_only" if self.runtime.simulate else "denied",
+            "camera": "synthetic_only" if self.runtime.simulate else "explicit_live" if self.runtime.camera_live else "denied",
             "arm": "mock_ack_position_unverified" if self.runtime.simulate else "denied",
             "imu": "physical_unverified_no_control"})
         self._voice_lease = self.audio.acquire("conversation", stop=self.cancel_conversation)

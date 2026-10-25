@@ -119,7 +119,12 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     (Path(directory)/'fail-mic').write_text('synthetic missing input')
                     page.keyboard.press('Enter')
                     wait_features(lambda s:not s['conversation_busy'] and s['ptt']['state']=='failed')
-                    page.locator('#ptt-state').wait_for(state='visible')
+                    # The backend can reach failed before the 100ms browser
+                    # state poll paints the final error. Verify the exact
+                    # terminal code AND its safe visible message together.
+                    page.wait_for_function("""()=>BMODesktop.features?.ptt?.reason_code==='microphone_tool_unavailable'
+                      && !document.querySelector('#ptt-state').hidden
+                      && document.querySelector('#ptt-state').textContent.includes('녹음을 완료하지 못했어요')""")
                     assert '녹음을 완료하지 못했어요' in page.locator('#ptt-state').inner_text()
                     assert fixture.features()['last_result']['code']=='voice_failed'
                     audit=fixture.features()['test_fixture']

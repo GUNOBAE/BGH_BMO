@@ -24,6 +24,8 @@ def parser():
     mode.add_argument("--simulate", action="store_true")
     mode.add_argument("--live", action="store_true")
     p.add_argument("--windowed", action="store_true", help="explicit development window, default kiosk")
+    p.add_argument("--frontend", choices=("chromium", "native"), default="chromium",
+                   help="native uses a dedicated Qt BMO desktop window; chromium remains the verified fallback")
     p.add_argument("--developer", action="store_true", help="enable /developer and hidden Ctrl+Alt+D")
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
     p.add_argument("--video-directory", type=Path, help="user-selected private local synthetic-video storage; live camera video remains denied")
@@ -38,6 +40,14 @@ def parser():
     p.add_argument("--offline-voice", action="store_true")
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--ptt-microphone", action="store_true", help="explicit supervised opt-in: HID/keyboard Enter starts finite mic/VAD capture; no idle listening")
+    p.add_argument("--camera-live", action="store_true",
+                   help="supervised Picamera2 photo/preview/tracking opt-in; video and arms remain denied")
+    p.add_argument("--photo-directory", type=Path,
+                   help="explicit private photo storage location required for camera-live")
+    p.add_argument("--expressive-voice", action="store_true",
+                   help="opt-in Fish S2 emotional performance from validated BMO emotion; no extra API call")
+    p.add_argument("--vad-profile", choices=("normal", "sensitive"), default="normal",
+                   help="local RMS speech threshold; sensitive is an explicit test profile, not wake-word detection")
     p.add_argument("--speaker-device", default="plughw:CARD=MAX98357A,DEV=0")
     p.add_argument("--startup-timeout", type=float, default=15.)
     p.add_argument("--greeting-timeout", type=float, default=30.)
@@ -59,13 +69,17 @@ def public_plan(args):
     return {"version": 1, "mode": "simulate" if args.simulate else "live" if args.live else "not_selected",
         "screen_profile": args.screen_profile, "screen_sha256": SCREEN_PROFILES[args.screen_profile]["sha256"],
         "window": "windowed" if args.windowed else "kiosk", "developer_enabled": args.developer,
+        "frontend": args.frontend,
+        "expressive_voice": args.expressive_voice,
         "greeting": {"text": GREETING_TEXT, "asset_version": "welcome-v2", "source": "approved_private_cache", "automatic_synthesis": False},
         "configuration": effective_config(config, emotion_mode="auto"),
         "credentials_accessed": False, "ports_opened": False, "processes_started": False,
         "desktop_installed": False, "autostart": False, "physical_features_enabled": False,
-        "ptt": {"enabled": args.simulate or args.ptt_microphone,
+        "ptt": {"enabled": args.simulate or args.ptt_microphone, "vad_profile": args.vad_profile,
                 "source": "synthetic_pcm" if args.simulate else "explicit_microphone" if args.ptt_microphone else "disabled",
                 "automatic_capture": False, "wake_word_enabled": False, "physical_verified": False},
+        "camera_live": {"enabled": args.camera_live, "storage_selected": args.photo_directory is not None,
+                        "physical_verified": False, "automatic_capture": False},
         "camera_video": {"storage_selected": args.video_directory is not None,
                          "live_enabled": False, "automatic_capture": False},
         "music_library": {"selected": args.music_directory is not None,
@@ -83,6 +97,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             p.error("timeouts must be finite and from 0 to 120 seconds")
     if args.demo_assets and not args.simulate:
         p.error("--demo-assets requires --simulate")
+    if args.camera_live and (not args.live or args.photo_directory is None):
+        p.error("--camera-live requires --live and an explicit --photo-directory")
+    if args.photo_directory is not None and not args.camera_live:
+        p.error("--photo-directory requires explicit --camera-live")
     if args.music_directory is not None and args.demo_assets:
         p.error("--music-directory and --demo-assets are separate catalogs")
     preparing = args.prepare_greeting or args.audition_greeting or args.approve_greeting is not None
@@ -101,7 +119,16 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
     if args.install_desktop:
         from .desktop_install import install_desktop
         try:
-            result = install_desktop(install=not args.dry_run, simulate=args.simulate)
+            options = {"install": not args.dry_run, "simulate": args.simulate}
+            if args.frontend != "chromium":
+                options["frontend"] = args.frontend
+            if args.ptt_microphone:
+                options["ptt_microphone"] = True
+            if args.expressive_voice:
+                options["expressive_voice"] = True
+            if args.vad_profile != "normal":
+                options["vad_profile"] = args.vad_profile
+            result = install_desktop(**options)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         except Exception:
@@ -170,8 +197,11 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             from .desktop_browser import DesktopBrowser
             browser_factory = DesktopBrowser
         stage = "browser_init"
-        browser = browser_factory(server.url, windowed=args.windowed,
-                                  startup_timeout=args.startup_timeout, clock=clock)
+        browser_options = {"windowed": args.windowed,
+                           "startup_timeout": args.startup_timeout, "clock": clock}
+        if args.frontend != "chromium":
+            browser_options["renderer"] = args.frontend
+        browser = browser_factory(server.url, **browser_options)
         app.set_browser(browser)
         stage = "browser_start"
         browser.start()
@@ -179,10 +209,17 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         try:
             stage = "engine_init"
             settings = {"config": config, "runtime": RuntimePolicy(simulate=args.simulate,
-                        conversation_ptt_microphone=args.simulate or args.ptt_microphone),
+                        conversation_ptt_microphone=args.simulate or args.ptt_microphone,
+                        camera_live=args.camera_live),
                         "demo_assets": args.demo_assets, "clock": clock}
+            if args.vad_profile != "normal":
+                settings["ptt_vad_profile"] = args.vad_profile
+            if args.expressive_voice:
+                settings["voice_expressive"] = True
             if args.video_directory is not None:
                 settings["video_directory"] = args.video_directory
+            if args.camera_live:
+                settings["camera_photo_directory"] = args.photo_directory
             if args.music_directory is not None:
                 settings["music_directory"] = args.music_directory
             if args.live:
@@ -233,8 +270,9 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         if app is not None:
             try:
                 app.close()
-            except Exception:
-                print("BMO owned cleanup needs review.", file=sys.stderr)
+            except Exception as error:
+                from .desktop_diagnostics import failure
+                print(failure("cleanup", error), file=sys.stderr)
                 outcome = 1
         elif client is not None:
             client.close()
