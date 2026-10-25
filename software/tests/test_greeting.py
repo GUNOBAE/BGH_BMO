@@ -79,6 +79,20 @@ class GreetingTests(unittest.TestCase):
         self.assertEqual(self.spec.public()['text'], '돌아왔구나! 비모가 기다렸어!')
         self.assertEqual(self.spec.public()['gain'], .25)
 
+    def test_welcome_asset_is_separate_from_preserved_legacy_cache(self):
+        legacy_root = self.root / '.cache' / 'bmo' / 'greeting'
+        for directory in (self.root / '.cache', self.root / '.cache' / 'bmo', legacy_root):
+            directory.mkdir(mode=0o700, exist_ok=True)
+        legacy_file = legacy_root / 'greeting.cache'
+        legacy_file.write_bytes(b'old-approved-BMO-voice')
+        welcome_root = default_greeting_directory(environ={}, home=self.root)
+        self.assertNotEqual(legacy_root, welcome_root)
+        record = GreetingCache(welcome_root, self.spec).publish(
+            self.raw, approved=True, simulated=True)
+        self.assertTrue(record['approved'])
+        self.assertEqual(legacy_file.read_bytes(), b'old-approved-BMO-voice')
+        self.assertTrue((welcome_root / 'greeting.cache').is_file())
+
     def test_missing_cache_does_not_create_directories_or_trigger_player(self):
         callback = Mock(side_effect=AssertionError('No player without asset'))
         events = []
