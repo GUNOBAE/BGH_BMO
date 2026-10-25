@@ -16,15 +16,19 @@ DEVICE_CAPABILITIES = ("arms", "imu", "camera", "camera_video", "external_games"
 class RuntimePolicy:
     simulate: bool = True
     conversation_ptt_microphone: bool = False
+    camera_live: bool = False
 
     def __post_init__(self):
-        if type(self.simulate) is not bool or type(self.conversation_ptt_microphone) is not bool:
+        if (type(self.simulate) is not bool or type(self.conversation_ptt_microphone) is not bool
+                or type(self.camera_live) is not bool or self.simulate and self.camera_live):
             raise FeatureError("invalid_runtime")
 
     def require(self, capability):
         if capability == "conversation_ptt_microphone":
             if not self.conversation_ptt_microphone:
                 raise FeatureError("microphone_opt_in_required")
+            return
+        if capability == "camera" and not self.simulate and self.camera_live:
             return
         if capability not in DEVICE_CAPABILITIES:
             raise FeatureError("unknown_capability")
@@ -35,5 +39,6 @@ class RuntimePolicy:
         return {"conversation": "mock" if self.simulate else "explicit_live",
                 "conversation_ptt_microphone": ("mock" if self.simulate else "explicit_live")
                     if self.conversation_ptt_microphone else "denied",
-                **{name: "mock" if self.simulate else "denied" for name in DEVICE_CAPABILITIES},
-                "real_features_enabled": False, "pi_live_verified": False}
+                **{name: "mock" if self.simulate else "explicit_live" if name == "camera" and self.camera_live else "denied"
+                   for name in DEVICE_CAPABILITIES},
+                "real_features_enabled": self.camera_live, "pi_live_verified": False}
