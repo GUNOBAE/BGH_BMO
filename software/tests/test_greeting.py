@@ -73,10 +73,10 @@ class GreetingTests(unittest.TestCase):
         with patch('os.open', side_effect=AssertionError('No IO at construction')):
             cache = GreetingCache(self.root/'not-created', self.spec)
             GreetingPlayer(self.config, cache, simulate=True)
-            self.assertEqual(default_greeting_directory(environ={},home=self.root),self.root/'.cache/bmo/greeting')
-            self.assertEqual(default_greeting_directory(environ={'XDG_CACHE_HOME':str(self.root/'xdg')}),self.root/'xdg/bmo/greeting')
+            self.assertEqual(default_greeting_directory(environ={},home=self.root),self.root/'.cache/bmo/greeting-welcome-v2')
+            self.assertEqual(default_greeting_directory(environ={'XDG_CACHE_HOME':str(self.root/'xdg')}),self.root/'xdg/bmo/greeting-welcome-v2')
         self.assertFalse(cache.directory.exists())
-        self.assertEqual(self.spec.public()['text'], '난 비모야~!')
+        self.assertEqual(self.spec.public()['text'], '돌아왔구나! 비모가 기다렸어!')
         self.assertEqual(self.spec.public()['gain'], .25)
 
     def test_missing_cache_does_not_create_directories_or_trigger_player(self):
