@@ -22,6 +22,7 @@ _MESSAGES = {
     "browser_environment_missing": "A usable Wayland session is required.",
     "browser_executable_unsafe": "The Chromium executable is unavailable or unsafe.",
     "browser_profile_failed": "A private browser profile could not be prepared.",
+    "runtime_directory_permissions": "The session runtime directory must be owned by this user with mode 0700. No permissions were changed.",
     "browser_spawn_failed": "The BMO browser could not be started.",
     "browser_start_failed": "The BMO browser exited before face readiness.",
     "browser_start_timeout": "The BMO browser did not become ready in time.",
@@ -198,7 +199,7 @@ class DesktopBrowser:
         if (type(display) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", display) is None
                 or type(runtime) is not str):
             raise BrowserError("browser_environment_missing")
-        checked = _directory(runtime, "browser_environment_missing")
+        checked = _directory(runtime, "runtime_directory_permissions")
         os.close(checked)
         result = {"PATH": os.defpath, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
                   "WAYLAND_DISPLAY": display, "XDG_RUNTIME_DIR": runtime,
@@ -227,7 +228,7 @@ class DesktopBrowser:
 
     def _profile(self):
         runtime = self._runtime_root if self._runtime_root is not None else self._environ.get("XDG_RUNTIME_DIR")
-        parent = _directory(runtime, "browser_profile_failed")
+        parent = _directory(runtime, "runtime_directory_permissions")
         try:
             for _ in range(10):
                 name = "bmo-chromium-" + secrets.token_hex(12)

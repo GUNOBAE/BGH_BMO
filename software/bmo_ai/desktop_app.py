@@ -28,6 +28,7 @@ def parser():
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--status", action="store_true")
+    p.add_argument("--diagnose-startup", action="store_true", help="read-only session metadata, original face SHA and lock check; no launch or repair")
     p.add_argument("--install-desktop", action="store_true", help="explicit user installation, never autostart")
     p.add_argument("--screen-profile", choices=tuple(SCREEN_PROFILES), default="r10")
     p.add_argument("--face-file", type=Path)
@@ -50,11 +51,12 @@ def _config(args):
 
 
 def public_plan(args):
+    from .greeting_cache import GREETING_TEXT
     config = _config(args)
     return {"version": 1, "mode": "simulate" if args.simulate else "live" if args.live else "not_selected",
         "screen_profile": args.screen_profile, "screen_sha256": SCREEN_PROFILES[args.screen_profile]["sha256"],
         "window": "windowed" if args.windowed else "kiosk", "developer_enabled": args.developer,
-        "greeting": {"text": "난 비모야~!", "source": "approved_private_cache", "automatic_synthesis": False},
+        "greeting": {"text": GREETING_TEXT, "asset_version": "welcome-v2", "source": "approved_private_cache", "automatic_synthesis": False},
         "configuration": effective_config(config, emotion_mode="auto"),
         "credentials_accessed": False, "ports_opened": False, "processes_started": False,
         "desktop_installed": False, "autostart": False, "physical_features_enabled": False,
@@ -76,6 +78,11 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("greeting preparation/review requires explicit --live")
     if args.install_desktop and preparing:
         p.error("installation and greeting review are separate operations")
+    if args.diagnose_startup:
+        from .desktop_diagnostics import startup_preflight
+        print(json.dumps(startup_preflight(face_file=args.face_file,
+            screen_profile=args.screen_profile, lock_path=lock_path), ensure_ascii=False, indent=2))
+        return 0
     if args.status or (args.dry_run and not args.install_desktop):
         print(json.dumps(public_plan(args), ensure_ascii=False, indent=2))
         return 0
@@ -93,6 +100,7 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
     lock = client = app = temporary = None
     previous_handlers = {}
     outcome = 0
+    stage = "lock"
     try:
         path = Path(lock_path) if lock_path is not None else Path(f"/tmp/bmo-integration-{os.getuid()}.lock")
         fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -108,11 +116,13 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         except BlockingIOError:
             print("BMO is already running for this user.", file=sys.stderr)
             return 2
+        stage = "configuration"
         config = _config(args)
         from .greeting import GreetingPlayer
         from .greeting_cache import (GreetingCache, GreetingSpec, default_greeting_directory,
                                      make_synthetic_greeting_cache)
         if preparing:
+            stage = "greeting_review"
             cache = GreetingCache(default_greeting_directory(), GreetingSpec.from_config(config))
             if args.prepare_greeting:
                 from .private_credentials import resolve_credentials
@@ -131,25 +141,31 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 print("Cached greeting audition finished. Approval remains a separate explicit step.")
             return 0
         app = DesktopRuntime(clock=clock, simulate=args.simulate, developer=args.developer,
-                             startup_timeout=args.startup_timeout, greeting_timeout=args.greeting_timeout)
+                             startup_timeout=args.startup_timeout, greeting_timeout=args.greeting_timeout,
+                             require_face_presented=True)
         for number in (signal.SIGTERM, signal.SIGINT):
             try:
                 previous_handlers[number] = signal.signal(number, lambda *_: app._exit.set())
             except ValueError:
                 pass  # Embedded test callers may have an owner thread outside main.
         face = args.face_file or Path(SCREEN_PROFILES[args.screen_profile]["default_path"])
+        stage = "server_init"
         server = FeatureServer(app, face, screen_profile=args.screen_profile, port=0,
                                desktop=app, developer=args.developer)
+        stage = "server_start"
         app.set_server(server.start())
         if browser_factory is None:
             from .desktop_browser import DesktopBrowser
             browser_factory = DesktopBrowser
+        stage = "browser_init"
         browser = browser_factory(server.url, windowed=args.windowed,
                                   startup_timeout=args.startup_timeout, clock=clock)
         app.set_browser(browser)
+        stage = "browser_start"
         browser.start()
         app.browser_started()
         try:
+            stage = "engine_init"
             settings = {"config": config, "runtime": RuntimePolicy(simulate=args.simulate),
                         "demo_assets": args.demo_assets, "clock": clock}
             if args.live:
@@ -160,6 +176,7 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 settings.update(client=client, fish_api_key=credentials.fish_api_key)
             host = host_factory(**settings)
             app.set_host(host, None)  # Retain ownership even if greeting setup fails.
+            stage = "greeting_init"
             if greeting_factory is not None:
                 greeting = greeting_factory(config=config, simulate=args.simulate)
             elif args.simulate:
@@ -174,10 +191,13 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         except Exception as error:
             code = getattr(error, "code", "engine_startup_failed")
             app.fail(code)
+            from .desktop_diagnostics import failure
+            print(failure(stage, error), file=sys.stderr)
             if client is not None and app.host is None:
                 client.close(); client = None
         if on_started is not None:
             on_started(app)
+        stage = "owner_loop"
         # No terminal, stdin, automatic capture or startup chat turn is needed.
         while not app.exiting:
             app.poll()
@@ -186,8 +206,9 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             outcome = 1
     except KeyboardInterrupt:
         pass
-    except Exception:
-        print("BMO desktop could not start or complete its owned operation.", file=sys.stderr)
+    except Exception as error:
+        from .desktop_diagnostics import failure
+        print(failure(stage, error), file=sys.stderr)
         outcome = 1
     finally:
         for number, handler in previous_handlers.items():

@@ -28,7 +28,7 @@ def public_code(code, default="startup_failed"):
 
 class DesktopRuntime:
     def __init__(self, *, clock=time.monotonic, simulate=False, developer=False,
-                 startup_timeout=15., greeting_timeout=30., disconnect_timeout=5.):
+                 startup_timeout=15., greeting_timeout=30., disconnect_timeout=5., require_face_presented=False):
         if any(type(value) not in (float, int) or not 0 < value <= 120 for value in
                (startup_timeout, greeting_timeout, disconnect_timeout)):
             raise FeatureError("invalid_desktop_timeout")
@@ -41,6 +41,8 @@ class DesktopRuntime:
         self._exit, self._retry, self._cancel = Event(), Event(), Event()
         self._user_cancel = Event()
         self._face_signal = Event()
+        self._face_presented = Event()
+        self._require_face_presented = require_face_presented
         self._ready = self._auto_attempted = self._closed = False
         self.failed = False
         self._face_version = None
@@ -112,6 +114,9 @@ class DesktopRuntime:
                 "face_ready": self._face_signal.is_set(), "greeting_attempts": self._attempt,
                 "progress_percent": self._progress_percent,
                 "progress_stage": self._progress_stage,
+                "progress_status": "error" if self._phase == "error" else "complete" if self._progress_percent == 100 else "loading",
+                "progress_error": self._code if self._phase == "error" else None,
+                "face_presented": self._face_presented.is_set(),
                 "greeting_played": self._ever_played,
                 "developer_enabled": self.developer, "external_api_ready": "NOT_CHECKED",
                 "live_verified": False, "exit_requested": self.exiting}
@@ -131,6 +136,11 @@ class DesktopRuntime:
             self._face_version = value["frame_version"]
             self._face_signal.set()  # Owner poll performs the greeting.
             self._advance_progress(90, "face_handshake_verified")
+        elif action == "face_presented":
+            if (type(value) is not dict or set(value) != {"run_id"} or value["run_id"] != self.run_id
+                    or not self._ready or not self._face_signal.is_set()):
+                raise FeatureError("invalid_face_presented")
+            self._face_presented.set()
         elif action == "exit" and value is None:
             self._exit.set()
         elif action == "retry_greeting" and value is None:
@@ -190,6 +200,8 @@ class DesktopRuntime:
         return self.host.queue_command(nonce, command)
 
     def _start_greeting(self):
+        if self._require_face_presented and not self._face_presented.is_set():
+            return
         if self._worker is not None or self.host is None or self.greeting is None or self.host.session.busy:
             return
         with self._lock:
@@ -296,7 +308,11 @@ class DesktopRuntime:
                 self._advance_progress(100, "local_app_ready")
             elif self.clock() - self._began >= self.startup_timeout:
                 self.fail("face_ready_timeout" if self.host is not None else "host_startup_timeout")
-        if self._ready and not self._auto_attempted and self._phase != "error":
+        presented = not self._require_face_presented or self._face_presented.is_set()
+        if (self._ready and not presented and self._phase != "error"
+                and self.clock() - self._began >= self.startup_timeout):
+            self.fail("face_ready_timeout")
+        if self._ready and presented and not self._auto_attempted and self._phase != "error":
             self._auto_attempted = True
             self._start_greeting()
         if (self._ready and self._greeting_suppressed and self._worker is None
