@@ -108,6 +108,12 @@ class VideoStore:
     User artifacts are never deleted on close/cancel/recovery. A persisted
     running request becomes UNKNOWN and is never silently recorded again.
     """
+    # 기본 합성 계약은 그대로 두고, 별도 사용자 승인 실기 클래스만 이 hook을 바꾼다.
+    result_type = VideoResult
+    contract = CONTRACT
+    validate_payload = staticmethod(validate_avi_bytes)
+    saved_status = 'simulated'
+    simulated = True
     def __init__(self, root, *, free_bytes=None):
         self.root = Path(root)
         self._free_bytes = free_bytes or (lambda fd: os.fstatvfs(fd).f_bavail * os.fstatvfs(fd).f_frsize)
@@ -178,7 +184,7 @@ class VideoStore:
                 return output
             payload = json.loads(raw, object_pairs_hook=unique)
             if (type(payload) is not dict or set(payload) != {'contract', 'records'}
-                    or payload['contract'] != CONTRACT or type(payload['records']) is not dict
+                    or payload['contract'] != self.contract or type(payload['records']) is not dict
                     or len(payload['records']) > MAX_RECORDS):
                 raise ValueError()
             for request, record in payload['records'].items():
@@ -188,7 +194,7 @@ class VideoStore:
                         or re.fullmatch('[a-f0-9]{64}', record['fingerprint']) is None
                         or type(record['result']) is not dict):
                     raise ValueError()
-                result = VideoResult(**record['result'])
+                result = self.result_type(**record['result'])
                 if result.request_id != request:
                     raise ValueError()
             return payload['records']
@@ -210,7 +216,7 @@ class VideoStore:
             raise
 
     def _write(self):
-        raw = json.dumps({'contract': CONTRACT, 'records': self._records},
+        raw = json.dumps({'contract': self.contract, 'records': self._records},
                          allow_nan=False, separators=(',', ':')).encode()
         if len(raw) > MAX_JOURNAL_BYTES:
             raise FeatureError('video_journal_full')
@@ -242,7 +248,7 @@ class VideoStore:
             raise FeatureError('invalid_video_request')
         with self._guard:
             if self._root_fd is not None:
-                return VideoResult(request_id, 'running', 'video_busy')
+                return self.result_type(request_id, 'running', 'video_busy')
             try:
                 self._open()
                 self._lock_fd = os.open('.video.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
@@ -252,14 +258,14 @@ class VideoStore:
                     fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     self._release()
-                    return VideoResult(request_id, 'running', 'video_busy')
+                    return self.result_type(request_id, 'running', 'video_busy')
                 self._records = self._load()
                 previous = self._records.get(request_id)
                 if previous is not None:
                     if previous['fingerprint'] != config.fingerprint:
-                        result = VideoResult(request_id, 'rejected', 'request_id_conflict')
+                        result = self.result_type(request_id, 'rejected', 'request_id_conflict')
                     else:
-                        result = VideoResult(**previous['result'])
+                        result = self.result_type(**previous['result'])
                         if result.status == 'running':
                             result = replace(result, status='unknown', code='video_interrupted',
                                              stop_reason='power_loss_or_interruption')
@@ -268,7 +274,7 @@ class VideoStore:
                 if len(self._records) >= MAX_RECORDS:
                     raise FeatureError('video_journal_full')
                 self._space(config.max_bytes, config.min_free_bytes)
-                running = VideoResult(request_id, 'running', 'video_recording')
+                running = self.result_type(request_id, 'running', 'video_recording')
                 self._request = request_id
                 self._records[request_id] = {'fingerprint': config.fingerprint, 'result': asdict(running)}
                 self._write()
@@ -294,7 +300,7 @@ class VideoStore:
         with self._guard:
             if self._request != request_id or self._records is None:
                 raise FeatureError('video_reservation_missing')
-            meta = validate_avi_bytes(payload)
+            meta = self.validate_payload(payload)
             if len(payload) > config.max_bytes or meta['duration'] > config.max_duration:
                 raise FeatureError('video_limit_exceeded')
             self._space(len(payload), config.min_free_bytes)
@@ -306,15 +312,16 @@ class VideoStore:
                 written = self._read(name, MAX_VIDEO_BYTES)
                 if written != payload:
                     raise FeatureError('video_verification_failed')
-                validate_avi_bytes(written)
+                self.validate_payload(written)
                 cancel_check()
                 os.link(name, destination, src_dir_fd=self._root_fd,
                         dst_dir_fd=self._root_fd, follow_symlinks=False)
                 committed = True
                 os.fsync(self._root_fd)
-                result = VideoResult(request_id, 'simulated', 'video_saved', stop_reason,
+                result = self.result_type(request_id, self.saved_status, 'video_saved', stop_reason,
                                      video_id, hashlib.sha256(written).hexdigest(), len(written),
-                                     meta['duration'], completed=True)
+                                     meta['duration'], completed=True, simulated=self.simulated,
+                                     executed=not self.simulated)
             except BaseException as error:
                 if committed:
                     raise FeatureError('video_saved_state_unknown') from None
@@ -348,7 +355,7 @@ class VideoStore:
             try:
                 self._open(create=False)
                 raw = self._read(video_id + '.avi', MAX_VIDEO_BYTES)
-                validate_avi_bytes(raw)
+                self.validate_payload(raw)
                 return raw
             except (OSError, ValueError, TypeError):
                 raise FeatureError('video_unavailable') from None
@@ -384,8 +391,14 @@ class VideoRecorder:
         self._result = None
         self._closed = self._blocked = False
 
+    def _make_result(self, *args, **kwargs):
+        return VideoResult(*args, **kwargs)
+
     def _denied(self, request_id, code):
-        return VideoResult(request_id, 'rejected', code)
+        return self._make_result(request_id, 'rejected', code, executed=False)
+
+    def _mode_allowed(self):
+        return self.simulated is True and self.broker.simulated is True
 
     def _active_check(self, generation):
         if (type(generation) is not int or generation < 0 or generation != self._generation):
@@ -399,7 +412,7 @@ class VideoRecorder:
         with self._guard:
             if self._closed or self._blocked:
                 return self._denied(request_id, 'video_closed')
-            if self.simulated is not True:
+            if not self._mode_allowed():
                 return self._denied(request_id, 'camera_video_denied')
             if consent is not True:
                 return self._denied(request_id, 'video_consent_required')
@@ -411,8 +424,6 @@ class VideoRecorder:
                 if self._request == request_id and generation == self._generation:
                     return self._result
                 return self._denied(request_id, 'video_busy')
-            if self.broker.simulated is not True:
-                return self._denied(request_id, 'camera_video_denied')
             claimed = reserved = False
             try:
                 self.broker.claim(self._owner)
@@ -428,15 +439,15 @@ class VideoRecorder:
                     raise FeatureError('video_clock_invalid')
                 self._started, self._last_frame, self._frames = started, None, 0
                 self._payload = None
-                self.broker.open(owner=self._owner, simulated_only=True)
-                if self.broker.simulated is not True:
+                self.broker.open(owner=self._owner, simulated_only=self.simulated is True)
+                if not self._mode_allowed():
                     raise FeatureError('camera_video_denied')
-                self._result = VideoResult(request_id, 'running', 'video_recording')
+                self._result = self._make_result(request_id, 'running', 'video_recording')
                 self._capture()
                 return self._result
             except Exception as error:
                 code = error.code if isinstance(error, FeatureError) else 'video_start_failed'
-                result = VideoResult(request_id, 'failed', code, 'start_failed')
+                result = self._make_result(request_id, 'failed', code, 'start_failed')
                 if claimed:
                     if not self._release_camera():
                         result = replace(result, status='unknown', code='video_close_failed')
@@ -490,7 +501,7 @@ class VideoRecorder:
         request = self._request
         if request is None:
             return self._result
-        result = VideoResult(request, 'cancelled' if cancelled else 'failed', code, code)
+        result = self._make_result(request, 'cancelled' if cancelled else 'failed', code, code)
         if not self._release_camera():
             result = replace(result, status='unknown', code='video_close_failed')
         try:
@@ -504,7 +515,7 @@ class VideoRecorder:
     def _complete(self, reason):
         request = self._request
         if not self._release_camera():
-            result = VideoResult(request, 'unknown', 'video_close_failed', reason)
+            result = self._make_result(request, 'unknown', 'video_close_failed', reason)
             try:
                 self.store.finish(result)
             except Exception:
@@ -517,7 +528,7 @@ class VideoRecorder:
             result = self.store.publish(request, self._payload, config=self.config, stop_reason=reason)
         except Exception as error:
             code = error.code if isinstance(error, FeatureError) else 'video_storage_failed'
-            result = VideoResult(request, 'unknown' if code == 'video_saved_state_unknown' else 'failed', code, reason)
+            result = self._make_result(request, 'unknown' if code == 'video_saved_state_unknown' else 'failed', code, reason)
             try:
                 self.store.finish(result)
             except Exception:

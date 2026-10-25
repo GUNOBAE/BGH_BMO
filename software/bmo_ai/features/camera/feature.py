@@ -262,3 +262,15 @@ class CameraFeature:
         with self._lock:
             self._closed = True
         return self.off()
+
+    def cleanup_snapshot(self):
+        """off만으로 native close 성공을 추정하지 않는 호스트 소유 자원 보고."""
+        with self._lock:
+            unknown = (self.broker.cleanup_uncertain or self._error in
+                       ('camera_close_failed', 'camera_detector_close_failed'))
+            sensor_closed = not self.broker.opened
+            cleaned = self._closed and sensor_closed and not self._photo_active and not unknown
+            return {'resources_cleaned': cleaned, 'sensor_closed': sensor_closed,
+                    'photo_active': self._photo_active, 'close_unknown': unknown,
+                    'code': 'resources_cleaned' if cleaned else 'camera_cleanup_unknown',
+                    'physical_release_verified': False, 'scope': 'host_owned_camera_only'}

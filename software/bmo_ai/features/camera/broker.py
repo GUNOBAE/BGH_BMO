@@ -26,6 +26,11 @@ class CameraBroker:
         with self._state:
             return self._epoch
 
+    @property
+    def cleanup_uncertain(self):
+        with self._state:
+            return self._owned_close_uncertain
+
     def claim(self, owner):
         """Reserve this one broker for an explicit video session.
 

@@ -16,10 +16,16 @@ DEVICE_CAPABILITIES = ("arms", "imu", "camera", "camera_video", "external_games"
 class RuntimePolicy:
     simulate: bool = True
     conversation_ptt_microphone: bool = False
+    camera_supervised: bool = False
+    camera_video_supervised: bool = False
 
     def __post_init__(self):
-        if type(self.simulate) is not bool or type(self.conversation_ptt_microphone) is not bool:
+        if any(type(value) is not bool for value in (self.simulate, self.conversation_ptt_microphone,
+                                                    self.camera_supervised, self.camera_video_supervised)):
             raise FeatureError("invalid_runtime")
+        if ((self.camera_supervised or self.camera_video_supervised) and self.simulate
+                or self.camera_video_supervised and not self.camera_supervised):
+            raise FeatureError("invalid_camera_runtime")
 
     def require(self, capability):
         if capability == "conversation_ptt_microphone":
@@ -28,6 +34,10 @@ class RuntimePolicy:
             return
         if capability not in DEVICE_CAPABILITIES:
             raise FeatureError("unknown_capability")
+        if capability == "camera" and self.camera_supervised:
+            return
+        if capability == "camera_video" and self.camera_video_supervised:
+            return
         if not self.simulate:
             raise FeatureError("capability_denied")
 
@@ -36,4 +46,6 @@ class RuntimePolicy:
                 "conversation_ptt_microphone": ("mock" if self.simulate else "explicit_live")
                     if self.conversation_ptt_microphone else "denied",
                 **{name: "mock" if self.simulate else "denied" for name in DEVICE_CAPABILITIES},
-                "real_features_enabled": False, "pi_live_verified": False}
+                **({"camera": "explicit_supervised"} if self.camera_supervised else {}),
+                **({"camera_video": "explicit_supervised"} if self.camera_video_supervised else {}),
+                "real_features_enabled": self.camera_supervised, "pi_live_verified": False}
