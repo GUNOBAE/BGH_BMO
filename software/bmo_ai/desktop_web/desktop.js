@@ -45,10 +45,26 @@ async function modes(){if(state?.phase!=='ready')return;const r=await fetch('/ap
  // idle phase or a previous capture generation. Queued input stays cancellable.
  const receipt=pttRequest&&(next.requests||[]).find(item=>item.request_id===pttRequest);
  if(receipt&&!['accepted','running'].includes(receipt.status)){pttPending=false;pttRequest=null;}
- const capture=next.ptt?.state;
+ const capture=next.ptt?.state,reason=next.ptt?.reason_code;
  const inputFailed=capture==='failed'||next.ptt?.cleanup_fault===true;
- $('ptt-state').hidden=!inputFailed&&!['calibrating','listening','speech','transcribing'].includes(capture);
- $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.'):
+ // Keep the last safe VAD outcome visible after returning to idle. The old
+ // UI hid no_speech and made a completed-but-empty capture look like a hang.
+ const pttReasons={
+  no_speech:'말소리를 감지하지 못했어요. 초록 버튼 뒤 잠깐 기다렸다가 말해 주세요.',
+  calibration_noisy:'팬·주변 소음이 커서 보정하지 못했어요. 마이크 감도를 확인해 주세요.',
+  microphone_stream_closed:'마이크 입력이 중단됐어요. USB 연결을 확인해 주세요.',
+  microphone_start_failed:'마이크를 열지 못했어요. USB 입력 장치를 확인해 주세요.',
+  pcm_cleanup_failed:'녹음 정리 실패: 새 대화를 시작하지 말고 앱을 종료해 주세요.',
+  transcription_failed:'음성을 받았지만 문장 변환에 실패했어요. 네트워크/STT를 확인해 주세요.',
+  invalid_pcm_frame:'마이크 PCM 프레임이 올바르지 않아 녹음을 중단했어요.',
+  user_cancelled:'녹음이 취소됐어요.'
+ };
+ const active=['calibrating','listening','speech','transcribing'].includes(capture);
+ const terminal=Object.prototype.hasOwnProperty.call(pttReasons,reason);
+ $('ptt-state').hidden=!inputFailed&&!active&&!terminal;
+ $('ptt-state').textContent=next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':
+  terminal&&!active?pttReasons[reason]:
+  inputFailed?(pttReasons[reason]||'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.'):
   ({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
  if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){if(!$('game-menu').open)$('game-menu').showModal();$('game-list').replaceChildren();if(!next.games.catalog.length)$('game-list').textContent='게임 자료가 아직 준비되지 않았어요.';for(const item of next.games.catalog){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY';b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}}
  else if($('game-menu').open)$('game-menu').close();
