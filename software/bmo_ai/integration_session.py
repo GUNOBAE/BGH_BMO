@@ -116,7 +116,7 @@ class IntegrationSession:
     def __init__(self, config, client, *, simulate=False, voice=None, brain=None,
                  clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0,
                  emotion_mode="manual", fish_api_key=None, reply_client=None,
-                 on_reply=None, on_playback_event=None):
+                 on_reply=None, on_playback_event=None, voice_expressive=False):
         if emotion_mode not in ("auto", "manual"):
             raise ValueError("unknown emotion mode")
         self.config, self.client, self.simulate = config, client, simulate
@@ -145,7 +145,7 @@ class IntegrationSession:
         voice_credentials = {} if fish_api_key is None else {"fish_api_key": fish_api_key}
         self.voice = voice if voice is not None else IntegrationVoice(
             config, client, simulate=simulate, emit=lambda *a, **kw: None,
-            cancel_check=lambda: None, **voice_credentials)
+            cancel_check=lambda: None, expressive=voice_expressive, **voice_credentials)
         self.worker = ConversationWorker(self._factory, timeout=timeout,
                                          queue_size=32, clock=clock, synthetic=simulate)
 
