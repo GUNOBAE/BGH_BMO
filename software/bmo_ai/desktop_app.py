@@ -122,6 +122,12 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             options = {"install": not args.dry_run, "simulate": args.simulate}
             if args.frontend != "chromium":
                 options["frontend"] = args.frontend
+            if args.ptt_microphone:
+                options["ptt_microphone"] = True
+            if args.expressive_voice:
+                options["expressive_voice"] = True
+            if args.vad_profile != "normal":
+                options["vad_profile"] = args.vad_profile
             result = install_desktop(**options)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
