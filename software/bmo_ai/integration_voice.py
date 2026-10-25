@@ -21,6 +21,7 @@ from .expression_contract import FACE_EMOTIONS
 from .integration_face import wav_cues
 from .pronunciation import spoken_bmo_name
 from .safe_playback import attenuated_copy, validate_gain
+from .voice_performance import fish_styled_text
 
 
 def _player_environment():
@@ -62,7 +63,10 @@ class IntegrationVoice:
 
     def __init__(self, config, client, *, emit, cancel_check=None, simulate=False,
                  fish_synthesizer=None, piper_synthesizer=None, player=None,
-                 fish_api_key=None):
+                 fish_api_key=None, expressive=False):
+        if type(expressive) is not bool:
+            raise ValueError("invalid_voice_performance")
+        self.expressive_voice = expressive
         self.config = config
         self.client = client
         self.emit = emit
@@ -153,8 +157,10 @@ class IntegrationVoice:
             raise audio.AudioValidationError(
                 "The integration voice profile requires Fish Audio.", "invalid_tts_provider")
         spoken = spoken_bmo_name(text, self.config.fish_name_mode)
-        if self.config.fish_delivery == "soft":
-            spoken = fish_tts.SOFT_AARON_DIRECTION + spoken
+        expression = self._expression(notice=notice)
+        spoken = fish_styled_text(spoken, emotion=expression["emotion"],
+            validation=expression["emotion_validation"], expressive=self.expressive_voice,
+            soft=self.config.fish_delivery == "soft", notice=notice)
         synthesize = self._fish_synthesizer or fish_tts.synthesize_wav
         credentials = {} if self._fish_api_key is None else {"api_key": self._fish_api_key}
         try:
