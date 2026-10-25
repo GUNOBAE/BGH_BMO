@@ -15,6 +15,56 @@ from .features.contracts import FeatureError, request_id_ok
 from .features.host import HostControl
 
 
+_BROWSER_CLEANUP_STAGES = frozenset({
+    "not_started", "observe_identity", "inspect_owned_group", "term_owned_group",
+    "wait_owned_group", "kill_owned_group", "wait_owned_root", "reap_owned_root",
+    "remove_owned_profile", "complete",
+})
+
+
+def _browser_cleanup_detail(evidence):
+    if type(evidence) is not dict:
+        return {"stage": "unknown", "code": "unknown"}
+    stage, code = evidence.get("stage"), evidence.get("code")
+    return {"stage": stage if type(stage) is str and stage in _BROWSER_CLEANUP_STAGES else "unknown",
+            "code": code if type(code) is str and code in {"pending", "unknown", "not_acquired", "resources_cleaned"} else "unknown"}
+
+
+def _host_cleanup_detail(evidence):
+    """Forward selected booleans only; adapter exception/code text is untrusted."""
+    if type(evidence) is not dict:
+        return {"code": "unknown", "evidence_valid": False}
+    code = evidence.get("code")
+    allowed = {"resources_cleaned", "owned_cleanup_pending", "session_cleanup_pending", "camera_cleanup_unknown"}
+    detail = {"code": code if type(code) is str and code in allowed else "unknown",
+              "evidence_valid": type(evidence.get("resources_cleaned")) is bool}
+    groups = (("", evidence, ("resources_cleaned", "microphone_closed", "microphone_cleanup_pending")),
+              ("session_", evidence.get("session"), ("worker_stopped", "voice_client_closed")),
+              ("camera_", evidence.get("camera"), ("resources_cleaned", "sensor_closed", "photo_active", "close_unknown")))
+    for prefix, group, fields in groups:
+        if group is None:
+            continue
+        if type(group) is not dict:
+            detail["evidence_valid"] = False
+            continue
+        for name in fields:
+            if name in group:
+                if type(group[name]) is bool:
+                    detail[prefix + name] = group[name]
+                else:
+                    detail["evidence_valid"] = False
+    return detail
+
+
+def _host_cleanup_pending(detail):
+    required_true = ("resources_cleaned", "microphone_closed", "session_worker_stopped",
+                     "session_voice_client_closed", "camera_resources_cleaned", "camera_sensor_closed")
+    required_false = ("microphone_cleanup_pending", "camera_photo_active", "camera_close_unknown")
+    return (not detail["evidence_valid"]
+            or any(detail.get(name) is False for name in required_true)
+            or any(detail.get(name) is True for name in required_false))
+
+
 def public_code(code, default="startup_failed"):
     from .greeting_cache import _CODES
     from .private_credentials import _ERRORS
@@ -62,6 +112,10 @@ class DesktopRuntime:
         self._greeting_suppressed = False
         self._audit = deque(maxlen=64)
         self._disconnect_restore_code = None
+        self._cleanup_resources = {}
+        self._cleanup_errors = []
+        self._cleanup_complete = False
+        self._cleanup_details = {}
 
     def _state(self, phase, code):
         with self._lock:
@@ -375,23 +429,71 @@ class DesktopRuntime:
             self._disconnect_restore_code = (self._code if self._phase == "ready" else "greeting_cancelled")
             self.fail("browser_disconnected")
 
+    def cleanup_snapshot(self):
+        """A scoped post-close diagnostic, not a new authenticated BMO ACK."""
+        return {"version": 1, "run_id": self.run_id, "scope": "desktop_owned_components",
+                "resources_cleaned": self._closed and self._cleanup_complete,
+                "resources": dict(self._cleanup_resources), "codes": list(self._cleanup_errors),
+                "details": {name: dict(value) for name, value in self._cleanup_details.items()},
+                "physical_release_verified": False}
+
     def close(self):
-        if self._closed:
-            return
+        if self._closed and self._cleanup_complete:
+            return self.cleanup_snapshot()
         self._closed = True
         self._cancel.set()
         errors = []
-        if self.greeting is not None:
+        resources = {}
+        details = {}
+
+        def close_component(name, item):
+            if item is None:
+                resources[name] = "not_acquired"
+                return
+            resources[name] = "unknown"
             try:
-                self.greeting.close()
+                result = item.close()
+                if result is False:
+                    raise FeatureError("desktop_cleanup_failed")
+                report = getattr(item, "cleanup_snapshot", None)
+                if callable(report):
+                    evidence = report()
+                    if name == "browser" and type(evidence) is dict:
+                        # Never forward an adapter's arbitrary paths/messages.
+                        details[name] = _browser_cleanup_detail(evidence)
+                    if name == "host" and type(evidence) is dict:
+                        details[name] = _host_cleanup_detail(evidence)
+                        if _host_cleanup_pending(details[name]):
+                            raise FeatureError("desktop_cleanup_failed")
+                    if type(evidence) is dict and evidence.get("resources_cleaned") is False:
+                        raise FeatureError("desktop_cleanup_failed")
+                resources[name] = "released"
             except Exception:
-                errors.append("greeting_cleanup_failed")
+                errors.append(name + "_cleanup_failed")
+                if name in ("browser", "host"):
+                    # stop() can raise after updating its bounded stage report.
+                    try:
+                        evidence = item.cleanup_snapshot()
+                        if type(evidence) is dict:
+                            details[name] = (_browser_cleanup_detail(evidence) if name == "browser"
+                                             else _host_cleanup_detail(evidence))
+                    except Exception:
+                        pass
+
+        if self.greeting is not None:
+            close_component("greeting", self.greeting)
+        else:
+            resources["greeting"] = "not_acquired"
+        resources["greeting_worker"] = "not_acquired"
         if self._worker is not None:
+            resources["greeting_worker"] = "unknown"
+            join_failed = False
             try:
                 self._worker.join(timeout=3.)
                 alive = self._worker.is_alive()
             except Exception:
                 errors.append("greeting_cleanup_failed")
+                join_failed = True
                 try:
                     alive = self._worker.is_alive()
                 except Exception:
@@ -399,13 +501,22 @@ class DesktopRuntime:
             if alive:
                 errors.append("greeting_cleanup_failed")
             elif self.host is not None:
-                self.host.audio.release(self._lease)
-                self._lease = self._worker = None
-        for item in (self.browser, self.server, self.host):
-            if item is not None:
                 try:
-                    item.close()
+                    self.host.audio.release(self._lease)
+                    self._lease = self._worker = None
+                    if not join_failed:
+                        resources["greeting_worker"] = "released"
                 except Exception:
-                    errors.append("desktop_cleanup_failed")
+                    errors.append("greeting_cleanup_failed")
+            elif not join_failed:
+                self._worker = None
+                resources["greeting_worker"] = "released"
+        for name, item in (("browser", self.browser), ("server", self.server), ("host", self.host)):
+            close_component(name, item)
+        self._cleanup_resources = resources
+        self._cleanup_errors = sorted(set(errors))
+        self._cleanup_details = details
+        self._cleanup_complete = not errors and all(status != "unknown" for status in resources.values())
         if errors:
             raise FeatureError("desktop_cleanup_failed")
+        return self.cleanup_snapshot()

@@ -4,6 +4,8 @@ const $=id=>document.getElementById(id),frame=$('face'),token=document.querySele
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null;
 let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0;
 let featureState=null,musicCatalogKey=null,lastFeatureMode=null;
+const inputEvidence={enter_presses:0,keyups:0,repeats_ignored:0,blocked_mode:0,request_sent:0,request_accepted:0,request_rejected:0,cancelled_blur:0,physical_identity:'UNVERIFIED'};
+function bump(name){inputEvidence[name]=Math.min(999999,inputEvidence[name]+1);}
 const messages={credentials_missing:'최초 키 설정이 필요해요. 실행 가이드를 확인해 주세요.',greeting_missing:'시작 인사 캐시가 아직 준비되지 않았어요.',greeting_unapproved:'시작 인사의 청취 승인이 필요해요.',greeting_corrupt:'시작 인사 캐시를 확인해 주세요.',face_ready_timeout:'얼굴 준비 시간이 초과됐어요.',host_startup_timeout:'대화 엔진 준비 시간이 초과됐어요.',greeting_timeout:'시작 인사 재생 정리를 기다리고 있어요.',browser_disconnected:'연결을 다시 확인하고 있어요.'};
 async function post(path,payload){const response=await fetch(path,{method:'POST',keepalive:payload.action==='cancel',headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce:crypto.randomUUID(),payload})});if(!response.ok)throw Error('요청을 완료하지 못했어요.');return response.json();}
 const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(action,value=null)=>post('/api/control',{action,value}),intent=(name,target=null)=>post('/api/intent',{name,target});
@@ -46,9 +48,11 @@ async function modes(){if(state?.phase!=='ready')return;const r=await fetch('/ap
  const receipt=pttRequest&&(next.requests||[]).find(item=>item.request_id===pttRequest);
  if(receipt&&!['accepted','running'].includes(receipt.status)){pttPending=false;pttRequest=null;}
  const capture=next.ptt?.state;
- const inputFailed=capture==='failed'||next.ptt?.cleanup_fault===true;
+ const diagnosis=next.turn_diagnostics,failure=diagnosis?.failure;
+ const inputFailed=capture==='failed'||next.ptt?.cleanup_fault===true||failure;
  $('ptt-state').hidden=!inputFailed&&!['calibrating','listening','speech','transcribing'].includes(capture);
- $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.'):
+ const failures={no_speech:'말소리를 감지하지 못했어요. 버튼을 누르고 다시 말해 주세요.',stt_empty:'말을 알아듣지 못했어요. 다시 말해 주세요.'};
+ $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':failures[failure?.code]||(capture==='failed'&&failure?.stage!=='stt'?'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.':'대화를 완료하지 못했어요. 준비 상태에서 실패 단계를 확인해 주세요.')):
   ({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
  if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){if(!$('game-menu').open)$('game-menu').showModal();$('game-list').replaceChildren();if(!next.games.catalog.length)$('game-list').textContent='게임 자료가 아직 준비되지 않았어요.';for(const item of next.games.catalog){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY';b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}}
  else if($('game-menu').open)$('game-menu').close();
@@ -62,17 +66,28 @@ function renderFeatures(next){
  lastFeatureMode=next.mode;
  const video=next.camera_video,recording=video?.recording===true,unknown=video?.code==='video_close_failed';
  $('video-indicator').hidden=!recording&&!unknown;
- $('video-indicator').textContent=unknown?'영상 종료를 확인하지 못했어요. 검수가 필요해요.':'● 모의 영상 녹화 중 · 소리 없음';
- const videoReady=next.simulation===true&&video?.readiness==='READY';
- $('video-readiness').textContent=!next.simulation?'실물 영상 기능은 사용자 검수 전 사용할 수 없어요.':video?.readiness==='ASSET_PENDING'?'실행 전에 저장 위치를 선택해 주세요.':unknown?'영상 정리가 확인되지 않았어요. 새 녹화를 시작하지 마세요.':'선택한 저장 위치에 합성 테스트 영상만 저장해요.';
+ const liveVideo=next.capabilities?.camera_video==='explicit_supervised';
+ $('video-explanation').textContent=liveVideo?'음성과 별개이며 소리를 저장하지 않아요. 사용자 동의 후에만 카메라를 열어요.':'음성 녹음과 별개이며 소리를 저장하지 않아요. 현재 실물 카메라는 꺼져 있어요.';
+ $('video-indicator').textContent=unknown?'영상 종료를 확인하지 못했어요. 검수가 필요해요.':liveVideo?'● 카메라 녹화 중 · 소리 없음':'● 모의 영상 녹화 중 · 소리 없음';
+ const liveBackendAvailable=next.system_diagnostics?.camera?.available===true;
+ const videoReady=(next.simulation===true||liveVideo&&liveBackendAvailable)&&video?.readiness==='READY';
+ $('video-readiness').textContent=unknown?'영상 정리가 확인되지 않았어요. 새 녹화를 시작하지 마세요.':liveVideo&&!liveBackendAvailable?'현재 Python 환경에 카메라 라이브러리가 없어요. 실행 가이드를 확인해 주세요.':liveVideo?'사용자가 보는 동안 선택한 위치에 실제 카메라 영상을 짧게 저장해요.':!next.simulation?'실물 영상 기능은 사용자 검수 전 사용할 수 없어요.':video?.readiness==='ASSET_PENDING'?'실행 전에 저장 위치를 선택해 주세요.':'선택한 저장 위치에 합성 테스트 영상만 저장해요.';
+ $('video-consent').parentElement.lastChild.textContent=liveVideo?'사용자가 보는 동안 실제 카메라 영상을 저장하는 데 동의해요.':'선택한 저장 위치에 모의 영상을 만드는 데 동의해요.';
+ $('video-start').textContent=liveVideo?'감독하에 영상 시작':'모의 영상 시작';
  $('video-start').disabled=!videoReady||recording||!$('video-consent').checked||next.conversation_busy||next.mode!=='conversation';
  $('video-stop').disabled=!recording;
  const result=video?.result,saved=result?.completed===true;
- $('video-result').textContent=saved?'모의 영상 저장과 검증을 완료했어요.':result&&['failed','unknown','rejected'].includes(result.status)?'영상 결과를 확인해 주세요. 자동 재시도하지 않아요.':'';
+ $('video-result').textContent=saved?(liveVideo?'카메라 영상 저장과 검증을 완료했어요.':'모의 영상 저장과 검증을 완료했어요.'):result&&['failed','unknown','rejected'].includes(result.status)?'영상 결과를 확인해 주세요. 자동 재시도하지 않아요.':'';
  $('video-download').hidden=!saved;if(saved)$('video-download').href='/api/video/'+encodeURIComponent(result.video_id);
- const cameraReady=next.capabilities?.camera==='mock';
- $('camera-readiness').textContent=cameraReady?'합성 사진·미리보기·위치 추적을 검사해요.':'실물 카메라는 사용자 검수 전 사용할 수 없어요.';
+ $('video-download').textContent=liveVideo?'검증된 카메라 영상 파일':'검증된 모의 영상 파일';
+ const photoReady=next.mode==='photo'&&next.photo?.completed===true&&typeof next.photo?.photo_id==='string';
+ $('photo-result-image').hidden=!photoReady;$('photo-download').hidden=!photoReady;
+ if(photoReady){const url='/api/photo/'+encodeURIComponent(next.photo.photo_id);if($('photo-result-image').getAttribute('src')!==url)$('photo-result-image').src=url;$('photo-download').href=url;}
+ const liveCamera=next.capabilities?.camera==='explicit_supervised',cameraAvailable=next.system_diagnostics?.camera?.available===true;
+ const cameraReady=next.capabilities?.camera==='mock'||liveCamera&&cameraAvailable;
+ $('camera-readiness').textContent=liveCamera?(cameraAvailable?'감독 모드예요. 촬영 버튼을 누를 때 카메라를 열어요.':'현재 Python 환경에 카메라 라이브러리가 없어요. 실행 가이드를 확인해 주세요.'):cameraReady?'합성 사진·미리보기·위치 추적을 검사해요.':'실물 카메라는 사용자 검수 전 사용할 수 없어요.';
  for(const id of ['photo-take','camera-preview','camera-track'])$(id).disabled=!cameraReady||next.conversation_busy;
+ if(liveCamera&&!next.system_diagnostics?.camera?.tracking_available)$('camera-track').disabled=true;
  const preview=next.camera?.preview_available&&$('camera-dialog').open;
  $('camera-image').hidden=!preview;if(preview)$('camera-image').src='/api/preview?sequence='+next.sequence;
  $('music-readiness').textContent=next.media?.catalog?.length?'현재 목록은 검증된 모의 재생 자료예요. 실제 음원·출력은 별도 검수가 필요해요.':'사용자 음원과 출처·라이선스 검토가 필요해요.';
@@ -81,6 +96,8 @@ function renderFeatures(next){
  for(const id of ['music-pause','music-resume','music-next','music-stop'])$(id).disabled=next.mode!=='music';
  const telemetry=next.system_diagnostics?.telemetry;
  $('system-readiness').textContent=telemetry?.power?.status==='OBSERVED'?('전원 현재 이상: '+(telemetry.power.current_fault?'있음':'없음')+' · 과거 기록: '+(telemetry.power.historical_fault?'있음':'없음')):'온도·전원 실측은 아직 실행하지 않았어요. 자동 설정 변경은 하지 않아요.';
+ $('turn-diagnostics').textContent=JSON.stringify(next.turn_diagnostics||{enabled:false},null,2);
+ $('input-evidence').textContent=JSON.stringify(inputEvidence,null,2);
 }
 async function poll(){if(closed||document.hidden)return;const current=epoch;controller=new AbortController();const abort=setTimeout(()=>controller?.abort(),1200);try{
  const r=await fetch('/api/desktop',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error();const next=await r.json();if(current!==epoch||closed)return;
@@ -91,7 +108,7 @@ $('notice-menu').onclick=menu;$('resume').onclick=()=>$('menu').close();$('exit'
 function ptt(){if(!pttEnabled){error('버튼 녹음은 사용자 검수용 마이크 opt-in이 필요해요.');return;}
  if(pttPending){control('ptt').catch(()=>error('버튼 입력을 확인해 주세요.'));return;}
  pttPending=true;pttRequest=null;const current=++pttEpoch;
- control('ptt').then(result=>{if(current===pttEpoch&&pttPending)pttRequest=result.request_id;}).catch(()=>{if(current===pttEpoch){pttPending=false;error('버튼 녹음을 시작하지 못했어요.');}});}
+ bump('request_sent');control('ptt').then(result=>{bump('request_accepted');if(current===pttEpoch&&pttPending)pttRequest=result.request_id;}).catch(()=>{bump('request_rejected');if(current===pttEpoch){pttPending=false;error('버튼 녹음을 시작하지 못했어요.');}});}
 function cancelPTT(){enterDown=false;if(pttPending){pttEpoch++;pttPending=false;pttRequest=null;control('cancel').catch(()=>{});}}
 $('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));$('menu').close();};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
@@ -110,7 +127,7 @@ for(const [id,action] of [['music-pause','pause'],['music-resume','resume'],['mu
 $('music-stop').onclick=()=>intent('stop_media').catch(()=>error('음악 종료를 확인해 주세요.'));
 for(const id of ['game-back','foreground-back'])$(id).onclick=()=>intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
 const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',z:'A',b:'B',Enter:'START',Shift:'SELECT',Escape:'ESC'};
-function key(event,pressed){if(event.key==='Enter'&&!pressed)enterDown=false;if(event.repeat)return;
+function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){if(!pressed){enterDown=false;bump('keyups');}else if(event.repeat)bump('repeats_ignored');else bump('enter_presses');}if(event.repeat)return;
  if(pressed&&event.ctrlKey&&event.altKey&&event.code==='KeyD'&&state?.developer_enabled&&state.phase==='ready'){event.preventDefault();location.assign('/developer');return;}
  if(event.key==='Escape'){
   event.preventDefault();event.stopPropagation();
@@ -121,13 +138,14 @@ function key(event,pressed){if(event.key==='Enter'&&!pressed)enterDown=false;if(
  if(['BUTTON','INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;
  if(event.key==='Enter'&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&state?.phase==='ready'){
   event.preventDefault();event.stopPropagation();if(!pressed){enterDown=false;return;}if(enterDown)return;enterDown=true;ptt();return;}
- if(['game','game_menu'].includes(currentMode)&&keys[event.key]){event.preventDefault();event.stopPropagation();control('input',{key:keys[event.key],pressed}).catch(()=>error('게임 입력 상태를 확인해 주세요.'));return;}}
+ if(['game','game_menu'].includes(currentMode)&&keys[event.key]){if(event.key==='Enter'&&pressed)bump('blocked_mode');event.preventDefault();event.stopPropagation();control('input',{key:keys[event.key],pressed}).catch(()=>error('게임 입력 상태를 확인해 주세요.'));return;}}
 window.addEventListener('keydown',event=>key(event,true));window.addEventListener('keyup',event=>key(event,false));
-window.addEventListener('blur',cancelPTT);
+function blurPTT(event){setTimeout(()=>{if(event.isTrusted&&document.hasFocus()&&document.activeElement===frame)return;bump('cancelled_blur');cancelPTT();},0);}
+window.addEventListener('blur',blurPTT);
 let touchStart=null,inputDocument=null;function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',cancelPTT);
  doc.addEventListener('pointerdown',event=>{touchStart={x:event.clientX,y:event.clientY};if(event.clientX<60&&event.clientY<60)touchStart.timer=setTimeout(menu,1200);});for(const name of ['pointerup','pointercancel'])doc.addEventListener(name,()=>{clearTimeout(touchStart?.timer);touchStart=null;});doc.addEventListener('pointermove',event=>{if(touchStart&&Math.hypot(event.clientX-touchStart.x,event.clientY-touchStart.y)>12){clearTimeout(touchStart.timer);touchStart=null;}});}catch(_){}}
 frame.addEventListener('load',()=>{cancelPTT();bindFrameInputs();});bindFrameInputs();
 window.addEventListener('pagehide',()=>{cancelPTT();closed=true;epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
 document.addEventListener('visibilitychange',()=>{epoch++;clearTimeout(timer);controller?.abort();if(document.hidden)cancelPTT();else{refreshAdapter();poll();}});
-window.BMODesktop={state:null,desktop,control,intent,menu};poll();
+window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence};poll();
 })();

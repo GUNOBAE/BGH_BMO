@@ -16,6 +16,22 @@ EXTRA_CODES = frozenset({"desktop_start_failed", "desktop_cleanup_failed", "lock
     "screen_unavailable", "screen_sha256_mismatch", "invalid_port", "face_ready_timeout"})
 
 
+def runtime_directory_metadata(value):
+    """A bounded metadata observation cannot identify who changed a mode."""
+    result = {"present": False, "directory": False, "owner_matches": False,
+              "mode": None, "mode_change_actor": "UNKNOWN"}
+    try:
+        path = Path(value)
+        if not path.is_absolute() or ".." in path.parts or len(str(path)) > 512:
+            return result
+        info = path.lstat()  # No contents, environment dump, following final symlink or repair.
+        result.update(present=True, directory=stat.S_ISDIR(info.st_mode),
+                      owner_matches=info.st_uid == os.geteuid(), mode=f"{stat.S_IMODE(info.st_mode):04o}")
+    except (OSError, TypeError, ValueError):
+        pass
+    return result
+
+
 def failure(stage, error):
     """Never trust arbitrary .code values, exception repr, environment or paths."""
     stage = stage if stage in STAGES else "owner_loop"
@@ -31,6 +47,8 @@ def startup_preflight(*, environ=None, face_file=None, screen_profile="r10", loc
     result = {"version": 1, "read_only": True, "credentials_accessed": False,
               "processes_started": False, "files_written": 0, "repairs_performed": False}
     display = source.get("WAYLAND_DISPLAY")
+    result["runtime_metadata"] = runtime_directory_metadata(source.get("XDG_RUNTIME_DIR"))
+    result["runtime_repair"] = "manual_review_required_no_automatic_chmod"
     result["wayland_display_present"] = (type(display) is str and
         re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}", display) is not None)
     descriptor = None

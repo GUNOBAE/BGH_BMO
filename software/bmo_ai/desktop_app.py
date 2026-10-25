@@ -38,6 +38,12 @@ def parser():
     p.add_argument("--offline-voice", action="store_true")
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--ptt-microphone", action="store_true", help="explicit supervised opt-in: HID/keyboard Enter starts finite mic/VAD capture; no idle listening")
+    p.add_argument("--ptt-trace", action="store_true", help="opt-in bounded stage/timing/RMS diagnostics; never PCM, transcript, keys or provider messages")
+    p.add_argument("--ptt-ambient-profile", type=Path, help="explicit supervised calibration profile; no automatic calibration or idle listening")
+    p.add_argument("--plain-voice", action="store_true", help="use plain Aaron voice instead of supported, allowlisted emotional direction")
+    p.add_argument("--camera-supervised", action="store_true", help="explicit user-present camera activation path; no camera opens until a requested action")
+    p.add_argument("--photo-directory", type=Path, help="required private local destination for supervised camera photos")
+    p.add_argument("--camera-video-supervised", action="store_true", help="also permit explicitly requested supervised camera video; requires camera and video directory")
     p.add_argument("--speaker-device", default="plughw:CARD=MAX98357A,DEV=0")
     p.add_argument("--startup-timeout", type=float, default=15.)
     p.add_argument("--greeting-timeout", type=float, default=30.)
@@ -66,8 +72,16 @@ def public_plan(args):
         "ptt": {"enabled": args.simulate or args.ptt_microphone,
                 "source": "synthetic_pcm" if args.simulate else "explicit_microphone" if args.ptt_microphone else "disabled",
                 "automatic_capture": False, "wake_word_enabled": False, "physical_verified": False},
+        "ptt_diagnostics": {"trace_enabled": args.ptt_trace,
+                            "ambient_profile_selected": args.ptt_ambient_profile is not None,
+                            "raw_audio_logged": False, "transcripts_logged": False},
+        "voice_direction": {"requested": not args.plain_voice, "speaker_changed": False,
+                            "listening_approval": "NOT_RUN"},
+        "camera": {"supervised_opt_in": args.camera_supervised,
+                   "photo_storage_selected": args.photo_directory is not None,
+                   "automatic_capture": False, "physical_verified": False},
         "camera_video": {"storage_selected": args.video_directory is not None,
-                         "live_enabled": False, "automatic_capture": False},
+                         "live_enabled": args.camera_video_supervised, "automatic_capture": False},
         "music_library": {"selected": args.music_directory is not None,
                           "live_playback_enabled": False, "automatic_import": False},
         "pi_kiosk_verified": "NOT_RUN"}
@@ -85,6 +99,14 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--demo-assets requires --simulate")
     if args.music_directory is not None and args.demo_assets:
         p.error("--music-directory and --demo-assets are separate catalogs")
+    if args.ptt_ambient_profile is not None and not args.ptt_microphone:
+        p.error("--ptt-ambient-profile requires --ptt-microphone")
+    if args.camera_supervised and (not args.live or args.photo_directory is None):
+        p.error("--camera-supervised requires --live and --photo-directory")
+    if args.photo_directory is not None and not args.camera_supervised:
+        p.error("--photo-directory requires --camera-supervised")
+    if args.camera_video_supervised and (not args.camera_supervised or args.video_directory is None):
+        p.error("--camera-video-supervised requires --camera-supervised and --video-directory")
     preparing = args.prepare_greeting or args.audition_greeting or args.approve_greeting is not None
     if preparing and not args.live:
         p.error("greeting preparation/review requires explicit --live")
@@ -101,7 +123,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
     if args.install_desktop:
         from .desktop_install import install_desktop
         try:
-            result = install_desktop(install=not args.dry_run, simulate=args.simulate)
+            install_settings = {"install": not args.dry_run, "simulate": args.simulate}
+            if args.ptt_microphone:
+                install_settings["ptt_microphone"] = True
+            result = install_desktop(**install_settings)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         except Exception:
@@ -180,7 +205,13 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             stage = "engine_init"
             settings = {"config": config, "runtime": RuntimePolicy(simulate=args.simulate,
                         conversation_ptt_microphone=args.simulate or args.ptt_microphone),
-                        "demo_assets": args.demo_assets, "clock": clock}
+                        "demo_assets": args.demo_assets, "clock": clock,
+                        "ptt_trace": args.ptt_trace, "ptt_ambient_profile": args.ptt_ambient_profile,
+                        "ptt_speech_safe": True,
+                        "expressive_voice": not args.plain_voice}
+            if args.camera_supervised:
+                settings.update(camera_supervised=True, photo_directory=args.photo_directory,
+                                camera_video_supervised=args.camera_video_supervised)
             if args.video_directory is not None:
                 settings["video_directory"] = args.video_directory
             if args.music_directory is not None:
@@ -233,15 +264,26 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         if app is not None:
             try:
                 app.close()
-            except Exception:
-                print("BMO owned cleanup needs review.", file=sys.stderr)
+            except Exception as error:
+                from .desktop_diagnostics import failure
+                print(failure("cleanup", error), file=sys.stderr)
                 outcome = 1
+            print("BMO desktop cleanup: " + json.dumps(app.cleanup_snapshot(),
+                  ensure_ascii=False, sort_keys=True), file=sys.stderr)
         elif client is not None:
             client.close()
         if temporary is not None:
-            temporary.cleanup()
+            try:
+                temporary.cleanup()
+            except Exception:
+                print("BMO desktop failed: stage=cleanup code=synthetic_cache_cleanup_failed", file=sys.stderr)
+                outcome = 1
         if lock is not None:
-            lock.close()
+            try:
+                lock.close()
+            except Exception:
+                print("BMO desktop failed: stage=cleanup code=lock_release_failed", file=sys.stderr)
+                outcome = 1
     return outcome
 
 

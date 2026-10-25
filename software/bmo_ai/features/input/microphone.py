@@ -304,10 +304,13 @@ class PttRecorder:
                  playback_active=None, allowed_focus=None, on_state=None,
                  threshold=.02, min_speech=.24, silence_timeout=.9,
                  no_speech_timeout=3., max_duration=12., calibration=.4,
-                 noise_multiplier=2.5, max_noise=.12):
+                 noise_multiplier=2.5, max_noise=.12, speech_safe=False, ambient_rms=None):
         if (not callable(source_factory) or not _positive(calibration, .5) or calibration < .3
                 or not _positive(noise_multiplier, 10) or noise_multiplier < 1
-                or not _positive(max_noise, .5) or not _positive(max_duration, 12)):
+                or not _positive(max_noise, .5) or not _positive(max_duration, 12)
+                or type(speech_safe) is not bool
+                or ambient_rms is not None and (type(ambient_rms) not in (int, float)
+                    or not math.isfinite(ambient_rms) or not 0 <= ambient_rms <= max_noise)):
             raise MicError("invalid_mic_configuration")
         # Reuse and validate the existing PCM gate's contract without opening IO.
         self.focus = _FocusProbe(audio_focus, allowed_focus)
@@ -321,6 +324,9 @@ class PttRecorder:
         self.settings = dict(threshold=threshold, min_speech=min_speech, silence_timeout=silence_timeout,
                              no_speech_timeout=no_speech_timeout, max_duration=max_duration)
         self.calibration, self.noise_multiplier, self.max_noise = calibration, noise_multiplier, max_noise
+        self.speech_safe, self.ambient_rms = speech_safe, ambient_rms
+        self._rms_min, self._rms_max, self._threshold, self._frames = None, 0., threshold, 0
+        self._first_frame_received = False
         self._lock, self._operation = RLock(), Lock()
         self._cancel, self._finish, self._closed, self._idle = Event(), Event(), Event(), Event()
         self._idle.set()
@@ -332,14 +338,18 @@ class PttRecorder:
 
     def snapshot(self):
         with self._lock:
-            return dict(state=self._state, reason_code=self._code, microphone_open=self._microphone_open,
-                        generation=self._last_generation, captured_bytes=self._captured_bytes,
-                        speech_detected=self._state in ("speech", "ready", "transcribing"),
-                        automatic_capture=False, wake_word_enabled=False,
-                        cleanup_pending=self._cleanup_failed or self._pending_wav is not None,
-                        vad="rms_energy", calibration_seconds=self.calibration,
-                        silence_seconds=self.settings["silence_timeout"],
-                        max_seconds=self.settings["max_duration"])
+            value = dict(state=self._state, reason_code=self._code, microphone_open=self._microphone_open,
+                         generation=self._last_generation, captured_bytes=self._captured_bytes,
+                         speech_detected=self._state in ("speech", "ready", "transcribing"),
+                         automatic_capture=False, wake_word_enabled=False,
+                         cleanup_pending=self._cleanup_failed or self._pending_wav is not None,
+                         vad="rms_energy", calibration_seconds=self.calibration,
+                         silence_seconds=self.settings["silence_timeout"], max_seconds=self.settings["max_duration"],
+                         first_frame_received=self._first_frame_received, voice_detected=self._state in ("speech", "ready", "transcribing"),
+                         rms_min=self._rms_min or 0., rms_max=self._rms_max, threshold=self._threshold,
+                         frames=self._frames, ambient_verified=self.ambient_rms is not None,
+                         speech_safe=self.speech_safe)
+            return value
 
     def _publish(self, state, code="ok", *, microphone_open=None):
         with self._lock:
@@ -380,6 +390,8 @@ class PttRecorder:
                 if generation <= self._last_generation:
                     raise MicError("duplicate_capture")
                 self._last_generation, self._ready, self._captured_bytes = generation, None, 0
+                self._rms_min, self._rms_max, self._frames = None, 0., 0
+                self._first_frame_received = False
                 self._cancel.clear()
                 self._finish.clear()
             self._idle.clear()
@@ -411,10 +423,13 @@ class PttRecorder:
             check()
             self._publish("calibrating")
             source = self.source_factory()
+            if getattr(source, "sample_rate", 16000) != 16000:
+                raise MicError("pcm_audio_format_failed")
             with self._lock:
                 self._source, self._microphone_open = source, True
             frames = iter(source.frames(capture_id, generation=generation, cancel_check=check))
             noise_squares, noise_count = 0, 0
+            preroll = []
             calibration_samples = round(16000 * self.calibration)
             previous_sequence, previous_time = -1, began
             for frame in frames:
@@ -431,21 +446,42 @@ class PttRecorder:
                 with self._lock:
                     self._captured_bytes += len(frame.pcm)
                     self._microphone_open = True
+                    self._first_frame_received = True
+                    self._frames += 1
+                frame_samples = tuple(v[0] for v in struct.iter_unpack("<h", frame.pcm))
+                frame_rms = math.sqrt(sum(s * s for s in frame_samples) / len(frame_samples)) / 32768
+                self._rms_min = frame_rms if self._rms_min is None else min(self._rms_min, frame_rms)
+                self._rms_max = max(self._rms_max, frame_rms)
                 if self._captured_bytes > int(16000 * 2 * self.settings["max_duration"]):
                     raise MicError("pcm_byte_limit")
                 if not gate_started:
-                    samples = tuple(v[0] for v in struct.iter_unpack("<h", frame.pcm))
-                    noise_squares += sum(sample * sample for sample in samples)
-                    noise_count += len(samples)
+                    noise_squares += sum(sample * sample for sample in frame_samples)
+                    noise_count += len(frame_samples)
+                    if self.speech_safe:
+                        preroll.append(frame)
                     if noise_count >= calibration_samples:
                         noise = math.sqrt(noise_squares / noise_count) / 32768
-                        if noise > self.max_noise:
+                        if not self.speech_safe and noise > self.max_noise:
                             raise MicError("calibration_noisy")
-                        gate.threshold = max(self.settings["threshold"], noise * self.noise_multiplier)
+                        # Never learn initial human speech as ambient noise. Only a
+                        # separately measured explicit quiet profile can raise the
+                        # product threshold; legacy injected callers retain v1.
+                        baseline = self.ambient_rms if self.speech_safe else noise
+                        gate.threshold = max(self.settings["threshold"],
+                                             (baseline or 0.) * self.noise_multiplier)
+                        self._threshold = gate.threshold
                         if not gate.start_ptt(capture_id, generation=generation):
                             raise MicError(gate.snapshot()["reason_code"])
                         gate_started = True
                         self._publish("listening", microphone_open=True)
+                        for initial in preroll:
+                            # These frames already passed source freshness checks.
+                            # Buffer replay retains samples; its receipt time is now.
+                            gate.feed(initial.pcm, sequence=initial.sequence,
+                                      timestamp=self.clock(), generation=generation)
+                        if gate.snapshot()["speech_detected"]:
+                            self._publish("speech", microphone_open=True)
+                        preroll.clear()
                     continue
                 accepted = gate.feed(frame.pcm, sequence=frame.sequence,
                                      timestamp=frame.timestamp, generation=generation)
@@ -576,13 +612,16 @@ class PttRecorder:
             check()
             if type(result) is not str or len(result) > 16384:
                 raise MicError("invalid_transcript")
-            self._publish("idle", "transcribed")
+            self._publish("idle", "transcribed" if result.strip() else "stt_empty")
             return result
         except (TurnCancelled, KeyboardInterrupt):
             self._publish("idle", "user_cancelled")
             raise
-        except BaseException:
-            self._publish("failed", "transcription_failed")
+        except BaseException as error:
+            # Only fixed codes; never exception text/provider payload or transcript.
+            from ...cloud import CloudError
+            code = error.code if isinstance(error, (MicError, CloudError, audio.AudioError)) else "transcription_failed"
+            self._publish("failed", code)
             raise
         finally:
             try:

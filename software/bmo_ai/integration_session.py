@@ -5,7 +5,7 @@ cancellation and late results. This adapter never creates hardware at import.
 """
 from collections import deque
 import json
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from types import SimpleNamespace
 import time
 from uuid import uuid4
@@ -45,6 +45,11 @@ class IntegrationApp(ConversationApp):
     """Keep existing fixed unavailability notices on the same owned output."""
     stage_reply = None
     input_provider = None
+    trace_stage = None
+
+    def _trace(self, stage, code="ok", outcome="ok"):
+        if self.trace_stage is not None:
+            self.trace_stage(stage, code, outcome=outcome)
     def _notice(self, error):
         if self.config.offline_voice and error.code in ("connection", "timeout", "server", "rate_limit"):
             try:
@@ -70,11 +75,13 @@ class IntegrationApp(ConversationApp):
 
     def answer(self, message):
         previous = [dict(item) for item in self.brain.history]
+        self._trace("ai", "started", "started")
         try:
             answer = super().answer(message)
             if self.stage_reply is not None:
                 self.stage_reply(answer)
             self._check_cancelled()
+            self._trace("ai")
             return answer
         except TurnCancelled:
             # A synchronous provider may return after cancel. Its answer must
@@ -82,7 +89,23 @@ class IntegrationApp(ConversationApp):
             self.brain.history = previous
             raise
         except CloudError as error:
+            self._trace("ai", error.code, "error")
             self._notice(error)
+            raise
+        except Exception as error:
+            self._trace("ai", getattr(error, "code", "operation_failed"), "error")
+            raise
+
+    def playback(self, answer):
+        self._trace("fish", "started", "started")
+        try:
+            return super().playback(answer)
+        except TurnCancelled:
+            self._trace("playback", "cancelled", "cancelled")
+            raise
+        except Exception as error:
+            stage = "playback" if isinstance(error, AudioPlaybackError) else "fish"
+            self._trace(stage, getattr(error, "code", "operation_failed"), "error")
             raise
 
 
@@ -116,18 +139,21 @@ class IntegrationSession:
     def __init__(self, config, client, *, simulate=False, voice=None, brain=None,
                  clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0,
                  emotion_mode="manual", fish_api_key=None, reply_client=None,
-                 on_reply=None, on_playback_event=None):
+                 on_reply=None, on_playback_event=None, diagnostics=None,
+                 expressive_voice=False):
         if emotion_mode not in ("auto", "manual"):
             raise ValueError("unknown emotion mode")
         self.config, self.client, self.simulate = config, client, simulate
         self.expression_client = ExpressionClient(client) if reply_client is None else reply_client
         self._on_reply, self._on_playback_event = on_reply, on_playback_event
+        self.diagnostics = diagnostics
         self.brain = brain if brain is not None else policy_brain(
             client, config, expression_client=self.expression_client if emotion_mode == "auto" else None)
         self.clock, self.disconnect_timeout = clock, disconnect_timeout
         self.session_id = uuid4().hex
         self._lock = Lock()
         self._closed = self._active = self._pending_reset = False
+        self._cleanup_done, self._cleanup_failed = Event(), False
         self._repeat = False
         self._turn_input = None
         self._emotion_generation = 0
@@ -145,7 +171,8 @@ class IntegrationSession:
         voice_credentials = {} if fish_api_key is None else {"fish_api_key": fish_api_key}
         self.voice = voice if voice is not None else IntegrationVoice(
             config, client, simulate=simulate, emit=lambda *a, **kw: None,
-            cancel_check=lambda: None, **voice_credentials)
+            cancel_check=lambda: None, **voice_credentials,
+            **({"expressive": True} if expressive_voice else {}))
         self.worker = ConversationWorker(self._factory, timeout=timeout,
                                          queue_size=32, clock=clock, synthetic=simulate)
 
@@ -251,6 +278,8 @@ class IntegrationSession:
                     raise CloudError("expression_format", "The reply did not match the expression contract.")
                 value = dict(emotion=reply.emotion,
                              emotion_validation="degraded" if reply.degraded else "validated")
+                if hasattr(reply, "reaction"):
+                    value["reaction"] = reply.reaction
                 self._staged_expression = dict(turn=turn, generation=generation, **value)
                 self.voice.expression_metadata = value
                 if self._on_reply is not None:
@@ -287,6 +316,13 @@ class IntegrationSession:
                 if cues is None:  # Compatibility for an injected voice adapter.
                     cues = wav_cues(fields["path"])
             check()
+            if self.diagnostics is not None:
+                if kind == "prepared":
+                    self.diagnostics.record("fish", "prepared", turn=turn)
+                elif kind in ("started", "ended", "error", "cancelled"):
+                    self.diagnostics.record("playback", "playback_started" if kind == "started" else kind,
+                        outcome="error" if kind == "error" else "cancelled" if kind == "cancelled" else "ok",
+                        turn=turn)
             with self._lock:
                 if not self._active or turn != self._turn:
                     return
@@ -328,6 +364,9 @@ class IntegrationSession:
         if not self._repeat:
             instance.stage_reply = stage_reply
             instance.input_provider = self._turn_input
+            if self.diagnostics is not None:
+                instance.trace_stage = lambda stage, code="ok", **kw: self.diagnostics.record(
+                    stage, code, turn=turn, **kw)
         return instance
 
     def start(self, message="A synthetic question"):
@@ -360,6 +399,8 @@ class IntegrationSession:
             self._turn_mode = self._data["emotion_mode"]
             self._turn_emotion_generation = self._emotion_generation
             self._turn = self.worker.turn + 1
+            if self.diagnostics is not None:
+                self.diagnostics.begin(self._turn)
             self._active = True
             self._started = None
             self._data.update(turn_id=f"{self.session_id}:{self._turn}",
@@ -394,6 +435,8 @@ class IntegrationSession:
                     self._idle("cancelled")
                     self._record(item.code or "cancelled")
             if item.kind == "finished":
+                if self.diagnostics is not None:
+                    self.diagnostics.finish(item.code)
                 self._turn_input = None
                 with self._lock:
                     self._active = False
@@ -442,14 +485,28 @@ class IntegrationSession:
             thread.join(timeout=1.0)
 
         def cleanup():
-            if thread is not None and thread.is_alive():
-                thread.join()  # daemon cleanup only; never block the owner UI.
-            self.voice.close()
-            close = getattr(self.client, "close", None)
-            if close is not None:
-                close()
+            try:
+                if thread is not None and thread.is_alive():
+                    thread.join()  # daemon cleanup only; never block the owner UI.
+                if self.voice.close() is False:
+                    self._cleanup_failed = True
+                close = getattr(self.client, "close", None)
+                if close is not None and close() is False:
+                    self._cleanup_failed = True
+            except BaseException:
+                self._cleanup_failed = True
+                raise
+            finally:
+                self._cleanup_done.set()
 
         if thread is not None and thread.is_alive():
             Thread(target=cleanup, daemon=True, name="bmo-owned-cleanup").start()
         else:
             cleanup()
+
+    def cleanup_snapshot(self):
+        stopped = not self.worker.worker_alive
+        complete = self._closed and stopped and self._cleanup_done.is_set() and not self._cleanup_failed
+        return dict(resources_cleaned=complete, worker_stopped=stopped,
+                    voice_client_closed=self._cleanup_done.is_set() and not self._cleanup_failed,
+                    code="resources_cleaned" if complete else "session_cleanup_pending")
