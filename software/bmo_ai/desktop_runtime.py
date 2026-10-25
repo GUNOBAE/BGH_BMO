@@ -188,6 +188,9 @@ class DesktopRuntime:
     def photo_bytes(self, photo_id):
         return self.host.photo_bytes(photo_id) if self.host is not None else None
 
+    def video_bytes(self, video_id):
+        return self.host.video_bytes(video_id) if self.host is not None else None
+
     def queue_command(self, nonce, command):
         if (isinstance(command, HostControl) and command.action in ("stop", "cancel")):
             with self._lock:

@@ -26,6 +26,8 @@ def parser():
     p.add_argument("--windowed", action="store_true", help="explicit development window, default kiosk")
     p.add_argument("--developer", action="store_true", help="enable /developer and hidden Ctrl+Alt+D")
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
+    p.add_argument("--video-directory", type=Path, help="user-selected private local synthetic-video storage; live camera video remains denied")
+    p.add_argument("--music-directory", type=Path, help="explicit reviewed private WAV library; simulation uses silent backend and live music stays denied")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--status", action="store_true")
     p.add_argument("--diagnose-startup", action="store_true", help="read-only session metadata, original face SHA and lock check; no launch or repair")
@@ -64,6 +66,10 @@ def public_plan(args):
         "ptt": {"enabled": args.simulate or args.ptt_microphone,
                 "source": "synthetic_pcm" if args.simulate else "explicit_microphone" if args.ptt_microphone else "disabled",
                 "automatic_capture": False, "wake_word_enabled": False, "physical_verified": False},
+        "camera_video": {"storage_selected": args.video_directory is not None,
+                         "live_enabled": False, "automatic_capture": False},
+        "music_library": {"selected": args.music_directory is not None,
+                          "live_playback_enabled": False, "automatic_import": False},
         "pi_kiosk_verified": "NOT_RUN"}
 
 
@@ -77,6 +83,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             p.error("timeouts must be finite and from 0 to 120 seconds")
     if args.demo_assets and not args.simulate:
         p.error("--demo-assets requires --simulate")
+    if args.music_directory is not None and args.demo_assets:
+        p.error("--music-directory and --demo-assets are separate catalogs")
     preparing = args.prepare_greeting or args.audition_greeting or args.approve_greeting is not None
     if preparing and not args.live:
         p.error("greeting preparation/review requires explicit --live")
@@ -173,6 +181,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             settings = {"config": config, "runtime": RuntimePolicy(simulate=args.simulate,
                         conversation_ptt_microphone=args.simulate or args.ptt_microphone),
                         "demo_assets": args.demo_assets, "clock": clock}
+            if args.video_directory is not None:
+                settings["video_directory"] = args.video_directory
+            if args.music_directory is not None:
+                settings["music_directory"] = args.music_directory
             if args.live:
                 from .private_credentials import resolve_credentials
                 from .cloud import create_client

@@ -119,6 +119,10 @@ class FeatureServer:
                         photo_id = path.removeprefix("/api/photo/")
                         image = owner.host.photo_bytes(photo_id) if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", photo_id) else None
                         self._send(200, image, "image/png") if image else self._send(404)
+                    elif path.startswith("/api/video/"):
+                        video_id = path.removeprefix("/api/video/")
+                        payload = owner.host.video_bytes(video_id) if re.fullmatch(r"video_[0-9a-f]{32}", video_id) else None
+                        self._send(200, payload, "application/octet-stream") if payload else self._send(404)
                     elif path in owner._resources:
                         mime, body = owner._resources[path]
                         self._send(200, body, mime)

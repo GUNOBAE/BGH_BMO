@@ -1,0 +1,666 @@
+{
+  "version": 1,
+  "source_head": "bc1485c127ffe3048de1852eaca9f5f3db1022b3",
+  "baseline_pr24": "4a80bc855175cb1c8259b040b70b3e87ed4e67d8",
+  "source_files": [
+    {
+      "path": ".github/workflows/software-tests.yml",
+      "sha256": "8511546cc905d96980c93974b847ba51740deb0575dd81500b3c1f9c5afe9a77"
+    },
+    {
+      "path": "docs/development/BMO_ACCEPTANCE_MATRIX_KR.md",
+      "sha256": "0091a26fe75db0aa6fcb6a862217496e55135c5e1c74e06b0fe0219884f94341"
+    },
+    {
+      "path": "docs/reports/BMO_BOOT_UX_V2_LATEST_KR.md",
+      "sha256": "47f26e0a3314c927dbb8f7e63d0eccdb90bddbe6368e2f079e47bae77b8e8d95"
+    },
+    {
+      "path": "docs/reports/BMO_PTT_VAD_V1_LATEST_KR.md",
+      "sha256": "8ba55a26e60a766cd6190a3becf59a26c47ef5bb43dfc60997d5b358c4f9e5a6"
+    },
+    {
+      "path": "software/BOOT_UX_KR.md",
+      "sha256": "c9f92d995f1da24d7de10cece335032dc94045bba5565daad4c8cd3b0e88678e"
+    },
+    {
+      "path": "software/CAMERA_MEDIA_KR.md",
+      "sha256": "650da788ca6a641058fff69057f23d1d4a4a9c9b90336c19b6fb3c9d6220470f"
+    },
+    {
+      "path": "software/MEDIA_QA_KR.md",
+      "sha256": "30b21c7c9fa4bdb622ca43168c5cc4c79dd5d65681c5e166e3f97cf30e1e8b2a"
+    },
+    {
+      "path": "software/PTT_VAD_KR.md",
+      "sha256": "0368faea478c8f079acf12b0ecd5080f926d5a695e2389e553b8f892a0939d56"
+    },
+    {
+      "path": "software/bmo_ai/desktop_app.py",
+      "sha256": "8e5295fcd260e14ae8dda12743fc7c9c12c909b833b9c4ab0d36a38320ea873e"
+    },
+    {
+      "path": "software/bmo_ai/desktop_browser.py",
+      "sha256": "09a93f78cefbe6e63451c7a6e2a8a2d659ec172aba20c6a8a25ed29560a3bf88"
+    },
+    {
+      "path": "software/bmo_ai/desktop_diagnostics.py",
+      "sha256": "71d3433515397cc3509be655ffbc42686c60ac402118a319894ea19fa081598f"
+    },
+    {
+      "path": "software/bmo_ai/desktop_runtime.py",
+      "sha256": "fdb4641cbb4739846a6e7e60207bc06f1434a7407906cf357c7b20c6bc3043f9"
+    },
+    {
+      "path": "software/bmo_ai/desktop_web/desktop.css",
+      "sha256": "303e3265d0eaa31e94e1de12312fecac65c4493eb3cd51874c3aee974fae4a21"
+    },
+    {
+      "path": "software/bmo_ai/desktop_web/desktop.js",
+      "sha256": "1dd8b6152baba3d6676e3d250f63d2c3e26eaae99c34cdf1b2baad239ddaca50"
+    },
+    {
+      "path": "software/bmo_ai/desktop_web/index.html",
+      "sha256": "dd13b0d6c03ca04e5e2640754f89de6e408dd4af7b15647bc66038ccb4ab2538"
+    },
+    {
+      "path": "software/bmo_ai/features/camera/broker.py",
+      "sha256": "50f65d7a3b8235a0db494ceacc7f2e1f9f155bc1843a7ba85f436e68c1e4d962"
+    },
+    {
+      "path": "software/bmo_ai/features/camera/video.py",
+      "sha256": "f94a6af5b106d6a362deed1a7a95ed91c1d9f7cbf5e4dace8633ce2bfe7a4c86"
+    },
+    {
+      "path": "software/bmo_ai/features/games/__init__.py",
+      "sha256": "ea98e1f60c1748ef4b486b93bfa306c192a8a1b64bb3c8087b25037382de895d"
+    },
+    {
+      "path": "software/bmo_ai/features/host.py",
+      "sha256": "4ca937cb0c63f583be330ae4b0456f73434e81217e6ce5593d22e29220c3ec3e"
+    },
+    {
+      "path": "software/bmo_ai/features/input/microphone.py",
+      "sha256": "e94c20d5759a6910696500f29b45bfc6bd5d458487a0a882386da221ba7ef46a"
+    },
+    {
+      "path": "software/bmo_ai/features/media/library.py",
+      "sha256": "7184161bf9e53f24fb5b6a5a396872b9e0d7d4acc11e119f0e121eed7d75c03b"
+    },
+    {
+      "path": "software/bmo_ai/features/runtime.py",
+      "sha256": "fa8e4f619b09f072cd2d08d9e8e6f11db4f1b476e1e4a56c757f9524ddea95e3"
+    },
+    {
+      "path": "software/bmo_ai/features/server.py",
+      "sha256": "0151c6352cfb654550fa4a8eccb6adcf6508ba8c6e1e16a60ab7540291c65ee2"
+    },
+    {
+      "path": "software/bmo_ai/integration_session.py",
+      "sha256": "f8393e8875cdff9b789ab1db7ae85850b8e040402c74e4d8f1824fd8138f07e5"
+    },
+    {
+      "path": "software/bmo_ai/media_assets.py",
+      "sha256": "0fed598e73188a41ad41b649315c9d6a9c12305268f534e3c3f26d6b30304dd4"
+    },
+    {
+      "path": "software/bmo_ai/system_readiness.py",
+      "sha256": "3a69e230f5ab756c1db16c4b2ff10afbbe782dad1e3ac54998f4f6f1c96e5320"
+    },
+    {
+      "path": "software/checks/check_camera_media_browser.py",
+      "sha256": "4ef4ee65b605eca601663cae3bc3e9bb773b753f05a415517ed298756a450573"
+    },
+    {
+      "path": "software/checks/check_desktop_app_browser.py",
+      "sha256": "bc00b7d41efc37605e70d73e72ddc88f3881c08c9a759d88bcd14d067818dc72"
+    },
+    {
+      "path": "software/checks/check_ptt_vad_browser.py",
+      "sha256": "9b12e7d67a6c03a9ea826c1e89ea869583aa30cda4c06cc630f04a5af314a1a1"
+    },
+    {
+      "path": "software/tests/test_camera_video.py",
+      "sha256": "d47e5604b4a5526eab5f48b17faab9936434eba6d5788913a2640e6460149173"
+    },
+    {
+      "path": "software/tests/test_desktop_startup_diagnostics.py",
+      "sha256": "9a6c365d58e846eb307a137791b2bdcedbddaae554fe1779cc420e6d6f2bdbd4"
+    },
+    {
+      "path": "software/tests/test_game_enter_context.py",
+      "sha256": "d428e5b40018dd2d35caf6c80a6e92f0afbc504f297cc7ff62cd416ad562ae3d"
+    },
+    {
+      "path": "software/tests/test_media_library.py",
+      "sha256": "87f3c9e799934ce396b1b2e6dda4dd7672c29f87cb284a6bbe55850a161c7393"
+    },
+    {
+      "path": "software/tests/test_microphone_ptt.py",
+      "sha256": "f2d2bd923ff1a29399f3b141bfc7b3a4c868f6aca779710b6b61ad82f957ffc7"
+    },
+    {
+      "path": "software/tests/test_music_directory_integration.py",
+      "sha256": "e1cc284937607a572ae9a86e0649a17726bfbb8d98a78bb6148a9c874c0de7da"
+    },
+    {
+      "path": "software/tests/test_owned_media_process_lifecycle.py",
+      "sha256": "367790f87d110c0db42cc2cd8f1c9b98582c98e9e510b223f2d0580f697ca53b"
+    },
+    {
+      "path": "software/tests/test_ptt_session_integration.py",
+      "sha256": "1963d55a6e7dd61bfa9298519435d18b1e2b4da875c15ed54b19d00143fc9b9a"
+    },
+    {
+      "path": "software/tests/test_system_readiness.py",
+      "sha256": "8062aafc140a0e5c568cb44b7e69d0f9beee417f93d5ea0dc00e6142aa9562ed"
+    },
+    {
+      "path": "software/tests/test_video_host_integration.py",
+      "sha256": "efff6d63e0d9ced38020392970e7a97c4650ae75216c3192b9202707ed094214"
+    }
+  ],
+  "unit": {
+    "pass": 1076,
+    "skip": 0,
+    "seconds": 74.999,
+    "baseline_pass": 890,
+    "added": 186,
+    "actual_device_or_paid_api": false
+  },
+  "local_headless": [
+    {
+      "script": "check_desktop_app_browser.py",
+      "status": "PASS",
+      "screen_profile": "ci-synthetic",
+      "checks": [
+        "rectangular percent bar tracks backend checkpoints; 100 only after face readiness",
+        "actual desktop entry wrapper starts real host/server and owned fake Chromium; splash waits for iframe before one cached greeting",
+        "800x480 product face fills viewport without scroll/developer controls; selected original bytes remain unmodified",
+        "whole-page refresh and iframe-only reconnect restore the adapter without replaying greeting",
+        "conversation keeps the same brain and separate answer cache; repeat causes no extra synthesis/API and browser audio remains zero",
+        "explicit hidden menu round trip retains conversation emotion and never repeats startup greeting",
+        "product Exit reaps only its owned fake browser and all Python player children and closes the real loopback server"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 1,
+        "synthesis": 1,
+        "players": 3,
+        "reaped": 3,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 0,
+        "mic_closed": 0,
+        "stt": 0,
+        "active_mics": 0,
+        "max_mics": 0,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "98ec28076dcacfba15d56ae37329bbd27752f00171e9e6c9c7039110cc65bbc6",
+      "sha256_after": "98ec28076dcacfba15d56ae37329bbd27752f00171e9e6c9c7039110cc65bbc6",
+      "asset_kind": "public_synthetic_api_contract",
+      "not_run": [
+        "real desktop install/Wayland kiosk/VNC/LCD",
+        "paid APIs and physical devices",
+        "Korean Fish voice quality"
+      ]
+    },
+    {
+      "script": "check_desktop_app_browser.py",
+      "status": "PASS",
+      "screen_profile": "r10",
+      "checks": [
+        "rectangular percent bar tracks backend checkpoints; 100 only after face readiness",
+        "actual desktop entry wrapper starts real host/server and owned fake Chromium; splash waits for iframe before one cached greeting",
+        "800x480 product face fills viewport without scroll/developer controls; selected original bytes remain unmodified",
+        "whole-page refresh and iframe-only reconnect restore the adapter without replaying greeting",
+        "conversation keeps the same brain and separate answer cache; repeat causes no extra synthesis/API and browser audio remains zero",
+        "explicit hidden menu round trip retains conversation emotion and never repeats startup greeting",
+        "product Exit reaps only its owned fake browser and all Python player children and closes the real loopback server"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 1,
+        "synthesis": 1,
+        "players": 3,
+        "reaped": 3,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 0,
+        "mic_closed": 0,
+        "stt": 0,
+        "active_mics": 0,
+        "max_mics": 0,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "sha256_after": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "asset_kind": "unmodified_approved_local_HTML",
+      "not_run": [
+        "real desktop install/Wayland kiosk/VNC/LCD",
+        "paid APIs and physical devices",
+        "Korean Fish voice quality"
+      ]
+    },
+    {
+      "script": "check_desktop_app_browser.py",
+      "status": "PASS",
+      "screen_profile": "v13.2",
+      "checks": [
+        "rectangular percent bar tracks backend checkpoints; 100 only after face readiness",
+        "actual desktop entry wrapper starts real host/server and owned fake Chromium; splash waits for iframe before one cached greeting",
+        "800x480 product face fills viewport without scroll/developer controls; selected original bytes remain unmodified",
+        "whole-page refresh and iframe-only reconnect restore the adapter without replaying greeting",
+        "conversation keeps the same brain and separate answer cache; repeat causes no extra synthesis/API and browser audio remains zero",
+        "explicit hidden menu round trip retains conversation emotion and never repeats startup greeting",
+        "product Exit reaps only its owned fake browser and all Python player children and closes the real loopback server"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 1,
+        "synthesis": 1,
+        "players": 3,
+        "reaped": 3,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 0,
+        "mic_closed": 0,
+        "stt": 0,
+        "active_mics": 0,
+        "max_mics": 0,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932",
+      "sha256_after": "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932",
+      "asset_kind": "unmodified_approved_local_HTML",
+      "not_run": [
+        "real desktop install/Wayland kiosk/VNC/LCD",
+        "paid APIs and physical devices",
+        "Korean Fish voice quality"
+      ]
+    },
+    {
+      "script": "check_ptt_vad_browser.py",
+      "status": "PASS",
+      "screen_profile": "ci-synthetic",
+      "checks": [
+        "startup greeting is cache-only; idle opens zero PCM sources/STT/brain",
+        "iframe GP8/keyboard Enter + repeat/duplicate edge -> one VAD capture/STT/brain/voice; emotion persists",
+        "repeat retains the previous expression/audio and performs zero capture/STT/brain/synthesis",
+        "game menu Enter stays game input and never starts PTT; face return preserves expression",
+        "focus loss cancels and closes active PCM source, with no late STT/answer or expression reset",
+        "queued Enter survives idle snapshots until blur cancellation retires it; zero source opens after owner resumes",
+        "fake missing microphone gives fixed external error plus terminal failed receipt; no STT/brain/output",
+        "reload/wake-disabled preserve one greeting and zero automatic capture; browser audio remains forbidden",
+        "product exit reaps all owned synthetic players/browser and closes all PCM sources"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 1,
+        "synthesis": 1,
+        "players": 3,
+        "reaped": 3,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 3,
+        "mic_closed": 3,
+        "stt": 1,
+        "active_mics": 0,
+        "max_mics": 1,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "98ec28076dcacfba15d56ae37329bbd27752f00171e9e6c9c7039110cc65bbc6",
+      "sha256_after": "98ec28076dcacfba15d56ae37329bbd27752f00171e9e6c9c7039110cc65bbc6",
+      "not_run": [
+        "USB GP8 identity/firmware",
+        "actual microphone/VAD tuning",
+        "paid STT/GPT/Fish",
+        "physical devices"
+      ]
+    },
+    {
+      "script": "check_ptt_vad_browser.py",
+      "status": "PASS",
+      "screen_profile": "r10",
+      "checks": [
+        "startup greeting is cache-only; idle opens zero PCM sources/STT/brain",
+        "iframe GP8/keyboard Enter + repeat/duplicate edge -> one VAD capture/STT/brain/voice; emotion persists",
+        "repeat retains the previous expression/audio and performs zero capture/STT/brain/synthesis",
+        "game menu Enter stays game input and never starts PTT; face return preserves expression",
+        "focus loss cancels and closes active PCM source, with no late STT/answer or expression reset",
+        "queued Enter survives idle snapshots until blur cancellation retires it; zero source opens after owner resumes",
+        "fake missing microphone gives fixed external error plus terminal failed receipt; no STT/brain/output",
+        "reload/wake-disabled preserve one greeting and zero automatic capture; browser audio remains forbidden",
+        "product exit reaps all owned synthetic players/browser and closes all PCM sources"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 1,
+        "synthesis": 1,
+        "players": 3,
+        "reaped": 3,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 3,
+        "mic_closed": 3,
+        "stt": 1,
+        "active_mics": 0,
+        "max_mics": 1,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "sha256_after": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "not_run": [
+        "USB GP8 identity/firmware",
+        "actual microphone/VAD tuning",
+        "paid STT/GPT/Fish",
+        "physical devices"
+      ]
+    },
+    {
+      "script": "check_ptt_vad_browser.py",
+      "status": "PASS",
+      "screen_profile": "v13.2",
+      "checks": [
+        "startup greeting is cache-only; idle opens zero PCM sources/STT/brain",
+        "iframe GP8/keyboard Enter + repeat/duplicate edge -> one VAD capture/STT/brain/voice; emotion persists",
+        "repeat retains the previous expression/audio and performs zero capture/STT/brain/synthesis",
+        "game menu Enter stays game input and never starts PTT; face return preserves expression",
+        "focus loss cancels and closes active PCM source, with no late STT/answer or expression reset",
+        "queued Enter survives idle snapshots until blur cancellation retires it; zero source opens after owner resumes",
+        "fake missing microphone gives fixed external error plus terminal failed receipt; no STT/brain/output",
+        "reload/wake-disabled preserve one greeting and zero automatic capture; browser audio remains forbidden",
+        "product exit reaps all owned synthetic players/browser and closes all PCM sources"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 1,
+        "synthesis": 1,
+        "players": 3,
+        "reaped": 3,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 3,
+        "mic_closed": 3,
+        "stt": 1,
+        "active_mics": 0,
+        "max_mics": 1,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932",
+      "sha256_after": "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932",
+      "not_run": [
+        "USB GP8 identity/firmware",
+        "actual microphone/VAD tuning",
+        "paid STT/GPT/Fish",
+        "physical devices"
+      ]
+    },
+    {
+      "script": "check_camera_media_browser.py",
+      "status": "PASS",
+      "screen_profile": "ci-synthetic",
+      "checks": [
+        "default screen remains the unchanged face; opening app creates no video store/camera/PCM/brain turn",
+        "explicit consent/start/stop uses one synthetic camera broker and saves validated private silent AVI; same-origin download is exact",
+        "fixture game launches and returns through the existing InputRouter; Enter/B do not open PTT and emotion/history persist",
+        "silent fake music pause/resume/next/stop returns to the same face without invented RMS mouth cues or STT",
+        "requested synthetic preview/tracking/photo use the same broker and outer shell; photo countdown/return preserve emotion",
+        "diagnostics distinguish unmeasured power/current-firmware status and never run telemetry, mic, paid API or browser audio",
+        "normal app exit cleans owned mock processes while keeping the completed selected-directory video unchanged"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 0,
+        "synthesis": 0,
+        "players": 1,
+        "reaped": 1,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 0,
+        "mic_closed": 0,
+        "stt": 0,
+        "active_mics": 0,
+        "max_mics": 0,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "98ec28076dcacfba15d56ae37329bbd27752f00171e9e6c9c7039110cc65bbc6",
+      "sha256_after": "98ec28076dcacfba15d56ae37329bbd27752f00171e9e6c9c7039110cc65bbc6",
+      "not_run": [
+        "actual camera/video codec/AF",
+        "owned game-pack assets and real music",
+        "devices,paid API,OS",
+        "VNC/LCD/power/long-soak"
+      ]
+    },
+    {
+      "script": "check_camera_media_browser.py",
+      "status": "PASS",
+      "screen_profile": "r10",
+      "checks": [
+        "default screen remains the unchanged face; opening app creates no video store/camera/PCM/brain turn",
+        "explicit consent/start/stop uses one synthetic camera broker and saves validated private silent AVI; same-origin download is exact",
+        "fixture game launches and returns through the existing InputRouter; Enter/B do not open PTT and emotion/history persist",
+        "silent fake music pause/resume/next/stop returns to the same face without invented RMS mouth cues or STT",
+        "requested synthetic preview/tracking/photo use the same broker and outer shell; photo countdown/return preserve emotion",
+        "diagnostics distinguish unmeasured power/current-firmware status and never run telemetry, mic, paid API or browser audio",
+        "normal app exit cleans owned mock processes while keeping the completed selected-directory video unchanged"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 0,
+        "synthesis": 0,
+        "players": 1,
+        "reaped": 1,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 0,
+        "mic_closed": 0,
+        "stt": 0,
+        "active_mics": 0,
+        "max_mics": 0,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "sha256_after": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "not_run": [
+        "actual camera/video codec/AF",
+        "owned game-pack assets and real music",
+        "devices,paid API,OS",
+        "VNC/LCD/power/long-soak"
+      ]
+    },
+    {
+      "script": "check_camera_media_browser.py",
+      "status": "PASS",
+      "screen_profile": "v13.2",
+      "checks": [
+        "default screen remains the unchanged face; opening app creates no video store/camera/PCM/brain turn",
+        "explicit consent/start/stop uses one synthetic camera broker and saves validated private silent AVI; same-origin download is exact",
+        "fixture game launches and returns through the existing InputRouter; Enter/B do not open PTT and emotion/history persist",
+        "silent fake music pause/resume/next/stop returns to the same face without invented RMS mouth cues or STT",
+        "requested synthetic preview/tracking/photo use the same broker and outer shell; photo countdown/return preserve emotion",
+        "diagnostics distinguish unmeasured power/current-firmware status and never run telemetry, mic, paid API or browser audio",
+        "normal app exit cleans owned mock processes while keeping the completed selected-directory video unchanged"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 0,
+        "synthesis": 0,
+        "players": 1,
+        "reaped": 1,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 0,
+        "mic_closed": 0,
+        "stt": 0,
+        "active_mics": 0,
+        "max_mics": 0,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "sha256_before": "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932",
+      "sha256_after": "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932",
+      "not_run": [
+        "actual camera/video codec/AF",
+        "owned game-pack assets and real music",
+        "devices,paid API,OS",
+        "VNC/LCD/power/long-soak"
+      ]
+    }
+  ],
+  "preservation": [
+    {
+      "name": "BMO_Screen_v13_2_7inch_preview_v10.html",
+      "sha256": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "unchanged": true
+    },
+    {
+      "name": "BMO_Screen_v13_2.html",
+      "sha256": "38250760bb49ba90297ece20ceb669e2e3421a073a6590cdc184c0971e5ad932",
+      "unchanged": true
+    },
+    {
+      "name": "en_US-bmo_voice.onnx",
+      "sha256": "2b323dfdd76efb36b096b93ef8a6f0a60a26886aaaeeba97e691c13641611fb8",
+      "unchanged": true
+    },
+    {
+      "name": "en_US-bmo_voice.onnx.json",
+      "sha256": "0786c36ebf1ffc2b6979391941d64bd2ed0279bd0114654d980ad957ec914776",
+      "unchanged": true
+    },
+    {
+      "name": "piper",
+      "sha256": "0c44a6360a21367b5d03b8656c3e274f4de715f6533245d8c1f17c242631912b",
+      "unchanged": true
+    },
+    {
+      "repository": "BMO_FEATURES",
+      "unchanged": true,
+      "head": "b4be622ec831721635332f7ce3ad39c6d16c7870",
+      "clean": true
+    },
+    {
+      "repository": "BMO_EMOTION",
+      "unchanged": true,
+      "head": "174dd974fdf119fc3d24a5cda0870ae70c007cf6",
+      "clean": true
+    },
+    {
+      "repository": "BMO_INTEGRATION",
+      "unchanged": true,
+      "head": "902b09739844ab4c78ea6234851b7bfb9cdb7634",
+      "clean": true
+    }
+  ],
+  "physical_acceptance": "NOT_RUN",
+  "actual_game_pack": "ASSET_PENDING",
+  "user_music_assets": "ASSET_PENDING",
+  "main_merged": false,
+  "local_headless_checks": 69,
+  "ci": {
+    "boot": {
+      "source_sha": "9b7294d160e54cee809ab7dcfaccaba1479827b0",
+      "pr_run": 40207260416,
+      "conclusion": "success"
+    },
+    "ptt": {
+      "source_sha": "bf599ea04181270b92a1f2bf64e4b71092ec5195",
+      "pr_run": 40208595521,
+      "conclusion": "success"
+    },
+    "camera_media": {
+      "source_sha": "bc1485c127ffe3048de1852eaca9f5f3db1022b3",
+      "pr_run": 40210122501,
+      "push_run": 40210089759,
+      "conclusion": "success",
+      "jobs": {
+        "unit_3_11": "success",
+        "unit_3_13": "success",
+        "public_browser": "success"
+      }
+    }
+  }
+}
