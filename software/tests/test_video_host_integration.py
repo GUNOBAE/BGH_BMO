@@ -369,6 +369,21 @@ class VideoHostIntegrationTests(unittest.TestCase):
         self.assertEqual(saved['video_id'], host.snapshot()['camera_video']['result']['video_id'])
         self.assertEqual(1, len(host.client.requests))
 
+    def test_download_refuses_structurally_valid_video_changed_after_saved_receipt(self):
+        host, backend = self.host()
+        self.start(host)
+        self.control(host, 'video_stop')
+        result = self.poll(host)['camera_video']['result']
+        path = self.root / (result['video_id'] + '.avi')
+        changed = bytearray(path.read_bytes())
+        pixel = changed.find(b'movi') + 4 + 8
+        changed[pixel] ^= 1
+        validate_avi_bytes(bytes(changed))  # Container validation alone is insufficient.
+        path.write_bytes(changed)
+        self.assertNotEqual(result['sha256'], hashlib.sha256(changed).hexdigest())
+        self.assertIsNone(host.video_bytes(result['video_id']))
+        self.assertEqual(bytes(changed), path.read_bytes())  # No repair or deletion.
+
     def test_public_snapshot_contains_safe_metadata_not_paths_bytes_or_false_live_claim(self):
         host, backend = self.host()
         self.start(host)
