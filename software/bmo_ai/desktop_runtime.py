@@ -45,6 +45,8 @@ class DesktopRuntime:
         self.failed = False
         self._face_version = None
         self._phase, self._code = "loading", "initializing"
+        # Progress is a checkpoint score, never a time estimate or paid API readiness.
+        self._progress_percent, self._progress_stage = 10, "lock_acquired"
         self._began, self._last_browser = self.clock(), None
         self._events = Queue(32)
         self._worker = self._lease = None
@@ -64,6 +66,17 @@ class DesktopRuntime:
             self._phase, self._code = phase, code
             self._audit.append({"phase": phase, "code": code})
 
+    def _advance_progress(self, percent, stage):
+        """Record only reached startup checkpoints; never animate an estimate."""
+        with self._lock:
+            if self._phase != "error" and percent > self._progress_percent:
+                self._progress_percent, self._progress_stage = percent, stage
+
+    def browser_started(self):
+        """Called by the owner only after its Chromium spawn succeeds."""
+        if self.browser is not None:
+            self._advance_progress(45, "browser_spawned")
+
     @property
     def exiting(self):
         return self._exit.is_set()
@@ -71,15 +84,18 @@ class DesktopRuntime:
     def set_server(self, server):
         self.server = server
         self._state("loading", "server_ready")
+        self._advance_progress(25, "server_ready")
 
     def set_browser(self, browser):
         self.browser = browser
         self._state("loading", "waiting_for_face")
+        self._advance_progress(35, "browser_registered")
 
     def set_host(self, host, greeting):
         if self.host is not None or self._closed:
             raise FeatureError("desktop_host_exists")
         self.host, self.greeting = host, greeting
+        self._advance_progress(65, "engine_ready")
         if self.clock() - self._began > self.startup_timeout:
             self.fail("host_startup_timeout")
 
@@ -94,6 +110,8 @@ class DesktopRuntime:
             return {"version": 1, "run_id": self.run_id, "phase": self._phase, "code": self._code,
                 "server_ready": self.server is not None, "engine_ready": self.host is not None,
                 "face_ready": self._face_signal.is_set(), "greeting_attempts": self._attempt,
+                "progress_percent": self._progress_percent,
+                "progress_stage": self._progress_stage,
                 "greeting_played": self._ever_played,
                 "developer_enabled": self.developer, "external_api_ready": "NOT_CHECKED",
                 "live_verified": False, "exit_requested": self.exiting}
@@ -112,6 +130,7 @@ class DesktopRuntime:
                 raise FeatureError("invalid_face_ready")
             self._face_version = value["frame_version"]
             self._face_signal.set()  # Owner poll performs the greeting.
+            self._advance_progress(90, "face_handshake_verified")
         elif action == "exit" and value is None:
             self._exit.set()
         elif action == "retry_greeting" and value is None:
@@ -274,6 +293,7 @@ class DesktopRuntime:
                         self._exit.set()
                         return
                 self._ready = True
+                self._advance_progress(100, "local_app_ready")
             elif self.clock() - self._began >= self.startup_timeout:
                 self.fail("face_ready_timeout" if self.host is not None else "host_startup_timeout")
         if self._ready and not self._auto_attempted and self._phase != "error":
