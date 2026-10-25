@@ -38,6 +38,8 @@ def parser():
     p.add_argument("--offline-voice", action="store_true")
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--ptt-microphone", action="store_true", help="explicit supervised opt-in: HID/keyboard Enter starts finite mic/VAD capture; no idle listening")
+    p.add_argument("--expressive-voice", action="store_true",
+                   help="opt-in Fish S2 emotional performance from validated BMO emotion; no extra API call")
     p.add_argument("--vad-profile", choices=("normal", "sensitive"), default="normal",
                    help="local RMS speech threshold; sensitive is an explicit test profile, not wake-word detection")
     p.add_argument("--speaker-device", default="plughw:CARD=MAX98357A,DEV=0")
@@ -61,6 +63,7 @@ def public_plan(args):
     return {"version": 1, "mode": "simulate" if args.simulate else "live" if args.live else "not_selected",
         "screen_profile": args.screen_profile, "screen_sha256": SCREEN_PROFILES[args.screen_profile]["sha256"],
         "window": "windowed" if args.windowed else "kiosk", "developer_enabled": args.developer,
+        "expressive_voice": args.expressive_voice,
         "greeting": {"text": GREETING_TEXT, "asset_version": "welcome-v2", "source": "approved_private_cache", "automatic_synthesis": False},
         "configuration": effective_config(config, emotion_mode="auto"),
         "credentials_accessed": False, "ports_opened": False, "processes_started": False,
@@ -185,6 +188,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "demo_assets": args.demo_assets, "clock": clock}
             if args.vad_profile != "normal":
                 settings["ptt_vad_profile"] = args.vad_profile
+            if args.expressive_voice:
+                settings["voice_expressive"] = True
             if args.video_directory is not None:
                 settings["video_directory"] = args.video_directory
             if args.music_directory is not None:
