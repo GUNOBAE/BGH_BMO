@@ -115,17 +115,18 @@ class VideoStore:
         self._records = self._request = None
         self._guard = RLock()
 
-    def _open(self):
+    def _open(self, *, create=True):
         if (not self.root.is_absolute() or '..' in self.root.parts
                 or self.root.name in ('', '.', '..') or self.root == Path('/')):
             raise FeatureError('unsafe_video_root')
         parent = None
         try:
             parent = _open_root(self.root.parent)
-            try:
-                os.mkdir(self.root.name, mode=0o700, dir_fd=parent)
-            except FileExistsError:
-                pass
+            if create:
+                try:
+                    os.mkdir(self.root.name, mode=0o700, dir_fd=parent)
+                except FileExistsError:
+                    pass
             root_fd = os.open(self.root.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                               dir_fd=parent)
             info = os.fstat(root_fd)
@@ -321,7 +322,16 @@ class VideoStore:
                     raise FeatureError('video_destination_exists') from None
                 raise
             finally:
-                os.unlink(name, dir_fd=self._root_fd)
+                try:
+                    os.unlink(name, dir_fd=self._root_fd)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    # A committed artifact is durable even if its staging link
+                    # cannot be removed. Never turn that into a clean failure
+                    # or erase/repeat either retained file.
+                    raise FeatureError('video_saved_state_unknown' if committed
+                                       else 'video_storage_failed') from None
             try:
                 return self.finish(result)
             except Exception:
@@ -336,7 +346,7 @@ class VideoStore:
             if self._root_fd is not None:
                 raise FeatureError('video_busy')
             try:
-                self._open()
+                self._open(create=False)
                 raw = self._read(video_id + '.avi', MAX_VIDEO_BYTES)
                 validate_avi_bytes(raw)
                 return raw

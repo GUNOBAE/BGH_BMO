@@ -9,7 +9,8 @@ R10 HTML/SVG, v13.2, 감정 연속성, 기존 Python 음성 정책과 Piper 원�
 영상 계약은 `bmo_camera_video_v1`로 기존 사진·HostIntent v1과 분리했다.
 `features/camera/video.py`의 `VideoRecorder`와 `VideoStore`가 기존
 `CameraFeature.broker` 한 개를 사용한다. 앱 시작·idle·대화·얼굴 추적을 이유로
-영상 녹화를 자동 시작하지 않는다. 영상에는 **마이크·오디오 스트림이 없다**.
+영상 녹화를 자동 시작하지 않는다. 영상에는 **마이크·오디오 스트림이 없다**. 영상 중 새 질문·PTT·답변 repeat를
+차단하며 저장/종료 또는 취소 뒤 기존 대화로 돌아간다.
 
 제품 live의 `camera_video`는 항상 **denied**다. 키, 모델 응답, 환경 변수,
 저장 위치 선택이나 동의 버튼만으로 실제 카메라를 활성화할 수 없다.
@@ -80,7 +81,10 @@ API 키나 파일 경로를 이 payload에 넣지 않는다.
 - backend close 실패는 `UNKNOWN/video_close_failed`다. 불확실한 broker 소유권을
   유지하고 새 녹화를 차단한다. 네이티브 장치의 정지를 강제로 보장한다고 말하지 않는다.
 - 게시 뒤 journal 저장에 실패하면 파일을 보존하고 `video_saved_journal_pending`을
-  표시한다. 성공 파일을 삭제하거나 같은 요청을 자동 반복하지 않는다.
+  표시한다. 게시 뒤 임시 hardlink 정리가 실패해도 파일을 보존하며
+  `UNKNOWN/video_saved_state_unknown`으로 분리한다. 성공 파일을 삭제하거나
+  같은 요청을 자동 반복하지 않는다. 다운로드 읽기는 이동·삭제된 저장 디렉터리를
+  다시 만들지 않는다.
 
 완성한 사용자 영상·사진은 앱 종료나 일반 취소로 자동 삭제하지 않는다.
 기존 사진은 기존 PhotoStore 계약을 따른다. 합성 fixture도 사용자가 선택한 영구 영상
