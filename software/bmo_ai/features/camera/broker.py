@@ -12,6 +12,7 @@ class CameraBroker:
         self._backend = None
         self._epoch = 0
         self._owner = None
+        self._owned_close_uncertain = False
         self._seq = self._stamp = None
         self.simulated = getattr(backend_factory, 'simulated', True) is not False
 
@@ -39,7 +40,7 @@ class CameraBroker:
             with self._state:
                 if self._owner is owner:
                     return True
-                if self._owner is not None or self._backend is not None:
+                if self._owned_close_uncertain or self._owner is not None or self._backend is not None:
                     raise FeatureError('camera_busy')
                 self._owner = owner
                 return True
@@ -48,13 +49,14 @@ class CameraBroker:
 
     def release(self, owner):
         with self._state:
-            if owner is None or self._owner is not owner or self._backend is not None:
+            if (owner is None or self._owner is not owner or self._backend is not None
+                    or self._owned_close_uncertain):
                 return False
             self._owner = None
             return True
 
     def _check_owner(self, owner):
-        if self._owner is not owner:
+        if self._owner is not owner or self._owned_close_uncertain:
             raise FeatureError('camera_busy')
 
     def open(self, *, cancel_check=None, owner=None, simulated_only=False):
@@ -97,9 +99,12 @@ class CameraBroker:
             except BaseException as error:
                 if backend is not None:
                     try:
-                        backend.close()
+                        released = backend.close() is not False
                     except Exception:
-                        pass
+                        released = False
+                    if owner is not None and not released:
+                        with self._state:
+                            self._owned_close_uncertain = True
                 if not isinstance(error, Exception):
                     raise
                 raise FeatureError('camera_open_failed') from None
@@ -147,15 +152,19 @@ class CameraBroker:
     def close(self, *, owner=None):
         # Do not wait on a capture operation to invalidate its future result.
         with self._state:
-            if self._owner is not owner:
+            if self._owner is not owner or self._owned_close_uncertain:
                 return False
             self._epoch += 1
             backend, self._backend = self._backend, None
             self._seq = self._stamp = None
         if backend is not None:
             try:
-                if backend.close() is False:
-                    return False
+                released = backend.close() is not False
             except Exception:
+                released = False
+            if not released:
+                if owner is not None:
+                    with self._state:
+                        self._owned_close_uncertain = True
                 return False
         return True

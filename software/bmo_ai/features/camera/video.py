@@ -427,6 +427,10 @@ class VideoRecorder:
             except Exception as error:
                 code = error.code if isinstance(error, FeatureError) else 'video_start_failed'
                 result = VideoResult(request_id, 'failed', code, 'start_failed')
+                if claimed:
+                    if not self._release_camera():
+                        result = replace(result, status='unknown', code='video_close_failed')
+                    claimed = False
                 if reserved:
                     try:
                         self.store.finish(result)
