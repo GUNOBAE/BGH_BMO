@@ -283,9 +283,15 @@ class DesktopFixture:
         state = self.state()
         status, payload = self.request("/api/screen")
         assert status == 200
-        return self.request("/api/desktop", payload={"action": "face_ready", "value":
+        response = self.request("/api/desktop", payload={"action": "face_ready", "value":
             {"run_id": state["run_id"], "screen_sha256": json.loads(payload)["sha256"],
              "frame_version": "synthetic-contract-v1"}})
+        if response[0] == 202:
+            self.wait(lambda value: value["progress_percent"] == 100 or value["phase"] == "error")
+            if self.state()["phase"] != "error":
+                return self.request("/api/desktop", payload={"action": "face_presented", "value":
+                    {"run_id": state["run_id"]}})
+        return response
 
     def wait(self, predicate, timeout=5):
         deadline = time.monotonic() + timeout

@@ -1,7 +1,7 @@
 /* Product wrapper only. The pinned R10 and Python audio owner stay unchanged. */
 (()=>{'use strict';
 const $=id=>document.getElementById(id),frame=$('face'),token=document.querySelector('meta[name="bmo-command-token"]').content;
-let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null;
+let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null;
 const messages={credentials_missing:'최초 키 설정이 필요해요. 실행 가이드를 확인해 주세요.',greeting_missing:'시작 인사 캐시가 아직 준비되지 않았어요.',greeting_unapproved:'시작 인사의 청취 승인이 필요해요.',greeting_corrupt:'시작 인사 캐시를 확인해 주세요.',face_ready_timeout:'얼굴 준비 시간이 초과됐어요.',host_startup_timeout:'대화 엔진 준비 시간이 초과됐어요.',greeting_timeout:'시작 인사 재생 정리를 기다리고 있어요.',browser_disconnected:'연결을 다시 확인하고 있어요.'};
 async function post(path,payload){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce:crypto.randomUUID(),payload})});if(!response.ok)throw Error('요청을 완료하지 못했어요.');return response.json();}
 const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(action,value=null)=>post('/api/control',{action,value}),intent=(name,target=null)=>post('/api/intent',{name,target});
@@ -16,7 +16,14 @@ async function ready(){if(!state||handshakeFrame===frame.contentDocument)return;
  const response=await fetch('/api/screen',{cache:'no-store'});if(!response.ok)throw Error();const screen=await response.json();
  await desktop('face_ready',{run_id:state.run_id,screen_sha256:screen.sha256,frame_version:version});handshakeFrame=frame.contentDocument;}
 function render(next){state=next;window.BMODesktop.state=next;
- const loading=next.phase==='loading';$('splash').hidden=!loading;
+ const loading=next.phase==='loading'&&next.progress_percent!==100;$('splash').hidden=!loading;
+ // Acknowledge only after the verified face has had two render opportunities.
+ if(next.progress_percent===100&&next.face_ready&&!document.hidden&&presentedRun!==next.run_id){
+  const run=next.run_id;presentedRun=run;requestAnimationFrame(()=>requestAnimationFrame(()=>{
+   if(!closed&&!document.hidden&&state?.run_id===run&&$('splash').hidden)
+    desktop('face_presented',{run_id:run}).catch(()=>{presentedRun=null;});
+   else presentedRun=null;
+  }));}
  // Values are achieved backend checkpoints, not an elapsed-time progress guess.
  const progress=Number.isInteger(next.progress_percent)?Math.max(0,Math.min(100,next.progress_percent)):0;
  $('progress-percent').textContent=progress+'%';
