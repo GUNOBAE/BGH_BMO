@@ -3,7 +3,7 @@
 Runtime policy is injected explicitly; live conversation never enables devices.
 """
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import hashlib
 from pathlib import Path
@@ -16,6 +16,7 @@ from uuid import uuid4, uuid5, UUID
 
 from ..integration_profile import integration_config
 from ..integration_session import IntegrationSession
+from ..conversation import TurnCancelled
 from .contracts import FeatureError, HostResult, request_id_ok
 from .journal import ActionJournal
 from .reply import FeatureClient, HostIntent
@@ -65,7 +66,8 @@ class FeatureSimulatedClient:
         reply = self.replies.popleft() if self.replies else {
             "version": 1, "speech": "We can try a little simulated adventure.",
             "emotion": "happy", "gesture": "none", "intent": None}
-        structured = request.get("text", {}).get("format", {}).get("name") == "bmo_feature_reply_v1"
+        structured = request.get("text", {}).get("format", {}).get("name") in (
+            "bmo_feature_reply_v1", "bmo_feature_reply_v2")
         text = json.dumps(reply) if structured else reply["speech"]
         return SimpleNamespace(status="completed", incomplete_details=None, error=None, output_text=text)
 
@@ -78,7 +80,10 @@ class FeatureHost:
                  games=None, media=None, camera=None, motion=None, journal=None,
                  config=None, brain=None, runtime=None, fish_api_key=None,
                  input_source=None, input_mapping=None, pcm_transcriber=None,
-                 ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None):
+                 ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None,
+                 ptt_trace=False, ptt_ambient_profile=None, expressive_voice=False,
+                 camera_supervised=False, photo_directory=None, camera_video_supervised=False,
+                 ptt_speech_safe=False):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -86,6 +91,17 @@ class FeatureHost:
         self.runtime = runtime if runtime is not None else RuntimePolicy()
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
+        if any(type(value) is not bool for value in (camera_supervised, camera_video_supervised)):
+            raise FeatureError("invalid_camera_runtime")
+        if (camera_supervised and (photo_directory is None or camera is not None)
+                or photo_directory is not None and not camera_supervised
+                or camera_video_supervised and (not camera_supervised or video_directory is None)):
+            raise FeatureError("camera_configuration_conflict")
+        if camera_supervised:
+            self.runtime = replace(self.runtime, camera_supervised=True,
+                                   camera_video_supervised=camera_video_supervised)
+        elif self.runtime.camera_supervised or self.runtime.camera_video_supervised:
+            raise FeatureError("camera_configuration_conflict")
         if not self.runtime.simulate and (client is None or demo_assets):
             raise FeatureError("invalid_runtime")
         if not self.runtime.simulate and (input_source is not None or pcm_transcriber is not None):
@@ -117,15 +133,29 @@ class FeatureHost:
         self._music_library_selected = music_directory is not None
         self.media = media or MediaFeature(content, items=media_items,
             backend=FakeMediaBackend(clock=clock, pausable=True), clock=clock)
-        self.camera = camera or CameraFeature(backend_factory=lambda: DemoBackend(clock=clock), detector=FixtureDetector(),
-            store=PhotoStore(photos), clock=clock, on_target=self._camera_target)
+        from .camera.live import LiveCameraOptions, build_live_camera, probe_camera_capability
+        self._camera_capability = probe_camera_capability()
+        if camera_supervised:
+            self.camera = build_live_camera(LiveCameraOptions(enabled=True, supervised=True,
+                tracking=self._camera_capability["tracking_available"]), Path(photo_directory).expanduser().absolute(),
+                clock=clock, on_target=self._camera_target)
+        else:
+            self.camera = camera or CameraFeature(backend_factory=lambda: DemoBackend(clock=clock), detector=FixtureDetector(),
+                store=PhotoStore(photos), clock=clock, on_target=self._camera_target)
         from .camera.video import VideoRecorder, VideoStore
-        self.video = VideoRecorder(self.camera.broker,
-            store=VideoStore(video_directory) if video_directory is not None else None,
-            simulated=self.runtime.simulate, clock=clock)
+        if camera_video_supervised:
+            from .camera.live_video import LiveVideoRecorder, LiveVideoStore
+            self.video = LiveVideoRecorder(self.camera.broker,
+                store=LiveVideoStore(Path(video_directory).expanduser().absolute()), supervised=True, clock=clock)
+        else:
+            self.video = VideoRecorder(self.camera.broker,
+                store=VideoStore(video_directory) if video_directory is not None else None,
+                simulated=self.runtime.simulate, clock=clock)
         self._active_video_request = None
         from ..system_readiness import telemetry_snapshot, button_inventory
         self._system_diagnostics = {"telemetry": telemetry_snapshot(), "buttons": button_inventory()}
+        from .motion.admission import arm_readiness
+        self._system_diagnostics.update(camera=self._camera_capability, arms=arm_readiness())
         self.motion = motion or MotionFeature(clock=clock)
         self.imu = IMUHealthMonitor(clock=clock)
         self.journal = journal or ActionJournal()
@@ -158,10 +188,14 @@ class FeatureHost:
         self._face_sequence = 0
         self._media_cue = None
         self.client = client or FeatureSimulatedClient()
+        from ..turn_diagnostics import TurnDiagnostics
+        self.turn_diagnostics = TurnDiagnostics(enabled=ptt_trace, clock=clock)
         self.session = IntegrationSession(self.config, self.client, simulate=self.runtime.simulate,
             brain=brain, fish_api_key=fish_api_key,
-            voice=voice, clock=clock, emotion_mode="auto", reply_client=FeatureClient(self.client),
-            on_reply=self._reply, on_playback_event=self._playback)
+            voice=voice, clock=clock, emotion_mode="auto",
+            reply_client=FeatureClient(self.client, **({"expressive": True} if expressive_voice else {})),
+            on_reply=self._reply, on_playback_event=self._playback,
+            diagnostics=self.turn_diagnostics, expressive_voice=expressive_voice)
         self.modes.register("conversation", enter=self._enter_conversation, leave=self._leave_conversation)
         self.modes.register("game_menu", enter=lambda _: None, leave=lambda: None)
         self.modes.register("game", enter=self._enter_game, leave=self._leave_game)
@@ -179,6 +213,7 @@ class FeatureHost:
                               playback_active=lambda: self.session.busy)
         self.wake_word = WakeWordGate()
         self.microphone = None
+        self._ptt_last_stage = "microphone"
         self._ptt_generation, self._ptt_lease, self._last_ptt_press = 0, None, None
         self._ptt_turn_active = False
         self._ptt_cleanup_fault = False
@@ -194,9 +229,37 @@ class FeatureHost:
                 (lambda *_a, **_kw: "Synthetic button question.") if self.runtime.simulate else None)
             self.microphone = PttRecorder(self.audio, source, clock=clock,
                 allowed_focus=lambda: self._ptt_lease is not None and self.audio.lease is self._ptt_lease,
-                playback_active=lambda: self.session.snapshot()["playback"] == "started")
+                playback_active=lambda: self.session.snapshot()["playback"] == "started",
+                on_state=self._ptt_state,
+                **self._ptt_settings(ptt_ambient_profile, ptt_speech_safe))
         self.motion.set_context(self.session.session_id, "idle", self.modes.generation)
         self._refresh()
+
+    def _ptt_settings(self, profile, speech_safe):
+        if profile is None:
+            return {"speech_safe": True, "threshold": .008} if speech_safe else {}
+        from ..ptt_diagnostics import load_ambient_profile
+        ambient = load_ambient_profile(profile, self.config.mic_device)
+        return {"speech_safe": True, "threshold": .008, "ambient_rms": ambient}
+
+    def _ptt_state(self, value):
+        state, code = value["state"], value["reason_code"]
+        if state == "failed":
+            stage = "capture_close" if "cleanup" in code else self._ptt_last_stage
+            self.turn_diagnostics.record(stage, code, outcome="error", **value)
+        elif state == "transcribing":
+            self._ptt_last_stage = "stt"
+            self.turn_diagnostics.record("stt", "started", outcome="started")
+        elif state == "idle" and code == "transcribed":
+            self.turn_diagnostics.record("stt", "ok")
+        elif state == "idle" and code == "no_speech":
+            self.turn_diagnostics.record("vad", "no_speech", outcome="empty", **value)
+        else:
+            if state == "calibrating":
+                self._ptt_last_stage = "microphone"
+            stage = "calibration" if state == "calibrating" else "vad"
+            public = ("ambient_verified" if value.get("ambient_verified") else "calibration_unverified") if state == "calibrating" else "speech_detected" if state == "speech" else "waiting_speech" if state == "listening" else "capture_ready" if state == "ready" else code
+            self.turn_diagnostics.record(stage, public, **value)
 
     def _put_voice(self, value):
         try:
@@ -355,6 +418,8 @@ class FeatureHost:
                 "take_photo": "camera", "start_face_tracking": "camera", "arm_gesture": "arms"}.get(name)
             if capability is not None:
                 self.runtime.require(capability)
+                if capability == "camera" and not self.runtime.simulate and request.startswith("model_"):
+                    raise FeatureError("camera_human_action_required")
             if name in ("launch_game", "play_song"):
                 items = self.games.catalog() if name == "launch_game" else self.media.catalog()
                 item = next((item for item in items if item.id == intent.target), None)
@@ -385,7 +450,9 @@ class FeatureHost:
                 restore = (self._photo_restore if self.modes.mode == "photo" else
                            (state.get("tracking", False), state.get("preview", False)))
                 self._transition("photo", {"request_id": request, "restore": restore}, force=True)
-                result = HostResult(request, "running", "photo_countdown")
+                result = HostResult(request, "running", "photo_countdown",
+                    simulated=self.runtime.simulate, executed=not self.runtime.simulate,
+                    completion="not_started" if self.runtime.simulate else "camera_preview")
                 return self._finish_result(result)
             elif name == "start_face_tracking":
                 self._cancel_video("video_tracking_transition")
@@ -401,7 +468,11 @@ class FeatureHost:
                 result = self.motion.submit(intent.target, request_id=request, session_id=self.session.session_id,
                     turn_id=turn, mode_generation=self.modes.generation, started_at=None, explicit=True)
                 return self._finish_result(result)
-            result = HostResult(request, "simulated", "ok", completed=True, completion="simulated")
+            if name in ("start_face_tracking", "stop_face_tracking") and not self.runtime.simulate:
+                result = HostResult(request, "succeeded", "ok", simulated=False,
+                                    executed=True, completed=True, completion="camera_request_applied")
+            else:
+                result = HostResult(request, "simulated", "ok", completed=True, completion="simulated")
         except FeatureError as error:
             result = HostResult(request, "rejected", error.code)
         except Exception:
@@ -541,6 +612,9 @@ class FeatureHost:
                 if self.modes.mode not in ("conversation", "photo"):
                     raise FeatureError("camera_mode_unsupported")
                 self.camera.set_preview(value, generation=self.modes.generation)
+                if not self.runtime.simulate:
+                    return self._remember(HostResult(request, "succeeded", "ok", simulated=False,
+                        executed=True, completed=True, completion="camera_request_applied"))
             elif action == "input":
                 outcome = self.inputs.route(value["key"], value["pressed"], now=self.clock())
                 if outcome is False and value["pressed"] and value["key"] in ("STOP", "TALK"):
@@ -584,8 +658,8 @@ class FeatureHost:
     @staticmethod
     def _video_host_result(result, *, request=None):
         return HostResult(request or result.request_id, result.status, result.code,
-            simulated=True, executed=False, completed=result.completed,
-            completion="simulated" if result.completed else "unknown" if result.status == "unknown" else "not_started")
+            simulated=result.simulated, executed=result.executed, completed=result.completed,
+            completion=("simulated" if result.simulated else "camera_video_saved") if result.completed else "unknown" if result.status == "unknown" else "not_started")
 
     def _cancel_video(self, reason):
         state = self.video.snapshot()
@@ -607,7 +681,7 @@ class FeatureHost:
             "real_features_enabled": False,
             "games": [{"id": item.id, "readiness": item.readiness} for item in self.games.catalog()],
             "songs": [{"id": item.id, "readiness": item.readiness} for item in self.media.catalog()],
-            "camera": "synthetic_only" if self.runtime.simulate else "denied",
+            "camera": "synthetic_only" if self.runtime.simulate else "human_action_only" if self.runtime.camera_supervised else "denied",
             "arm": "mock_ack_position_unverified" if self.runtime.simulate else "denied",
             "imu": "physical_unverified_no_control"})
         self._voice_lease = self.audio.acquire("conversation", stop=self.cancel_conversation)
@@ -662,14 +736,35 @@ class FeatureHost:
         self._ptt_turn_active = True
         def provider(check):
             check()
-            capture = self.microphone.capture(capture_id, generation=generation, cancel_check=check)
+            self._ptt_last_stage = "microphone"
+            self.turn_diagnostics.record("microphone", "started", outcome="started",
+                                         sample_rate=16000, channels=1)
+            try:
+                capture = self.microphone.capture(capture_id, generation=generation, cancel_check=check)
+            except TurnCancelled:
+                self.turn_diagnostics.record("microphone", "cancelled", outcome="cancelled")
+                raise
+            except Exception as error:
+                code = getattr(error, "code", "microphone_capture_failed")
+                stage = "capture_close" if code in ("pcm_cleanup_failed", "pcm_cleanup_pending", "audio_cleanup_failed") else "microphone"
+                self.turn_diagnostics.record(stage, code, outcome="error")
+                raise
             check()
             if capture.status != "ready":
                 return ""  # No speech means zero STT/brain/TTS calls.
-            text = self.microphone.transcribe_capture(capture, self.client,
-                model=self.config.stt_model, language="ko" if self.config.language == "ko" else None,
-                cancel_check=check, transcriber=self._ptt_transcriber)
+            try:
+                text = self.microphone.transcribe_capture(capture, self.client,
+                    model=self.config.stt_model, language="ko" if self.config.language == "ko" else None,
+                    cancel_check=check, transcriber=self._ptt_transcriber)
+            except TurnCancelled:
+                self.turn_diagnostics.record("stt", "cancelled", outcome="cancelled")
+                raise
+            except Exception as error:
+                self.turn_diagnostics.record("stt", getattr(error, "code", "transcription_failed"), outcome="error")
+                raise
             check()
+            if not text or not text.strip():
+                self.turn_diagnostics.record("stt", "stt_empty", outcome="empty")
             return text or ""
         try:
             result = self._begin_conversation(input_provider=provider)
@@ -877,8 +972,10 @@ class FeatureHost:
             if video["result"] is not None:
                 from .camera.video import VideoResult
                 data = dict(video["result"])
-                data.pop("contract")
-                self._remember(self._video_host_result(VideoResult(**data)))
+                contract = data.pop("contract")
+                from .camera.live_video import LIVE_CONTRACT, LiveVideoResult
+                result_type = LiveVideoResult if contract == LIVE_CONTRACT else VideoResult
+                self._remember(self._video_host_result(result_type(**data)))
             self._active_video_request = None
         self.camera.poll()
         for event in self.motion.poll():
@@ -912,11 +1009,15 @@ class FeatureHost:
         self._state_sequence += 1
         face = self.session.snapshot()
         camera = self.camera.snapshot()
+        ptt = self.microphone.snapshot() if self.microphone is not None else self.pcm.snapshot()
+        if not self.turn_diagnostics.enabled:
+            ptt = {key: value for key, value in ptt.items()
+                   if key not in ("rms_min", "rms_max", "threshold", "frames")}
         with self._records_lock:
             recent = ([dict(value["result"]) for value in list(self._records.values())[-8:]]
                       + [dict(value) for value in self._safety_results.values()])[-8:]
         state = {"version": 1, "sequence": self._state_sequence, "simulation": self.runtime.simulate,
-            "capabilities": self.runtime.public(), "real_features_enabled": False,
+            "capabilities": self.runtime.public(), "real_features_enabled": self.runtime.camera_supervised,
             "mode": self.modes.mode, "mode_generation": self.modes.generation,
             "mode_error": self.modes.last_error, "audio_owner": self.audio.owner,
             "conversation_busy": self.session.busy, "emotion": face["emotion"],
@@ -925,15 +1026,16 @@ class FeatureHost:
             "media": {"catalog": [item.public() for item in self.media.catalog()], **self.media.snapshot()},
             "camera": camera, "camera_video": self.video.snapshot(), "photo": self._photo_result,
             "system_diagnostics": self._system_diagnostics,
+            "turn_diagnostics": self.turn_diagnostics.snapshot(),
             "photo_countdown": max(0, self._pending_photo["deadline"] - self.clock()) if self._pending_photo else None,
             "motion": self.motion.snapshot(), "imu": self.imu.snapshot(),
             "input": self.input_adapter.snapshot() if self.input_adapter else
                      {"enabled": False, "real_input": "NOT_RUN", "device_opens": 0},
-            "ptt": (dict(self.microphone.snapshot(), enabled=True,
+            "ptt": (dict(ptt, enabled=True,
                         cleanup_fault=self._ptt_cleanup_fault,
                         source="synthetic_pcm" if self.runtime.simulate else "explicit_microphone",
                         hid_identity="keyboard_or_gp8_unverified", physical_verified=False)
-                    if self.microphone is not None else self.pcm.snapshot()),
+                    if self.microphone is not None else ptt),
             "wake_word": self.wake_word.snapshot(),
             "last_result": self._last_result, "requests": recent,
             "asset_status": {"real_game_pack": "ASSET_PENDING",
@@ -960,7 +1062,8 @@ class FeatureHost:
     def video_bytes(self, video_id):
         state = self.video.snapshot()
         result = state["result"]
-        if (not self.runtime.simulate or self.video.store is None or result is None
+        if (not (self.runtime.simulate or self.runtime.camera_video_supervised)
+                or self.video.store is None or result is None
                 or not result["completed"] or result["video_id"] != video_id):
             return None
         try:
@@ -1012,3 +1115,18 @@ class FeatureHost:
         self._temporary.cleanup()
         if errors:
             raise FeatureError("cleanup_failed")
+
+    def cleanup_snapshot(self):
+        session = self.session.cleanup_snapshot()
+        microphone = self.microphone.snapshot() if self.microphone is not None else {}
+        camera = self.camera.cleanup_snapshot()
+        clean = (self._closed and session["resources_cleaned"] and not self._ptt_cleanup_fault
+                 and not microphone.get("cleanup_pending", False)
+                 and not microphone.get("microphone_open", False)
+                 and not self.video.snapshot()["recording"] and camera["resources_cleaned"]
+                 and self.video.snapshot()["code"] != "video_close_failed")
+        return dict(resources_cleaned=clean, session=session, camera=camera,
+                    microphone_closed=not microphone.get("microphone_open", False),
+                    microphone_cleanup_pending=microphone.get("cleanup_pending", False),
+                    code="resources_cleaned" if clean else "owned_cleanup_pending",
+                    scope="host_owned_software_only", physical_release_verified=False)

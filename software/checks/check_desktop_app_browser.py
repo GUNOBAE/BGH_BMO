@@ -246,7 +246,8 @@ raise SystemExit(result)
 
 class DesktopFixture:
     """Private launcher subprocess, reusable by unit E2E and headless checks."""
-    def __init__(self, root, *, profile="ci-synthetic", face=None, scenario="normal", developer=False):
+    def __init__(self, root, *, profile="ci-synthetic", face=None, scenario="normal", developer=False,
+                 extra_args=()):
         self.root, self.profile = Path(root), profile
         self.face = Path(face or (FIXTURE if profile == "ci-synthetic" else SCREEN_PROFILES[profile]["default_path"]))
         from bmo_ai.desktop_install import desktop_install_plan
@@ -269,6 +270,7 @@ class DesktopFixture:
                    "--face-file", str(self.face)]
         if scenario=='media':command.extend(['--video-directory',str(self.root/'video-content')])
         if developer:command.append("--developer")
+        command.extend(extra_args)
         self.command, self.environment = command, environment
         self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=environment, cwd=self.root)

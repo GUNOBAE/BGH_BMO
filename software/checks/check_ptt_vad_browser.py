@@ -23,7 +23,8 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
     if profile != "ci-synthetic": assert before == SCREEN_PROFILES[profile]["sha256"]
     checks = []
     with tempfile.TemporaryDirectory(prefix="bmo-ptt-browser-") as directory:
-        fixture = DesktopFixture(directory, profile=profile, face=path, scenario="ptt_slow")
+        fixture = DesktopFixture(directory, profile=profile, face=path, scenario="ptt_slow",
+                                 extra_args=("--ptt-trace",))
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(executable_path=chromium, headless=True,
@@ -69,6 +70,35 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert not page.locator("#ptt-state").is_visible()
                     checks.append("iframe GP8/keyboard Enter + repeat/duplicate edge -> one VAD capture/STT/brain/voice; emotion persists")
 
+                    evidence = page.evaluate("()=>({...BMODesktop.inputEvidence})")
+                    assert evidence["physical_identity"] == "UNVERIFIED"
+                    assert evidence["request_sent"] == evidence["request_accepted"] == 1
+                    assert evidence["request_rejected"] == 0 and evidence["repeats_ignored"] >= 1
+                    assert all(type(value) is int and 0 <= value <= 999999 for name, value in evidence.items()
+                               if name != "physical_identity")
+                    checks.append("bounded input evidence confirms one accepted request despite repeat/duplicate iframe edges; physical HID identity stays UNVERIFIED")
+
+                    page.wait_for_function("()=>BMODesktop.features?.turn_diagnostics?.terminal==='ok'")
+                    assert not page.locator("#system-dialog").is_visible()
+                    page.evaluate("()=>BMODesktop.menu()")
+                    page.locator("#system-menu").click()
+                    page.wait_for_function("()=>document.querySelector('#system-dialog').open")
+                    diagnostic = json.loads(page.locator("#turn-diagnostics").inner_text())
+                    assert diagnostic["enabled"] is True
+                    assert diagnostic["contains_audio"] is diagnostic["contains_transcript"] is False
+                    assert diagnostic["failure"] is None and 0 < len(diagnostic["events"]) <= 96
+                    assert {"microphone", "vad", "stt", "ai", "fish", "playback"} <= {
+                        event["stage"] for event in diagnostic["events"]}
+                    panel = page.locator("#system-dialog").inner_text()
+                    for private in ("Synthetic button question.", "A synthetic desktop response.",
+                                    "Private provider fixture detail", "OPENAI_API_KEY", "FISH_API_KEY", directory):
+                        assert private not in panel
+                    assert fixture.request("/api/control", payload={"action": "ptt", "value": None},
+                                           headers={"X-BMO-Token": "INVALID_TEST_TOKEN"})[0] == 403
+                    assert fixture.features()["test_fixture"]["mic_sources"] == 1
+                    page.locator("#system-dialog .dialog-close").click()
+                    checks.append("explicit --ptt-trace shows all six dialogue stages in the closed-by-default system panel without transcript/PCM/keys/private paths; invalid token opens zero sources")
+
                     # Repeat only the retained gained response, never input/brain/synthesis.
                     page.evaluate("()=>BMODesktop.control('repeat')")
                     wait_features(lambda s:s['conversation_busy'])
@@ -82,11 +112,20 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page.wait_for_function("()=>document.querySelector('#game-menu').open")
                     page.locator("#face").focus()
                     page.keyboard.press("Enter")
+                    # Modal focus can legitimately stay on a native button.
+                    # Also inject the parent adapter's explicit game-input
+                    # edge so its evidence path is tested independently.
+                    page.evaluate("""()=>{for(const type of ['keydown','keyup'])window.dispatchEvent(
+                        new KeyboardEvent(type,{key:'Enter',code:'Enter'}));}""")
                     page.wait_for_timeout(250)
                     assert fixture.features()["test_fixture"]["mic_sources"] == 1
+                    game_evidence = page.evaluate("()=>({...BMODesktop.inputEvidence})")
+                    assert game_evidence["blocked_mode"] >= 1
+                    assert game_evidence["request_sent"] == game_evidence["request_accepted"] == 1
                     page.evaluate("()=>BMODesktop.intent('return_to_face')")
                     page.wait_for_function("()=>!document.querySelector('#game-menu').open")
                     checks.append("game menu Enter stays game input and never starts PTT; face return preserves expression")
+                    checks.append("game Enter increments only the blocked-mode input evidence and preserves the single admitted PTT request")
 
                     # New capture, then focus-loss cancellation before speech validation.
                     page.locator("#face").click(position={"x": 400, "y": 230})
@@ -119,8 +158,15 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     (Path(directory)/'fail-mic').write_text('synthetic missing input')
                     page.keyboard.press('Enter')
                     wait_features(lambda s:not s['conversation_busy'] and s['ptt']['state']=='failed')
+                    # Host completion can precede the browser's next 100ms
+                    # snapshot. Bind the visible failure check to that state.
+                    page.wait_for_function("()=>BMODesktop.features?.ptt?.state==='failed'")
                     page.locator('#ptt-state').wait_for(state='visible')
-                    assert '녹음을 완료하지 못했어요' in page.locator('#ptt-state').inner_text()
+                    message = page.locator('#ptt-state').inner_text()
+                    assert '녹음을 완료하지 못했어요' in message, json.dumps({
+                        'message': message,
+                        'visible_diagnosis': page.evaluate('()=>BMODesktop.features?.turn_diagnostics'),
+                        'latest_diagnosis': fixture.features().get('turn_diagnostics')}, ensure_ascii=False)
                     assert fixture.features()['last_result']['code']=='voice_failed'
                     audit=fixture.features()['test_fixture']
                     assert (audit['mic_sources'],audit['mic_closed'],audit['stt'],audit['brain'])==(3,3,1,1)

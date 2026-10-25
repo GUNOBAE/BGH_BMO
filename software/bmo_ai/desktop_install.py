@@ -119,8 +119,8 @@ def _source(path, *, limit, executable=False):
                 os.close(value)
 
 
-def _configuration(project_root, home, environ, simulate):
-    if type(simulate) is not bool:
+def _configuration(project_root, home, environ, simulate, ptt_microphone=False):
+    if type(simulate) is not bool or type(ptt_microphone) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     source = os.environ if environ is None else environ
     project = _path(project_root if project_root is not None else Path(__file__).resolve().parents[2])
@@ -146,6 +146,8 @@ def _configuration(project_root, home, environ, simulate):
         launcher_verified = False
     icon_path = data / "icons" / "hicolor" / "scalable" / "apps" / "bmo-desktop.svg"
     command = [str(launcher), "--simulate" if simulate else "--live"]
+    if ptt_microphone:
+        command.append("--ptt-microphone")
     template = ("[Desktop Entry]\nType=Application\nName=BMO\n"
                 "Comment=Start the BMO desktop app manually\n"
                 "Exec=" + " ".join('"' + value + '"' for value in command) + "\n"
@@ -186,8 +188,8 @@ def _existing(directory, name, raw, mode):
             os.close(descriptor)
 
 
-def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate=False):
-    _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate)
+def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate=False, ptt_microphone=False):
+    _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone)
     rows = []
     for path, raw, mode in targets:
         directory = _directory(path.parent, home=user_home)
@@ -200,6 +202,7 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
     return {"status": "DRY_RUN", "launcher_verified": verified, "command": command,
             "template": template, "targets": rows, "icon_sha256": ICON_SHA256,
             "files_written": 0, "autostart": False, "services_changed": False,
+            "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
             "activation": "NOT_RUN", "desktop_trust": "NOT_RUN"}
 
 
@@ -213,12 +216,13 @@ def _remove_owned(directory, name, identity):
     os.unlink(name, dir_fd=directory)
 
 
-def install_desktop(*, project_root=None, home=None, environ=None, simulate=False, install=False):
+def install_desktop(*, project_root=None, home=None, environ=None, simulate=False, install=False, ptt_microphone=False):
     if type(install) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     if not install:
-        return desktop_install_plan(project_root=project_root, home=home, environ=environ, simulate=simulate)
-    _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate)
+        return desktop_install_plan(project_root=project_root, home=home, environ=environ, simulate=simulate,
+                                    ptt_microphone=ptt_microphone)
+    _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone)
     if not verified:
         raise DesktopInstallError("desktop_launcher_pending")
     created, descriptors, stages, published = [], [], [], []
@@ -268,6 +272,7 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
         return {"status": "INSTALLED" if published else "ALREADY_INSTALLED", "command": command,
                 "files_written": len(published), "icon_sha256": ICON_SHA256,
                 "autostart": False, "services_changed": False,
+                "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
                 "activation": "NOT_RUN", "desktop_trust": "NOT_RUN"}
     except BaseException as error:
         rollback_failed = False
@@ -306,11 +311,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--install-desktop", action="store_true")
     parser.add_argument("--simulate", action="store_true")
+    parser.add_argument("--ptt-microphone", action="store_true", help="explicitly persist button-only finite microphone admission in the new icon")
     parser.add_argument("--project-root", type=Path)
     args = parser.parse_args(argv)
     try:
         report = install_desktop(project_root=args.project_root, simulate=args.simulate,
-                                 install=args.install_desktop)
+                                 install=args.install_desktop, ptt_microphone=args.ptt_microphone)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     except DesktopInstallError as error:
