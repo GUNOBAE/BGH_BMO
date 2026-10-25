@@ -18,6 +18,7 @@ from . import audio, fish_tts, local_piper
 from .app import OFFLINE_KOREAN_UNSUPPORTED_EN, OFFLINE_NOTICE_EN
 from .conversation import TurnCancelled
 from .expression_contract import FACE_EMOTIONS
+from .expressive_voice import ExpressivePolicy
 from .integration_face import wav_cues
 from .pronunciation import spoken_bmo_name
 from .safe_playback import attenuated_copy, validate_gain
@@ -62,7 +63,7 @@ class IntegrationVoice:
 
     def __init__(self, config, client, *, emit, cancel_check=None, simulate=False,
                  fish_synthesizer=None, piper_synthesizer=None, player=None,
-                 fish_api_key=None):
+                 fish_api_key=None, expressive=False):
         self.config = config
         self.client = client
         self.emit = emit
@@ -81,10 +82,12 @@ class IntegrationVoice:
         self._cache = None
         self._cache_generation = 0
         self.expression_metadata = {"emotion": "neutral", "emotion_validation": "none"}
+        self.expressive = bool(expressive)
+        self._expressive_policy = ExpressivePolicy()
 
-    def _expression(self, *, notice=False):
+    def _expression(self, *, notice=False, metadata=None):
         """Copy only safe expression metadata, never a reply or TTS direction."""
-        value = self.expression_metadata
+        value = self.expression_metadata if metadata is None else metadata
         emotion = value.get("emotion") if type(value) is dict else None
         validation = value.get("emotion_validation") if type(value) is dict else None
         return dict(emotion="neutral" if notice or emotion not in FACE_EMOTIONS else emotion,
@@ -140,7 +143,7 @@ class IntegrationVoice:
         finally:
             audio._discard(Path(path), suppress=True)
 
-    def _synthesize(self, text, check, *, force_piper=False, notice=False):
+    def _synthesize(self, text, check, *, force_piper=False, notice=False, delivery=None):
         check()
         if self.simulate:
             return synthetic_wav(), "synthetic", notice
@@ -153,6 +156,8 @@ class IntegrationVoice:
             raise audio.AudioValidationError(
                 "The integration voice profile requires Fish Audio.", "invalid_tts_provider")
         spoken = spoken_bmo_name(text, self.config.fish_name_mode)
+        if delivery is not None:
+            spoken = delivery.text
         if self.config.fish_delivery == "soft":
             spoken = fish_tts.SOFT_AARON_DIRECTION + spoken
         synthesize = self._fish_synthesizer or fish_tts.synthesize_wav
@@ -183,13 +188,25 @@ class IntegrationVoice:
         cancellation, emit = self.cancel_check, self.emit
         check = lambda: self._check(cancellation)
         raw = output = None
+        delivery = None
+        metadata = dict(self.expression_metadata) if type(self.expression_metadata) is dict else {}
         source = "synthetic" if self.simulate else "piper" if _force_piper else "fish"
         try:
             check()
             validate_gain(self.config.fish_gain)
+            if self.expressive and not _force_piper and not _notice:
+                delivery = self._expressive_policy.plan(
+                    spoken_bmo_name(text, self.config.fish_name_mode),
+                    metadata, model=self.config.fish_model)
+            settings = {} if delivery is None else {"delivery": delivery}
             raw, source, notice = self._synthesize(text, check, force_piper=_force_piper,
-                                                  notice=_notice)
-            expression = self._expression(notice=notice)
+                                                  notice=_notice, **settings)
+            expression = self._expression(notice=notice, metadata=metadata)
+            if delivery is not None:
+                expression.update(
+                    voice_emotion=delivery.emotion if source == "fish" else "neutral",
+                    reaction=delivery.reaction if source == "fish" else "none",
+                    voice_style=delivery.mechanism if source == "fish" else source)
             # A synchronous provider may finish after cancellation. Discard its
             # late result before any prepared/start event or process creation.
             check()
@@ -198,6 +215,8 @@ class IntegrationVoice:
             cues = tuple(dict(cue) for cue in wav_cues(output))
             self._play(output, source, info, cues, check, emit, on_playback_start, expression)
             check()
+            if delivery is not None and source == "fish":
+                self._expressive_policy.completed(delivery)
             # A failed/cancelled replacement keeps the previous successful WAV.
             # Promotion transfers the final gained file, without another copy.
             previous = None
