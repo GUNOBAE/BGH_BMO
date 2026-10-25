@@ -68,6 +68,7 @@ from bmo_ai.integration_voice import IntegrationVoice
 counts=dict(hosts=0,browsers=0,browser_reaped=0,greeting_calls=0,greeting_started=0,
     greeting_ended=0,cache_published=0,brain=0,synthesis=0,players=0,reaped=0,
     forbidden=0,max_players=0,initial_history=0,initial_dialogue_cache=False)
+counts.update(mic_sources=0,mic_closed=0,stt=0,active_mics=0,max_mics=0)
 hosts=[];players=[];browsers=[];apps=[]
 real_popen,real_open=subprocess.Popen,os.open
 real_synthesis=IntegrationVoice._synthesize
@@ -134,7 +135,42 @@ def host_factory(**settings):
             counts['brain']+=1;time.sleep(.15)
             return super().create(**request)
     client=Client([dict(version=1,speech='A synthetic desktop response.',emotion='crying',gesture='none',intent=None)]*3)
+    if scenario.startswith('ptt'):
+        from bmo_ai.features.input.microphone import SyntheticPcmSource
+        class Source(SyntheticPcmSource):
+            def __init__(self):
+                super().__init__(clock=clock)
+                self.closed_once=False
+            def frames(self,*args,**kwargs):
+                counts['mic_sources']+=1;counts['active_mics']+=1
+                counts['max_mics']=max(counts['max_mics'],counts['active_mics'])
+                assert counts['active_mics']==1 and not any(p.poll() is None for p in players),'Input/output overlap'
+                if (root/'fail-mic').exists():
+                    from bmo_ai.features.input.microphone import MicError
+                    raise MicError('microphone_tool_unavailable')
+                for frame in super().frames(*args,**kwargs):
+                    if scenario=='ptt_slow':time.sleep(.03)
+                    elif scenario=='ptt':time.sleep(.01)
+                    yield frame
+            def close(self):
+                if not self.closed_once:
+                    counts['mic_closed']+=1;counts['active_mics']-=1;self.closed_once=True
+                return super().close()
+        def transcribe(_client,path,**kwargs):
+            import stat,wave
+            assert stat.S_IMODE(path.stat().st_mode)==0o600
+            with wave.open(str(path),'rb') as source:
+                assert source.getframerate()==16000 and source.getnchannels()==1 and source.getsampwidth()==2
+            counts['stt']+=1
+            return 'Synthetic button question.'
+        settings.update(ptt_source_factory=Source,ptt_transcriber=transcribe)
     host=FeatureHost(**settings,client=client);hosts.append(host)
+    if scenario.startswith('ptt'):
+        original_poll=host.poll
+        def poll():
+            if (root/'hold-host').exists():return
+            return original_poll()
+        host.poll=poll
     original=host.snapshot
     def snapshot():
         return original()|{'test_fixture':dict(counts,history_messages=len(host.session.brain.history),
