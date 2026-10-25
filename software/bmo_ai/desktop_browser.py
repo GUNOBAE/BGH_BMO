@@ -164,12 +164,14 @@ def _active_owned_group(pgid, sid):
 class DesktopBrowser:
     def __init__(self, url, *, windowed=False, executable=None, runtime_root=None, environ=None,
                  process_factory=None, group_signaler=None, clock=time.monotonic,
-                 startup_timeout=10.0, stop_timeout=2.0, observer=None, group_probe=None):
+                 startup_timeout=10.0, stop_timeout=2.0, observer=None, group_probe=None,
+                 renderer="chromium"):
         self._url = _url(url)
-        if (type(windowed) is not bool or not _finite(startup_timeout, 1, 60)
+        if (renderer not in ("chromium", "native") or type(renderer) is not str or
+                type(windowed) is not bool or not _finite(startup_timeout, 1, 60)
                 or not _finite(stop_timeout, .05, 10) or not callable(clock)):
             raise BrowserError("browser_invalid_config")
-        self.windowed, self.clock = windowed, clock
+        self.windowed, self.clock, self.renderer = windowed, clock, renderer
         self.startup_timeout, self.stop_timeout = startup_timeout, stop_timeout
         source = os.environ if environ is None else environ
         self._environ = {name: source.get(name) for name in (
@@ -188,7 +190,8 @@ class DesktopBrowser:
 
     def snapshot(self):
         return {"state": self._state, "code": self._code, "ready": self._ready,
-                "windowed": self.windowed, "owned_child": self._pgid is not None and not self._cleaned,
+                "windowed": self.windowed, "renderer": self.renderer,
+                "owned_child": self._pgid is not None and not self._cleaned,
                 "private_profile": self._profile_name is not None, "cleanup_complete": self._cleaned,
                 "automatic_relaunch": False}
 
@@ -231,7 +234,7 @@ class DesktopBrowser:
         parent = _directory(runtime, "runtime_directory_permissions")
         try:
             for _ in range(10):
-                name = "bmo-chromium-" + secrets.token_hex(12)
+                name = ("bmo-native-" if self.renderer == "native" else "bmo-chromium-") + secrets.token_hex(12)
                 try:
                     os.mkdir(name, 0o700, dir_fd=parent)
                 except FileExistsError:
@@ -267,25 +270,39 @@ class DesktopBrowser:
         if self._state != "idle":
             raise BrowserError("browser_invalid_config")
         try:
-            candidates = (self._executable,) if self._executable is not None else (
-                "/usr/lib/chromium/chromium", "/usr/bin/chromium", "/usr/bin/chromium-browser")
-            executable = None
-            for candidate in candidates:
+            if self.renderer == "native":
+                if self._executable is not None:
+                    raise BrowserError("browser_invalid_config")
+                from .desktop_native_window import command
                 try:
-                    executable = _executable(candidate)
-                    break
-                except BrowserError:
-                    continue
-            if executable is None:
-                raise BrowserError("browser_executable_unsafe")
+                    arguments = command(self._url, windowed=self.windowed)
+                except ValueError:
+                    raise BrowserError("browser_executable_unsafe") from None
+            else:
+                candidates = (self._executable,) if self._executable is not None else (
+                    "/usr/lib/chromium/chromium", "/usr/bin/chromium", "/usr/bin/chromium-browser")
+                executable = None
+                for candidate in candidates:
+                    try:
+                        executable = _executable(candidate)
+                        break
+                    except BrowserError:
+                        continue
+                if executable is None:
+                    raise BrowserError("browser_executable_unsafe")
+                arguments = [executable, "--ozone-platform=wayland", "--user-data-dir=PROFILE",
+                             "--no-first-run", "--no-default-browser-check",
+                             "--disable-session-crashed-bubble", "--disable-background-networking",
+                             "--disable-component-update", "--disable-sync", "--disable-extensions",
+                             "--mute-audio", "--window-size=800,480", "--app=" + self._url]
+                if not self.windowed:
+                    arguments.extend(("--kiosk", "--start-fullscreen"))
             profile = self._profile()
             environment = self._environment(profile)
-            arguments = [executable, "--ozone-platform=wayland", "--user-data-dir=" + str(profile),
-                         "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
-                         "--disable-background-networking", "--disable-component-update", "--disable-sync",
-                         "--disable-extensions", "--mute-audio", "--window-size=800,480", "--app=" + self._url]
-            if not self.windowed:
-                arguments.extend(("--kiosk", "--start-fullscreen"))
+            if self.renderer == "native":
+                environment["QT_QPA_PLATFORM"] = "wayland"
+            else:
+                arguments[2] = "--user-data-dir=" + str(profile)
             self._process = self._factory(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                           stderr=subprocess.DEVNULL, env=environment, close_fds=True,
                                           start_new_session=True)
