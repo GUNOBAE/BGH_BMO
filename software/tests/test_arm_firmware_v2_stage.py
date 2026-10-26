@@ -81,6 +81,9 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         self.assertEqual(len(assignments), 1)
         self.assertIs(assignments[0].value.value, False)
         self.assertIn('REVIEWED_CALIBRATION = None', APP.read_text())
+        self.assertIn('boot_id = "boot_unverified"', APP.read_text())
+        self.assertIn('boot_identity_verified and pins.physical_enabled()', APP.read_text())
+        self.assertIn('stream.write_timeout = 0.05', APP.read_text())
         for file in (CORE, APP, BOOT):
             compile(file.read_text(), str(file), 'exec')
         source = CORE.read_text()
