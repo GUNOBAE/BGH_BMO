@@ -223,7 +223,9 @@ class ArmHostV2:
         return ack
 
     def _motion_guard(self):
-        if self.latch or self.unknown:
+        if self.unknown:
+            raise ArmV2Error("arm_transport_unknown")
+        if self.latch:
             raise ArmV2Error("arm_session_latched")
         if self.boot_id is None or not self.calibrated:
             raise ArmV2Error("arm_controller_unverified")
