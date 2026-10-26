@@ -65,7 +65,7 @@ def public_plan(args):
     return {"version": 1, "mode": "simulate" if args.simulate else "live" if args.live else "not_selected",
         "screen_profile": args.screen_profile, "screen_sha256": SCREEN_PROFILES[args.screen_profile]["sha256"],
         "window": "windowed" if args.windowed else "kiosk", "developer_enabled": args.developer,
-        "greeting": {"text": GREETING_TEXT, "asset_version": "welcome-v2", "source": "approved_private_cache", "automatic_synthesis": False},
+        "greeting": {"text": GREETING_TEXT, "asset_version": "welcome-en-v1", "source": "approved_private_cache", "automatic_synthesis": False},
         "configuration": effective_config(config, emotion_mode="auto"),
         "credentials_accessed": False, "ports_opened": False, "processes_started": False,
         "desktop_installed": False, "autostart": False, "physical_features_enabled": False,
