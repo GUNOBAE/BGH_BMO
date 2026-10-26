@@ -11,8 +11,8 @@ Issue #19/#20, 마스터 #23의 코드 후속 작업이다. PR #24의
 - 제품 앱은 100%에서 로딩 overlay를 숨긴 뒤 두 번의 animation frame을 거쳐
   현재 run의 `face_presented`를 보낸다. 이 확인 전에는 인사 worker를 시작하지 않는다.
   이것은 브라우저 render 기회 확인이며 LCD 광학 측정은 아니다.
-- 새 문구는 `돌아왔구나! 비모가 기다렸어!`. `--status`도 같은 상수를 표시한다.
-- 새 캐시는 `~/.cache/bmo/greeting-welcome-v2/greeting.cache`
+- 새 문구는 `Oh! You're back! BMO missed you!`. `--status`도 같은 상수를 표시한다.
+- 새 캐시는 `~/.cache/bmo/greeting-welcome-en-v1/greeting.cache`
   (`XDG_CACHE_HOME`이 명시됐다면 그 아래). 이전 `bmo/greeting/` 파일을 읽거나 지우지 않는다.
 - 승인된 캐시가 없으면 자동 합성 없이 얼굴과 고정 안내를 표시한다.
   앱당 한 번, reload/게임 복귀로 재생하지 않으며 `/repeat` 답변 캐시와 대화 이력을 보존한다.

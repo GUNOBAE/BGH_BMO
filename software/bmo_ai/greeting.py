@@ -12,10 +12,11 @@ from .integration_voice import IntegrationVoice
 
 
 class GreetingPlayer:
-    def __init__(self, config, cache, *, simulate=False, player=None):
-        if not isinstance(cache, GreetingCache) or type(simulate) is not bool:
+    def __init__(self, config, cache, *, simulate=False, player=None, startup_chime=False):
+        if (not isinstance(cache, GreetingCache) or type(simulate) is not bool
+                or type(startup_chime) is not bool):
             raise GreetingError('greeting_corrupt')
-        self.cache, self.simulate = cache, simulate
+        self.cache, self.simulate, self.startup_chime = cache, simulate, startup_chime
         self._cancelled, self._closed = Event(), Event()
         self.voice = IntegrationVoice(config, None, emit=lambda *a, **k: None,
                                       simulate=simulate, player=player)
@@ -42,6 +43,17 @@ class GreetingPlayer:
             self.voice._check(cancel_check)
         try:
             check()
+            if self.startup_chime:
+                # Fixed local sound plays before the paid-once, cached voice.
+                # It never changes the face's mouth, dialogue or repeat cache.
+                from . import audio
+                from .startup_sound import startup_chime_file
+                boot_wav = startup_chime_file()
+                self.voice._play(boot_wav, "local_startup_chime",
+                                 audio._wav_info(boot_wav), (), check,
+                                 lambda *_a, **_kw: None, None,
+                                 dict(emotion="neutral", emotion_validation="none", notice=False))
+                check()
             with self.cache.load(simulate=self.simulate, require_approved=not allow_unapproved,
                                  cancel_check=check) as asset:
                 expression = dict(emotion='happy', emotion_validation='validated', notice=False)

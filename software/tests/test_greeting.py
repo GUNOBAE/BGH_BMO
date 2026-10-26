@@ -73,10 +73,10 @@ class GreetingTests(unittest.TestCase):
         with patch('os.open', side_effect=AssertionError('No IO at construction')):
             cache = GreetingCache(self.root/'not-created', self.spec)
             GreetingPlayer(self.config, cache, simulate=True)
-            self.assertEqual(default_greeting_directory(environ={},home=self.root),self.root/'.cache/bmo/greeting-welcome-v2')
-            self.assertEqual(default_greeting_directory(environ={'XDG_CACHE_HOME':str(self.root/'xdg')}),self.root/'xdg/bmo/greeting-welcome-v2')
+            self.assertEqual(default_greeting_directory(environ={},home=self.root),self.root/'.cache/bmo/greeting-welcome-en-v1')
+            self.assertEqual(default_greeting_directory(environ={'XDG_CACHE_HOME':str(self.root/'xdg')}),self.root/'xdg/bmo/greeting-welcome-en-v1')
         self.assertFalse(cache.directory.exists())
-        self.assertEqual(self.spec.public()['text'], '돌아왔구나! 비모가 기다렸어!')
+        self.assertEqual(self.spec.public()['text'], "Oh! You're back! BMO missed you!")
         self.assertEqual(self.spec.public()['gain'], .25)
 
     def test_welcome_asset_is_separate_from_preserved_legacy_cache(self):
@@ -219,7 +219,7 @@ class GreetingTests(unittest.TestCase):
         generated=[]
         def synthesize(text,**kwargs):
             self.assertEqual(text,self.spec.spoken)
-            self.assertTrue(text.endswith(GREETING_TEXT))
+            self.assertTrue(text.endswith('Oh! You\'re back! Beemo missed you!'))
             self.assertEqual(kwargs['reference_id'],self.config.fish_voice_id)
             self.assertEqual(kwargs['model'],self.config.fish_model)
             self.assertEqual(kwargs['api_key'],'fixture-only')

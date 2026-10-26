@@ -24,6 +24,7 @@ def parser():
     mode.add_argument("--simulate", action="store_true")
     mode.add_argument("--live", action="store_true")
     p.add_argument("--windowed", action="store_true", help="explicit development window, default kiosk")
+    p.add_argument("--frontend", choices=("chromium", "native"), default="chromium", help="Qt BMO app window or Chromium fallback")
     p.add_argument("--developer", action="store_true", help="enable /developer and hidden Ctrl+Alt+D")
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
     p.add_argument("--video-directory", type=Path, help="user-selected private local synthetic-video storage; live camera video remains denied")
@@ -64,8 +65,8 @@ def public_plan(args):
     config = _config(args)
     return {"version": 1, "mode": "simulate" if args.simulate else "live" if args.live else "not_selected",
         "screen_profile": args.screen_profile, "screen_sha256": SCREEN_PROFILES[args.screen_profile]["sha256"],
-        "window": "windowed" if args.windowed else "kiosk", "developer_enabled": args.developer,
-        "greeting": {"text": GREETING_TEXT, "asset_version": "welcome-v2", "source": "approved_private_cache", "automatic_synthesis": False},
+        "window": "windowed" if args.windowed else "kiosk", "frontend": args.frontend, "developer_enabled": args.developer,
+        "greeting": {"text": GREETING_TEXT, "asset_version": "welcome-en-v1", "source": "approved_private_cache", "automatic_synthesis": False},
         "configuration": effective_config(config, emotion_mode="auto"),
         "credentials_accessed": False, "ports_opened": False, "processes_started": False,
         "desktop_installed": False, "autostart": False, "physical_features_enabled": False,
@@ -126,6 +127,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             install_settings = {"install": not args.dry_run, "simulate": args.simulate}
             if args.ptt_microphone:
                 install_settings["ptt_microphone"] = True
+            if args.frontend == "native":
+                install_settings["frontend"] = "native"
             result = install_desktop(**install_settings)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
@@ -195,8 +198,11 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             from .desktop_browser import DesktopBrowser
             browser_factory = DesktopBrowser
         stage = "browser_init"
-        browser = browser_factory(server.url, windowed=args.windowed,
-                                  startup_timeout=args.startup_timeout, clock=clock)
+        browser_settings = {"windowed": args.windowed,
+                            "startup_timeout": args.startup_timeout, "clock": clock}
+        if args.frontend == "native":
+            browser_settings["frontend"] = "native"
+        browser = browser_factory(server.url, **browser_settings)
         app.set_browser(browser)
         stage = "browser_start"
         browser.start()
@@ -234,7 +240,7 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 greeting = GreetingPlayer(config, cache, simulate=True)
             else:
                 cache = GreetingCache(default_greeting_directory(), GreetingSpec.from_config(config))
-                greeting = GreetingPlayer(config, cache)
+                greeting = GreetingPlayer(config, cache, startup_chime=True)
             app.greeting = greeting
         except Exception as error:
             code = getattr(error, "code", "engine_startup_failed")

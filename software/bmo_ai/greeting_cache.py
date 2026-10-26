@@ -23,7 +23,7 @@ from .private_credentials import (_close, _directory_ok, _open_directory,
 from .pronunciation import spoken_bmo_name
 from .safe_playback import attenuated_copy, validate_gain
 
-GREETING_TEXT = '돌아왔구나! 비모가 기다렸어!'
+GREETING_TEXT = 'Oh! You\'re back! BMO missed you!'
 MAGIC = b'BMO_GREETING_V1\n'
 MAX_WAV_BYTES = 8 * 1024 * 1024
 MAX_HEADER_BYTES = 64 * 1024
@@ -66,7 +66,7 @@ def default_greeting_directory(*, environ=None, home=None):
     source = os.environ if environ is None else environ
     base = source.get('XDG_CACHE_HOME')
     root = Path(base) if base else Path(home).joinpath('.cache') if home is not None else Path.home()/'.cache'
-    path = root/'bmo'/'greeting-welcome-v2'
+    path = root/'bmo'/'greeting-welcome-en-v1'
     if not path.is_absolute() or '..' in path.parts:
         raise GreetingError('greeting_unsafe')
     return path
@@ -90,7 +90,7 @@ class GreetingSpec:
     @property
     def spoken(self):
         value = spoken_bmo_name(GREETING_TEXT, self.fish_name_mode)
-        return fish_tts.SOFT_AARON_DIRECTION+value if self.fish_delivery == 'soft' else value
+        return fish_tts.SOFT_AARON_DIRECTION + '[bright, cheerful, a little playful] ' + value if self.fish_delivery == 'soft' else value
 
     def public(self):
         return dict(version=1, text=GREETING_TEXT, provider='fish', model=self.fish_model,
