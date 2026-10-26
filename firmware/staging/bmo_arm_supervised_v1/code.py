@@ -1,7 +1,8 @@
 """STAGING ONLY: NOT A DROP-IN REPLACEMENT FOR THE USER'S LIVE RP2040.
 
 Never copy this code to CIRCUITPY without a supervised physical/firmware review.
-Keeps GP8 Enter and directions as HID; GP7 becomes software STOP, NOT arm toggle.
+Keeps GP8 Enter and directions as HID. GP7 is a hold-to-enable software
+interlock for supervised bench work; release latches STOP. NOT a power cutoff.
 There is intentionally NO servo PWM on boot and NO enabled motor command by default.
 A separate physical servo-power cutoff remains mandatory.
 """
@@ -18,16 +19,16 @@ from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keycode import Keycode
 from safe_arm_core import SafeArmController, MAX_FRAME
 
-# Three independent manual gates: code review + reviewed travel ranges +
-# a wired ACTIVE-LOW switch on a physically verified spare pin.
-# DO NOT flip these for field testing without a detached-servo power bench.
+# Requires code review, measured calibration and the EXISTING GP7 red button
+# held continuously by a human for any eventual ARM/MOVE. Release latches STOP.
+# A software stop is NOT an electrical power cutoff. Keep these OFF by default.
 ARM_OUTPUT_BUILD_ENABLED = False
 REVIEWED_CALIBRATION = None
 # Explicit review must supply {'reviewed': True,
 #  'left': {'min_us':..., 'home_us':..., 'max_us':...},
 #  'right': {'min_us':..., 'home_us':..., 'max_us':...}}
 # Correct angles and mechanical limits CANNOT be inferred from 50 Hz or 0/180.
-ENABLE_INPUT_PIN = board.GP12  # Must be separately wired/confirmed; default pull-up DISABLED.
+# No GP12 input is assumed: the existing, known GP7 button is the bench deadman.
 
 POLL_INTERVAL_S = 0.01
 
@@ -48,13 +49,10 @@ class Pins:
         self.red.direction = digitalio.Direction.INPUT
         self.red.pull = digitalio.Pull.UP
         self.red_pressed = False
-        self.enable = digitalio.DigitalInOut(ENABLE_INPUT_PIN)
-        self.enable.direction = digitalio.Direction.INPUT
-        self.enable.pull = digitalio.Pull.UP
 
     def physical_enabled(self):
         return (ARM_OUTPUT_BUILD_ENABLED and REVIEWED_CALIBRATION is not None
-                and self.enable.value is False and self.red.value is True)
+                and self.red.value is False)
 
     def poll(self, controller):
         now = time.monotonic()
@@ -73,8 +71,9 @@ class Pins:
                     # Losing HID cannot be used as permission to operate arms.
                     controller.emergency_stop("hid_error")
         red = self.red.value is False
-        if red and not self.red_pressed:
-            controller.emergency_stop("physical_red_software_stop")
+        if self.red_pressed and not red:
+            # GP7 RELEASE, not press, is the latched PWM stop for bench testing.
+            controller.emergency_stop("gp7_hold_released")
         self.red_pressed = red
 
 class ServoOutputs:
