@@ -120,8 +120,8 @@ class RawCdcPort:
     def write(self, data):
         if not self.is_open or type(data) is not bytes or len(data) > 128:
             raise RuntimeError("not_open_or_invalid_frame")
-        w, _, _ = select.select([], [self.fd], [], self.write_timeout)
-        if not w:
+        _, writable, _ = select.select([], [self.fd], [], self.write_timeout)
+        if not writable:
             raise TimeoutError("write_timeout")
         return os.write(self.fd, data)  # No retry after partial write.
 
