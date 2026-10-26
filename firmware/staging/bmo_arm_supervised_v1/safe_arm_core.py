@@ -105,6 +105,10 @@ class SafeArmController:
         return ("V2 ACK %s %s %s POSITION_UNVERIFIED\n" %
                 (rid, self.boot_id, code)).encode("ascii")
 
+    def emergency_stop(self, reason="emergency_stop"):
+        """Software STOP latch: never claim this removes physical motor power."""
+        self._stop(reason)
+
     def _stop(self, reason):
         self.armed = False
         self.stop_latched = True
