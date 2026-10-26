@@ -116,11 +116,11 @@ class StartupDiagnosticsTests(unittest.TestCase):
         self.assertFalse(tuple(self.root.glob("bmo-chromium-*")))
         factory.assert_not_called()
 
-    def test_public_plan_matches_welcome_v2_source_not_obsolete_greeting(self):
+    def test_public_plan_matches_english_v3_source_and_cache_version(self):
         from bmo_ai.greeting_cache import GREETING_TEXT
         value = public_plan(parser().parse_args(["--status"]))
         self.assertEqual(value["greeting"]["text"], GREETING_TEXT)
-        self.assertEqual(value["greeting"]["asset_version"], "welcome-v2")
+        self.assertEqual(value["greeting"]["asset_version"], "english-v3")
 
     def ready_runtime(self):
         app = DesktopRuntime(simulate=True, require_face_presented=True)
