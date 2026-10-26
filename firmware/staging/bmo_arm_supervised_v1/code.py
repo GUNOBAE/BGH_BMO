@@ -113,11 +113,18 @@ class ServoOutputs:
 
     def stop(self):
         old, self.channels = self.channels, {}
+        failure = False
         for channel in old.values():
             try:
                 channel.duty_cycle = 0
-            finally:
+            except Exception:
+                failure = True
+            try:
                 channel.deinit()
+            except Exception:
+                failure = True
+        if failure:
+            raise RuntimeError("pwm_release_unverified")
         # PWM disabled != actual servo power removed; external cutoff required.
 
 def main():
