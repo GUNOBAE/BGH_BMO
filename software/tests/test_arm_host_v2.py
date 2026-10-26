@@ -185,7 +185,6 @@ class ArmHostV2Tests(unittest.TestCase):
 
     def test_wrong_id_bad_frame_and_boot_replay_reject_without_retry(self):
         for bad in (b"V2 ACK other boot_fixture READY POSITION_UNVERIFIED\n",
-                    b"V2 ACK hello1 stale_boot READY POSITION_UNVERIFIED\n",
                     b"V2 ACK hello1 boot_fixture READY POSITION_VERIFIED\n",
                     b'{"v":1,"seq":1}\n'):
             with self.subTest(bad=bad):
@@ -198,6 +197,15 @@ class ArmHostV2Tests(unittest.TestCase):
                 self.assertEqual(len(link.sent), 1)
                 error_code("arm_transport_unknown", lambda: session.hello())
                 self.assertEqual(len(link.sent), 1)
+
+    def test_boot_change_rejected_after_initial_hello_without_retry(self):
+        self.host.hello()
+        self.link.inject = b"V2 ACK arm1 another_boot ARMED_POSITION_UNVERIFIED\\n"
+        error_code("controller_boot_changed", lambda: self.host.arm("arm1"))
+        self.assertTrue(self.host.snapshot()["link_unknown"])
+        self.assertEqual(len(self.link.sent), 2)
+        error_code("arm_transport_unknown", lambda: self.host.arm("arm2"))
+        self.assertEqual(len(self.link.sent), 2)
 
     def test_transport_failure_after_arm_is_unknown_never_resend(self):
         self.host.hello()
