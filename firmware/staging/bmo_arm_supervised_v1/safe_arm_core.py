@@ -41,10 +41,11 @@ def decode_frame(frame):
         return (op, terms[2])
     if op == "ARM" and len(terms) == 4 and _identifier(terms[2]) and _identifier(terms[3]):
         return (op, terms[2], terms[3])
-    if op == "PING" and len(terms) == 4 and _identifier(terms[2]) and terms[3].isdigit() and len(terms[3]) <= 10:
-        n = int(terms[3])
+    if (op == "PING" and len(terms) == 5 and _identifier(terms[2])
+            and _identifier(terms[3]) and terms[4].isdigit() and len(terms[4]) <= 10):
+        n = int(terms[4])
         if n <= 4294967295:
-            return (op, terms[2], n)
+            return (op, terms[2], terms[3], n)
     if (op == "MOVE" and len(terms) == 6 and _identifier(terms[2])
             and _identifier(terms[3]) and terms[4] in ("left", "right")):
         return (op, terms[2], terms[3], terms[4], _pulse(terms[5]))
