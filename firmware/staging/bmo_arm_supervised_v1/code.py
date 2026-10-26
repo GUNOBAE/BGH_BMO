@@ -133,15 +133,21 @@ def main():
     # A fresh boot identifier rejects queued old commands after a controller reset.
     try:
         boot_id = "b" + os.urandom(8).hex()
+        boot_identity_verified = True
     except Exception:
-        # Fail closed if secure boot identity cannot be generated.
-        return
+        # Keep existing HID buttons alive, but do not ever unlock real arms
+        # if a unique per-boot controller ID cannot be generated.
+        boot_id = "boot_unverified"
+        boot_identity_verified = False
     controller = SafeArmController(
         outputs, boot_id, settings=REVIEWED_CALIBRATION,
-        physical_enabled=pins.physical_enabled)
+        physical_enabled=lambda: boot_identity_verified and pins.physical_enabled())
     stream = usb_cdc.data  # Dedicated interface; NEVER read usb_cdc.console / REPL.
     if stream is not None:
         stream.timeout = 0
+        # Default is None (infinite wait). Blocked writes must not freeze
+        # HID inputs or prevent the 350ms controller watchdog from running.
+        stream.write_timeout = 0.05
     buffer = bytearray()
     discarding = False
     try:
@@ -159,8 +165,11 @@ def main():
                         if octet == 10:
                             if not discarding:
                                 response = controller.handle(bytes(buffer) + b"\n")
-                                try:stream.write(response)
-                                except Exception:controller.emergency_stop("data_write_failed")
+                                try:
+                                    if stream.write(response) != len(response):
+                                        controller.emergency_stop("data_partial_write")
+                                except Exception:
+                                    controller.emergency_stop("data_write_failed")
                             buffer.clear()
                             discarding = False
                         elif octet == 13 or len(buffer) >= MAX_FRAME - 1:
