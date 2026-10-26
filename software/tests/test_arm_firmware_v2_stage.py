@@ -84,6 +84,11 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         self.assertIn('boot_id = "boot_unverified"', APP.read_text())
         self.assertIn('boot_identity_verified and pins.physical_enabled()', APP.read_text())
         self.assertIn('stream.write_timeout = 0.05', APP.read_text())
+        app = APP.read_text()
+        self.assertNotIn('board.GP12', app)
+        self.assertIn('self.red.value is False', app)
+        self.assertIn('if self.red_pressed and not red:', app)
+        self.assertIn('controller.emergency_stop("gp7_hold_released")', app)
         for file in (CORE, APP, BOOT):
             compile(file.read_text(), str(file), 'exec')
         source = CORE.read_text()
