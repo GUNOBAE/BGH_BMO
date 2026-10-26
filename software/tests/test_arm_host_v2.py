@@ -200,7 +200,7 @@ class ArmHostV2Tests(unittest.TestCase):
 
     def test_boot_change_rejected_after_initial_hello_without_retry(self):
         self.host.hello()
-        self.link.inject = b"V2 ACK arm1 another_boot ARMED_POSITION_UNVERIFIED\n"
+        self.link.inject = b"V2 ACK arm1 another_boot ARMED_POSITION_UNVERIFIED POSITION_UNVERIFIED\n"
         error_code("controller_boot_changed", lambda: self.host.arm("arm1"))
         self.assertTrue(self.host.snapshot()["link_unknown"])
         self.assertEqual(len(self.link.sent), 2)
