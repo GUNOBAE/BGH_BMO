@@ -234,7 +234,7 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 greeting = GreetingPlayer(config, cache, simulate=True)
             else:
                 cache = GreetingCache(default_greeting_directory(), GreetingSpec.from_config(config))
-                greeting = GreetingPlayer(config, cache)
+                greeting = GreetingPlayer(config, cache, startup_chime=True)
             app.greeting = greeting
         except Exception as error:
             code = getattr(error, "code", "engine_startup_failed")
