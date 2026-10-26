@@ -71,8 +71,9 @@ class Pins:
                     # Losing HID cannot be used as permission to operate arms.
                     controller.emergency_stop("hid_error")
         red = self.red.value is False
-        if self.red_pressed and not red:
-            # GP7 RELEASE, not press, is the latched PWM stop for bench testing.
+        if self.red_pressed and not red and controller.armed:
+            # Release latches STOP only if motor outputs were actually armed;
+            # a GP7 press/release while disabled must not poison a later session.
             controller.emergency_stop("gp7_hold_released")
         self.red_pressed = red
 
