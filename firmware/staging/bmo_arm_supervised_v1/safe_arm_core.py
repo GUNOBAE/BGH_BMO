@@ -88,8 +88,12 @@ class SafeArmController:
             if type(v) is not dict or set(v) != {"min_us", "home_us", "max_us"}:
                 return False
             a, b, c = v["min_us"], v["home_us"], v["max_us"]
+            # Home may equal a bound: the user physically left both arms at
+            # their previous fully raised command (left 600us, right 2400us).
+            # Never invent travel *beyond* the observed endpoint to force a
+            # strictly interior home. The interval still must have nonzero width.
             if (any(type(n) is not int for n in (a, b, c))
-                    or not 500 <= a < b < c <= 2500):
+                    or not 500 <= a <= b <= c <= 2500 or a == c):
                 return False
         return True
 
