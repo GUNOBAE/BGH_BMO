@@ -145,6 +145,24 @@ class ArmHostV2Tests(unittest.TestCase):
         self.assertEqual(ack.code, "UNCALIBRATED")
         error_code("arm_controller_unverified", lambda: session.arm("arm1"))
 
+    def test_recommended_first_position_is_endpoint_not_center(self):
+        # This is an offline synthetic verification, NOT user approval to
+        # reconnect or drive servos. The physical arm position has no feedback.
+        up = {'reviewed': True,
+              'left': {'min_us': 600, 'home_us': 600, 'max_us': 650},
+              'right': {'min_us': 2350, 'home_us': 2400, 'max_us': 2400}}
+        self.assertIs(reviewed_limits(up), up)
+        link = ControllerLink(self.clock, profile=up)
+        session = ArmHostV2(link, profile=up, clock=self.clock)
+        session.hello()
+        self.assertIn('ARMED_', session.arm('home-up').code)
+        self.assertEqual(link.io.initial, [{'left': 600, 'right': 2400}])
+        self.assertIn('ACCEPTED_', session.move('step001', 'left', 610).code)
+        self.assertIn('ACCEPTED_', session.move('step002', 'right', 2390).code)
+        self.clock.advance(.021)
+        link.controller.tick()
+        self.assertEqual(link.io.writes, [('left', 610), ('right', 2390)])
+
     def test_move_outside_reviewed_limit_does_not_touch_device(self):
         self.host.hello()
         self.host.arm("arm1")
