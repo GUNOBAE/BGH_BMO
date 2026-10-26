@@ -22,6 +22,8 @@
 - `code.py`: 새 CircuitPython 펌웨어 **참고 구현**, 기존 방향/Z/Enter HID 유지, GP7은 소프트웨어 STOP으로 변경. 기본 `ARM_OUTPUT_BUILD_ENABLED = False` + `REVIEWED_CALIBRATION = None`이어서 **서보 PWM을 절대 생성하지 않음**. GPIO GP12는 *가정한* 별도 활성 입력으로 Pull.UP이며 핀/배선 가능 여부는 **미검증**
 - `boot.py`: 명시적 테스트 시의 `usb_cdc.enable(console=True, data=True)` 예시. 전용 `usb_cdc.data`만 사용하며 `usb_cdc.console` (REPL)로 모터 명령을 보내지 않음. RP2040의 USB endpoint 예산 확인/재열거 전엔 설치 금지
 - `software/tests/test_arm_firmware_v2_stage.py`: pure CPython fake PWM으로 부팅 무동작, 부정 frame, physical gate, boot ID, 중복, 2개의 pulse 한계, slew, timeout, STOP latch 확인. **실제 하드웨어/펌웨어 테스트가 아님**
+- `software/bmo_ai/features/motion/arm_host_v2.py`: Pi 호스트의 **같은 V2 프로토콜**을 encode/decode한다. `HELLO/ARM/PING/MOVE/STOP`과 `ACK`의 ID·boot 불일치, 미승인 물리 조건, heartbeat 만료를 차단한다. `BoundedCdcExchange`는 **외부에서 이미 열고 식별·검수한 전용 포트 객체만 받는다**. 포트 자동 검색, 시리얼 open, DTR/RTS 변경 또는 기존 HID 제어를 하지 않는다.
+- `software/tests/test_arm_host_v2.py`: 호스트 → 실제 staged firmware parser/controller core → ACK 왕복과 둘 다 좌우 개별 target, STOP, heartbeat, 중복/실패/이전 boot를 오프라인에서 검사. **현재 보드와 통신하는 실기 드라이버는 아님**.
 
 ### 왜 기본 실행이 막혀 있는가
 
@@ -61,7 +63,7 @@ V2 STOP stop1
 3. GP12 물리 인터록 접근이 가능한지 설계/PCB와 실제 보드 확인. 불가능하면 GPIO 가정을 수정, 대체 스위치 검토. 외부 서보 전원 kill·퓨즈/전류제한·공통 GND 확인
 4. 2개 실제 서보가 부하 없는 지그에서 어느 방향으로 어느 pulse에서 어느 위치에 있는지 각각 확인. 임의 0°·90°·180° 명령 금지
 5. 테스트 장비·운영자·물리 컷오프를 준비한 후 **별도 검수된 펌웨어**만 수동 적용. 먼저 모든 팔 출력 OFF/HID·data handshake 검수, 다음 한 팔의 아주 작은 이동, 응급 STOP/heartbeat failure/전원 분리 확인
-6. 마지막에 Pi Host `ArmTransportV2`와 BMO Action Host를 연결. LLM은 팔 angle/pulse를 직접 생성하지 않고 이미 검토된 제스처만 제안. 사용자 승인 없이는 자동 동작 OFF
+6. Pi 측 V2 host protocol은 현재 **코드 구현 및 fake-controller 검증 단계**이다. 실제 `usb_cdc.data` endpoint를 열고 유지할 승인된 Pi 포트 소유자는 아직 없으며, `MotionFeature`와 BMO AI action 라우팅은 물리 검증 전 자동 이동을 허용하지 않는다. 사용자 입회 하드웨어를 확인한 뒤 포트 식별·한 소유자·부팅 ID·주기적 heartbeat·우선 STOP·수동 조작/소각 테스트를 검수한 다음에만 이 인터페이스에 연결한다. LLM은 팔 angle/pulse를 직접 생성하지 않고 검수된 제스처만 제안한다.
 
 ## 공식 API 참고
 
@@ -69,4 +71,18 @@ V2 STOP stop1
 - CircuitPython PWM 문서: https://docs.circuitpython.org/en/latest/shared-bindings/pwmio/ — `duty_cycle`는 16비트 값, `frequency=50` 선택은 실제 기구각 범위를 보증하지 않음
 - Adafruit HID: https://github.com/adafruit/Adafruit_CircuitPython_HID — 키보드 키 전송
 
-**최종 수락 상태: 코드 STAGED / CPython_UNIT_PENDING / USB_CDC_PHYSICAL_NOT_RUN / MOTOR_PHYSICAL_NOT_RUN / POSITION_UNVERIFIED.**
+## 이번 실기 제약 (사용자 확인 2026-10-26)
+
+양팔 서보에 **상시 전원**이 들어오며 사용자는 서보 전원을 별도로 차단하거나 커넥터를 분리할 수 없다. 현 보드 `/media/bgh/CIRCUITPY/code.py` 원본은 로컬 `/home/bgh/BMO_RP2040_BACKUPS/original_EWJ1G4sz/code.py`에 보존됐고 SHA-256은 `fdc65bebef17b78b945281549ddce80fb749e1a94262751d8d2f0146c394a01e`로 일치한다. 기존 `code.py`는 부팅 시 `set_arms(0)`을 호출하므로, 저장·리로드·boot.py 교체·USB CDC 재열거가 **의도하지 않은 움직임**을 만들 수 있다. **이 조건에서 새 staged 파일을 CIRCUITPY에 복사하지 않는다.** GPIO GP12은 현재 PCB 배선/스위치로 검증되지 않았다. 이 문서에서 물리적 전원 차단을 소프트웨어 STOP으로 대체할 수 있다고 주장하지 않는다.
+
+### Pi의 안전한 코드 검사 (장치 접근 없음)
+
+```bash
+cd /home/bgh/BMO_REAL_ROBOT
+# 해당 GitHub 브랜치가 별도 worktree에 반영된 경우에만:
+PYTHONPATH=software python3 -B -m unittest software.tests.test_arm_firmware_v2_stage software.tests.test_arm_host_v2 -v
+```
+
+이때 `BoundedCdcExchange`는 **포트를 여는 코드가 아니며**, 실제 사용하려면 별도의 안전 검수 후 구성한 *이미 열린* 데이터 포트 객체를 받아야 한다. `ttyACM0`이 보인다고 전용 데이터 포트라고 단정하지 않는다. 기본 BMO 앱은 신규 팔 이동 기능을 여전히 비활성화한다.
+
+**최종 수락 상태: firmware & host V2 STAGED / GitHub CI 검사 필요 / USB_CDC_PHYSICAL_NOT_RUN / MOTOR_PHYSICAL_NOT_RUN / POSITION_UNVERIFIED.**
