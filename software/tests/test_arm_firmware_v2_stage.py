@@ -87,7 +87,7 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         app = APP.read_text()
         self.assertNotIn('board.GP12', app)
         self.assertIn('self.red.value is False', app)
-        self.assertIn('if self.red_pressed and not red:', app)
+        self.assertIn('if self.red_pressed and not red and controller.armed:', app)
         self.assertIn('controller.emergency_stop("gp7_hold_released")', app)
         for file in (CORE, APP, BOOT):
             compile(file.read_text(), str(file), 'exec')
@@ -126,6 +126,41 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         self.assertEqual(self.io.writes[-1], ('left', 1520))
         self.assertTrue(all(side == 'left' for side, _ in self.io.writes))
         self.assertLessEqual(self.io.writes[-1][1] - 1500, 20)
+
+    def test_fully_raised_home_matches_historical_pwm_and_moves_only_inward(self):
+        # User physically observed both arms fully raised before unplugging.
+        # Old code maps arm_angle=180 to left 600us, right 2400us.
+        profile = {
+            'reviewed': True,
+            'left': {'min_us': 600, 'home_us': 600, 'max_us': 650},
+            'right': {'min_us': 2350, 'home_us': 2400, 'max_us': 2400},
+        }
+        outputs = FakeIO()
+        manual = arm.SafeArmController(outputs, 'boot-up',
+            settings=profile, physical_enabled=lambda: True, clock=self.clock)
+        self.assertEqual(outputs.armed, [])
+        self.assertIn('ARMED_', manual.handle(cmd('ARM', 'armup', 'boot-up')).decode())
+        self.assertEqual(outputs.armed, [{'left': 600, 'right': 2400}])
+        self.assertIn('ACCEPTED_', manual.handle(cmd('MOVE', 'stepL', 'boot-up', 'left', 610)).decode())
+        self.assertIn('ACCEPTED_', manual.handle(cmd('MOVE', 'stepR', 'boot-up', 'right', 2390)).decode())
+        self.clock.plus(.021)
+        manual.tick()
+        self.assertEqual(outputs.writes, [('left', 610), ('right', 2390)])
+        self.assertNotIn(('left', 590), outputs.writes)
+        self.assertNotIn(('right', 2410), outputs.writes)
+
+    def test_zero_width_calibration_not_accepted(self):
+        invalid = {
+            'reviewed': True,
+            'left': {'min_us': 600, 'home_us': 600, 'max_us': 600},
+            'right': {'min_us': 2350, 'home_us': 2400, 'max_us': 2400},
+        }
+        outputs = FakeIO()
+        manual = arm.SafeArmController(outputs, 'boot-up',
+            settings=invalid, physical_enabled=lambda: True, clock=self.clock)
+        self.assertIn('UNCALIBRATED', manual.handle(cmd('HELLO', 'h1')).decode())
+        self.assertIn('UNCALIBRATED', manual.handle(cmd('ARM', 'a1', 'boot-up')).decode())
+        self.assertEqual(outputs.armed, [])
 
     def test_ping_counter_and_watchdog_stop_latches(self):
         self.hold = True
