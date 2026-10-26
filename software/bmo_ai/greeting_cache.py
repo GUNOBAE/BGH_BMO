@@ -23,7 +23,7 @@ from .private_credentials import (_close, _directory_ok, _open_directory,
 from .pronunciation import spoken_bmo_name
 from .safe_playback import attenuated_copy, validate_gain
 
-GREETING_TEXT = '돌아왔구나! 비모가 기다렸어!'
+GREETING_TEXT = "Hey! You're back! BMO missed you!"
 MAGIC = b'BMO_GREETING_V1\n'
 MAX_WAV_BYTES = 8 * 1024 * 1024
 MAX_HEADER_BYTES = 64 * 1024
@@ -66,7 +66,7 @@ def default_greeting_directory(*, environ=None, home=None):
     source = os.environ if environ is None else environ
     base = source.get('XDG_CACHE_HOME')
     root = Path(base) if base else Path(home).joinpath('.cache') if home is not None else Path.home()/'.cache'
-    path = root/'bmo'/'greeting-welcome-v2'
+    path = root/'bmo'/'greeting-english-v3'
     if not path.is_absolute() or '..' in path.parts:
         raise GreetingError('greeting_unsafe')
     return path
