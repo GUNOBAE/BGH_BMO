@@ -111,7 +111,8 @@ def reviewed_limits(profile):
         if type(limits) is not dict or set(limits) != {"min_us", "home_us", "max_us"}:
             raise ArmV2Error("arm_profile_unreviewed")
         a, b, c = limits["min_us"], limits["home_us"], limits["max_us"]
-        if any(type(value) is not int for value in (a, b, c)) or not 500 <= a < b < c <= 2500:
+        if (any(type(value) is not int for value in (a, b, c))
+                or not 500 <= a <= b <= c <= 2500 or a == c):
             raise ArmV2Error("arm_profile_unreviewed")
     return profile
 
