@@ -157,7 +157,7 @@ class SafeArmController:
         op, rid = parts[0], parts[1]
         if op == "STOP":
             self._stop("operator_stop")
-            return self._ack(rid, "STOP_LATCHED")
+            return self._ack(rid, "STOP_RELEASE_UNKNOWN" if self.stop_reason == "output_release_unknown" else "STOP_LATCHED")
         if op == "HELLO":
             return self._ack(rid, "READY" if self._calibration_valid() else "UNCALIBRATED")
         if self.stop_latched:
