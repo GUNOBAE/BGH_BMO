@@ -219,7 +219,8 @@ class GreetingTests(unittest.TestCase):
         generated=[]
         def synthesize(text,**kwargs):
             self.assertEqual(text,self.spec.spoken)
-            self.assertTrue(text.endswith(GREETING_TEXT))
+            from bmo_ai.pronunciation import spoken_bmo_name
+            self.assertTrue(text.endswith(spoken_bmo_name(GREETING_TEXT, self.spec.fish_name_mode)))
             self.assertEqual(kwargs['reference_id'],self.config.fish_voice_id)
             self.assertEqual(kwargs['model'],self.config.fish_model)
             self.assertEqual(kwargs['api_key'],'fixture-only')
