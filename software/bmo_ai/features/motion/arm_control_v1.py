@@ -66,7 +66,10 @@ def encode_command(op, seq, *, boot=None, side=None, angle=None,
 def decode_reply(raw, *, expected_boot=None):
     if type(raw) is not bytes or not 1 <= len(raw) <= 256 or not raw.endswith(b"\n"):
         raise ArmCommandError("invalid_arm_frame")
-    value = _object(raw[:-1].decode("ascii"))
+    try:
+        value = _object(raw[:-1].decode("ascii"))
+    except UnicodeError:
+        raise ArmCommandError("invalid_arm_frame") from None
     if (type(value) is not dict
             or set(value) != {"v", "boot", "seq", "code", "accepted", "position_verified"}
             or type(value["v"]) is not int or value["v"] != 1
