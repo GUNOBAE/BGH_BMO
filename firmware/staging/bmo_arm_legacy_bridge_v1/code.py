@@ -55,8 +55,16 @@ last_states = [True] * len(buttons)
 # Servo
 # =========================
 
-right_servo = pwmio.PWMOut(board.GP10, frequency=50)
-left_servo  = pwmio.PWMOut(board.GP11, frequency=50)
+servo_init_failed = False
+right_servo = left_servo = None
+try:
+    right_servo = pwmio.PWMOut(board.GP10, frequency=50)
+except Exception:
+    servo_init_failed = True
+try:
+    left_servo = pwmio.PWMOut(board.GP11, frequency=50)
+except Exception:
+    servo_init_failed = True
 
 SERVO_MIN_US = 600
 SERVO_MAX_US = 2400
@@ -84,7 +92,13 @@ def set_arms(angle):
 
 # 부팅 시 팔 아래
 arm_angle = 0
-set_arms(arm_angle)
+boot_servo_failed = servo_init_failed
+try:
+    set_arms(arm_angle)
+except Exception:
+    # A failed boot PWM write must not prevent the proven HID buttons loading.
+    # Original mapping/endpoints remain in set_arms(); no new calibration here.
+    boot_servo_failed = True
 
 print("BMO CONTROLLER READY")
 
@@ -98,8 +112,11 @@ def set_one_arm(side, physical_angle):
 def set_both_from_host(angle):
     # Keep the original GP7 logical toggle in sync after explicit both_up/down.
     # servo_angle() and set_arms() remain byte-for-byte unchanged.
+    # Automatic interpolation uses the exact same mapping without printing
+    # every 20 ms to the console; GP7 still invokes original set_arms().
     global arm_angle
-    set_arms(angle)
+    set_one_arm("left", angle)
+    set_one_arm("right", angle)
     if angle in (0, 180):
         arm_angle = angle
 
@@ -109,12 +126,22 @@ except Exception:
     bridge_boot_id = "boot_disabled"
     REMOTE_ENABLED = False
 
-data_port = usb_cdc.data
-if data_port is not None:
-    data_port.timeout = 0
-    data_port.write_timeout = 0.03
+data_port = None
+cdc_init_failed = False
+try:
+    data_port = usb_cdc.data
+    if data_port is not None:
+        data_port.timeout = 0
+        data_port.write_timeout = 0.03
+except Exception:
+    data_port = None
+    cdc_init_failed = True
 bridge = LegacyBridge(data_port, bridge_boot_id, set_one_arm,
                       set_both_from_host, lambda: arm_angle, enabled=REMOTE_ENABLED)
+if boot_servo_failed:
+    bridge.fault_remote("servo_fault")
+elif cdc_init_failed:
+    bridge.fault_remote("cdc_fault")
 
 # =========================
 # Main Loop
@@ -130,7 +157,12 @@ while True:
             if i == 5:
                 bridge.manual_cancel()
                 arm_angle = 180 if arm_angle == 0 else 0
-                set_arms(arm_angle)
+                try:
+                    set_arms(arm_angle)
+                except Exception:
+                    bridge.fault_remote("servo_fault")
+                else:
+                    bridge.manual_pose(arm_angle)
 
             # 기존 버튼
             elif keys[i] is not None:
@@ -142,5 +174,8 @@ while True:
 
         last_states[i] = val
 
-    bridge.poll()
+    try:
+        bridge.poll()
+    except Exception:
+        bridge.fault_remote("bridge_fault")
     time.sleep(0.01)

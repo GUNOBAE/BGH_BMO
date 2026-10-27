@@ -7,6 +7,10 @@ import time
 
 MAX_FRAME = 96
 WATCHDOG_S = 0.9
+MAX_SLEW_DPS = 90.0
+UPDATE_PERIOD_S = 0.02
+MAX_UPDATE_DEG = 2.0
+GESTURE_TIMEOUT_S = 15.0
 VALID_GESTURES = (
     "wave", "celebrate", "shrug", "raise_left_arm",
     "raise_right_arm", "both_up", "both_down",
@@ -16,6 +20,16 @@ VALID_GESTURES = (
 def valid_id(s):
     return (isinstance(s, str) and 1 <= len(s) <= 32 and
             all(c in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_" for c in s))
+
+
+def motion_sequence(rid):
+    # Existing B1 envelope; numeric identity is independent of the ACK cache.
+    # Leading zeros preserve the old host's fixed-width decimal representation.
+    digits = rid[4:] if rid.startswith("bmo_") else ""
+    if not 1 <= len(digits) <= 20 or any(c not in "0123456789" for c in digits):
+        return None
+    value = int(digits)
+    return value if value > 0 else None
 
 
 class LegacyBridge:
@@ -35,6 +49,11 @@ class LegacyBridge:
         self.last_requests = {}
         self.last_request_order = []
         self.fault = None
+        self.highest_motion_sequence = 0
+        self.positions = None  # Commanded logical angles, never measured position.
+        self.last_update = None
+        self.gesture_deadline = None
+        self.dwelling = False
 
     def _reply(self, rid, code):
         return ("B1 ACK %s %s %s POSITION_UNVERIFIED\n" %
@@ -51,18 +70,55 @@ class LegacyBridge:
     def _cancel(self):
         self.steps = ()
         self.step_index = 0
+        self.gesture_deadline = None
+        self.dwelling = False
+
+    def fault_remote(self, code="servo_fault"):
+        # Never attempt another PWM operation to handle a PWM failure. In
+        # particular, HOLD/STOP are not an electrical power cutoff.
+        self.fault = code if code in (
+            "servo_fault", "clock_fault", "cdc_fault", "bridge_fault",
+            "watchdog_timeout", "gesture_timeout", "position_unknown",
+        ) else "bridge_fault"
+        self._cancel()
+        self.stopped = True
+        self.positions = None
+
+    def _now(self):
+        try:
+            now = self.clock()
+            if type(now) not in (int, float) or not 0 <= now < float("inf"):
+                raise ValueError("clock_invalid")
+            return now
+        except Exception:
+            self.fault_remote("clock_fault")
+            return None
 
     def manual_cancel(self):
         # GP7 keeps its original function; manual override cancels and latches
         # active automation but does not disable manual button control.
-        if self.steps:
-            self.stopped = True
+        # Latch even while idle: a DO already queued in CDC must not overtake
+        # the manual edge later in this same button-loop iteration.
+        self.stopped = True
         self._cancel()
 
+    def manual_pose(self, angle):
+        # Called only after original set_arms() returned successfully. This
+        # updates software bookkeeping, never performs a servo write.
+        if type(angle) is int and angle in (0, 180):
+            self.positions = {"left": angle, "right": angle}
+
     def _make_steps(self, name):
-        base = self.get_base()
-        if type(base) is not int or base not in (0, 180):
+        try:
+            base = self.get_base()
+        except Exception:
+            self.fault_remote("servo_fault")
             return None
+        if type(base) is not int or base not in (0, 180):
+            self.fault_remote("position_unknown")
+            return None
+        if self.positions is None:
+            self.positions = {"left": base, "right": base}
         if name == "wave":
             return ((None, 180, .36), (None, 145, .36),
                     (None, 180, .36), (None, 145, .36),
@@ -100,7 +156,8 @@ class LegacyBridge:
             return old_reply if old_frame == frame else self._reply(rid, "REQUEST_CONFLICT")
         if verb == "HELLO" and len(parts) == 3:
             return self._remember(rid, frame,
-                                  self._reply(rid, "READY" if self.enabled else "DISABLED"))
+                                  self._reply(rid, "DISABLED" if not self.enabled else
+                                              "STOPPED" if self.stopped else "READY"))
         if len(parts) not in (4, 5) or not valid_id(parts[3]):
             return self._remember(rid, frame, self._reply(rid, "INVALID"))
         if parts[3] != self.boot_id:
@@ -114,47 +171,108 @@ class LegacyBridge:
         if self.stopped:
             return self._remember(rid, frame, self._reply(rid, "STOPPED"))
         if verb == "PING" and len(parts) == 4:
-            self.last_ping = self.clock()
+            now = self._now()
+            if now is None:
+                return self._remember(rid, frame, self._reply(rid, "STOPPED"))
+            self.last_ping = now
             return self._remember(rid, frame, self._reply(rid, "ALIVE"))
         if verb == "HOLD" and len(parts) == 4:
             self._cancel()
             return self._remember(rid, frame, self._reply(rid, "HELD"))
-        if verb == "DO" and len(parts) == 5 and parts[4] in VALID_GESTURES:
+        if verb == "DO" and len(parts) == 5:
+            sequence = motion_sequence(rid)
+            if sequence is None:
+                return self._remember(rid, frame, self._reply(rid, "INVALID_REQUEST_ID"))
+            if sequence <= self.highest_motion_sequence:
+                return self._remember(rid, frame, self._reply(rid, "STALE_REQUEST"))
+            # Consume once even when BUSY/INVALID/DENIED. A rejected request
+            # cannot turn into a new movement after its cached ACK is evicted.
+            self.highest_motion_sequence = sequence
+            if parts[4] not in VALID_GESTURES:
+                return self._remember(rid, frame, self._reply(rid, "INVALID"))
             if self.steps:
                 return self._remember(rid, frame, self._reply(rid, "BUSY"))
             steps = self._make_steps(parts[4])
             if steps is None:
                 return self._remember(rid, frame, self._reply(rid, "DENIED"))
+            now = self._now()
+            if now is None:
+                return self._remember(rid, frame, self._reply(rid, "STOPPED"))
             self.steps = steps
             self.step_index = 0
-            self.next_due = self.clock()
-            self.last_ping = self.clock()
+            self.last_update = now
+            self.next_due = now + UPDATE_PERIOD_S
+            self.gesture_deadline = now + GESTURE_TIMEOUT_S
+            self.dwelling = False
+            self.last_ping = now
             return self._remember(rid, frame, self._reply(rid, "ACCEPTED"))
         return self._remember(rid, frame, self._reply(rid, "INVALID"))
 
     def _tick_steps(self):
         if not self.steps:
             return
-        now = self.clock()
-        if self.last_ping is None or now - self.last_ping > WATCHDOG_S:
-            self._cancel()
-            self.stopped = True
+        now = self._now()
+        if now is None:
+            return
+        if self.last_update is None or now < self.last_update:
+            self.fault_remote("clock_fault")
+            return
+        if self.last_ping is None or not 0 <= now - self.last_ping <= WATCHDOG_S:
+            self.fault_remote("watchdog_timeout")
+            return
+        if self.gesture_deadline is None or now >= self.gesture_deadline:
+            self.fault_remote("gesture_timeout")
             return
         if now < self.next_due:
             return
-        left, right, dwell = self.steps[self.step_index]
-        if left is not None and right is not None and left == right:
-            self.set_both(left)
-        else:
-            if left is not None:
-                self.set_side("left", left)
-            if right is not None:
-                self.set_side("right", right)
-        self.step_index += 1
-        if self.step_index >= len(self.steps):
-            self._cancel()
-        else:
-            self.next_due = now + dwell
+        if self.dwelling:
+            self.step_index += 1
+            self.dwelling = False
+            self.last_update = now
+            self.next_due = now + UPDATE_PERIOD_S
+            return
+        try:
+            left, right, dwell = self.steps[self.step_index]
+            # No accumulation of motion credit across a slow/stalled loop.
+            # At most one bounded update per poll; never run catch-up loops.
+            increment = min(MAX_UPDATE_DEG, MAX_SLEW_DPS * min(
+                now - self.last_update, UPDATE_PERIOD_S))
+            if increment <= 0:
+                return
+
+            def toward(current, target):
+                if target is None:
+                    return current
+                difference = target - current
+                if abs(difference) <= increment:
+                    return target  # Preserve exact integer endpoints/base type.
+                return current + (increment if difference > 0 else -increment)
+
+            old_left, old_right = self.positions["left"], self.positions["right"]
+            next_left, next_right = toward(old_left, left), toward(old_right, right)
+            if left is not None and right is not None and next_left == next_right:
+                if next_left != old_left or next_right != old_right:
+                    self.set_both(next_left)
+                    self.positions["left"], self.positions["right"] = next_left, next_right
+            else:
+                if next_left != old_left:
+                    self.set_side("left", next_left)
+                    self.positions["left"] = next_left
+                if next_right != old_right:
+                    self.set_side("right", next_right)
+                    self.positions["right"] = next_right
+            self.last_update = now
+            self.next_due = now + UPDATE_PERIOD_S
+            reached = ((left is None or next_left == left)
+                       and (right is None or next_right == right))
+            if reached:
+                if self.step_index == len(self.steps) - 1:
+                    self._cancel()
+                else:
+                    self.dwelling = True
+                    self.next_due = now + dwell
+        except Exception:
+            self.fault_remote("servo_fault")
 
     def poll(self):
         if self.port is not None:
@@ -176,8 +294,11 @@ class LegacyBridge:
                         elif not self.overflow:
                             self.data.append(byte)
             except Exception:
-                self.fault = "cdc_fault"
-                self._cancel()
-                self.stopped = True
+                self.fault_remote("cdc_fault")
                 self.port = None
-        self._tick_steps()
+        try:
+            self._tick_steps()
+        except Exception:
+            # Last containment boundary: remote faults must not exit code.py's
+            # original GP7/GP8/other-HID scanning loop.
+            self.fault_remote("bridge_fault")

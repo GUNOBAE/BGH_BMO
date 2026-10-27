@@ -15,12 +15,33 @@
 ## 최소 추가
 
 1. `code.py`: 원본 `servo_angle()`, `set_arms()` 및 버튼 HID를 유지하며 `LegacyBridge` 호출을 추가한다. `REMOTE_ENABLED = False`가 기본이다.
-2. `bmo_arm_bridge.py`: CircuitPython에서 고정 동작 이름 `wave/celebrate/shrug/raise_left_arm/raise_right_arm/both_up/both_down`만 허용한다. raw PWM·각도·코드 실행 불허. heartbeat 0.9초에 추가 자동 동작 정지, 수동 GP7이 진행 중 자동 동작을 취소한다.
+2. `bmo_arm_bridge.py`: CircuitPython에서 고정 동작 이름 `wave/celebrate/shrug/raise_left_arm/raise_right_arm/both_up/both_down`만 허용한다. raw PWM·각도·코드 실행 불허. heartbeat 0.9초에 추가 자동 동작 정지, 수동 GP7은 대기 중 CDC 명령을 포함해 자동 동작을 취소하고 latch한다. 수동 토글은 그대로 가능하다.
 3. `boot.py`: 별도 `usb_cdc.data`를 허용하는 **선택적 예시**. 기존 `boot.py`가 있으면 먼저 검사하고 임의로 덮어쓰지 않는다.
 4. Pi `LegacyArmLink` + `LegacyMotionFeature`: 기존 `FeatureHost`에 장치 옵트인으로 주입한다. GPT는 제스처 이름만 제안하고, 실제 player started에 한 번만 처리한다.
 5. 감정 정책은 상위 PR #35 유지: happy→celebrate, surprised→shrug는 **제안 초기값**, R10 감정 화면 자체는 변경하지 않는다.
 
 이 프로토콜은 구 V2 실험과 호환되지 않으며, 한 번에 명령 한 개/정확한 ACK/부팅 식별자/중복 요청 거부를 사용한다. 소프트웨어 HOLD/STOP은 **서보 전원 차단이 아니다**. 로봇은 관절 엔코더가 없으므로 실제 각도 도달은 여전히 확인되지 않는다.
+
+## PR #36 리뷰 보완
+
+- motor DO의 request ID는 `bmo_<양의 ASCII 십진수 sequence>`(숫자 최대 20자리)다.
+  host는 `monotonic_ns`와 자체 증가값으로 ID를 만들고, 펌웨어는 ACK cache 24개와 별도로
+  motor sequence 상한을 유지한다. cache 밖의 과거/동일 숫자·다른 zero padding 요청은
+  `STALE_REQUEST`로 거부한다. BUSY/INVALID로 거절된 DO도 나중에 살아나지 않는다.
+  같은 Pi boot의 host 재생성은 단조 시계를 이어 쓰지만 Pi만 재부팅해 sequence가 뒤로 가면
+  거부될 수 있다. 자동 상한 초기화·자동 보드 reset·재전송으로 우회하지 않는다.
+- remote named gesture만 90°/s 이하, 최소 20ms 간격, 최대 2°/update로 보간한다.
+  늦은 poll에 밀린 각도를 몰아서 적용하지 않으며 firmware 총 한도는 15초다.
+  host는 DO ACK 뒤 최대 15.2초 heartbeat를 유지하고 한도 끝에 HOLD한다.
+  GP7 원본 즉시 토글과 0~180°/600~2400µs 변환은 바꾸지 않았다.
+  이 수치는 소프트웨어 명령 상한이며 실제 속도·토크·기계 안전을 보정/확인한 값이 아니다.
+- PWM 생성·boot write·GP7 write·자동 step·CDC 오류는 remote 취소/latch로 격리한다.
+  fault 처리 자체는 PWM을 추가로 쓰지 않는다. GP8와 나머지 HID scan은 계속된다.
+  자동 보간은 20ms마다 원본 `set_arms()`의 console print를 호출하지 않는다.
+- 발화 시작 timestamp/context를 큐에 보존하고 HELLO 전후와 실제 DO write 직전에 TTL을
+  재검사한다. 만료 결과는 rejected/not_started이며 DO를 보내거나 자동 retry하지 않는다.
+
+자세한 검증·남은 실기는 [리뷰 수정 보고서](../../../docs/reports/PR36_B1_REVIEW_FIXES_KR.md)를 따른다.
 
 ## 단계 1 — Pi에서 확인만 하기 (서보 움직임 명령 없음)
 
@@ -51,7 +72,13 @@ PYTHONPATH=software python3 -m unittest -v \
 
 **모터를 연결하지 않고:** 원본에서 파생된 `code.py`(REMOTE_ENABLED=False)와 `bmo_arm_bridge.py`를 준비한 다음, 기존 boot 구성을 검토해 독립 CDC data를 활성화한다. HID GP8·GP7 이벤트와 B1 HELLO→DISABLED를 확인한다. USB endpoint 변화가 있으면 원본으로 즉시 복구한다.
 
-그 다음 별도 감독 승인 아래에서만 `REMOTE_ENABLED = True`로 만든 **정확한 1바이트 변경 후보**를 작성하고 SHA-256을 기록한다. 앱은 단일 후보 전체 바이트·helper·boot.py를 확인하며 맞지 않으면 포트도 열지 않는다. 제스처는 반드시 전원 차단 수단 및 이동 공간을 확보한 상태에서 한쪽부터 테스트한다.
+현재 사용자는 별도 전기적 차단 스위치가 없다고 확인했다. 따라서 **모터 연결 시험은 현재 차단**한다.
+`--arm-power-off-ready`, software STOP 또는 PWM duty=0으로 이 물리 조건이 충족되지 않는다.
+기존 live `boot.py`에는 이미 data CDC 설정이 있으므로 예시로 덮어쓰지 않는다.
+
+그 다음 별도 감독 승인과 실제 전원 차단/독립 분리 검토가 끝난 뒤에만 `REMOTE_ENABLED = True`로 만든
+**단일 flag 치환 후보**를 작성하고 SHA-256을 기록한다. 앱은 단일 후보 전체 바이트·helper·기존 boot 설정을
+확인하며 맞지 않으면 포트도 열지 않는다. 제스처는 이동 공간과 차단 수단이 검토된 상태에서 한쪽부터 테스트한다.
 
 승인 이후의 앱 명령 예시(**지금 실행하지 말 것**):
 
