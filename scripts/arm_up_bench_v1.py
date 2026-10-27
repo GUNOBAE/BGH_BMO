@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Supervised first BMO arm bench: built-in finite 10us move from verified-up.
 
-Default is read-only PLAN. --prepare creates a PRIVATE LOCAL candidate code.py,
+Default is read-only PLAN. --prepare creates a PRIVATE LOCAL legacy-verified candidate code.py,
 NEVER copies to CIRCUITPY or opens USB. --probe sends HELLO only.
 --one-step requires a prepared (manually deployed) exact-sha trial firmware,
-and one physical servo connector or no servos, a held GP7 red deadman, and
+and one physical servo connector or no servos, GP7 RED released, and
 hands-on confirmation of a physical BMO power-off fallback. No model input.
 """
 import argparse
@@ -24,21 +24,18 @@ if str(SOFTWARE) not in sys.path:
 
 from bmo_ai.features.motion.arm_host_v2 import ArmHostV2, ArmV2Error, decode_ack
 from bmo_ai.features.motion.arm_host_v2 import BoundedCdcExchange
+from bmo_ai.features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
 
 FW = ROOT / "firmware/staging/bmo_arm_supervised_v1/code.py"
 MOUNT = Path("/media/bgh/CIRCUITPY/code.py")
-OUTPUT = Path.home() / "BMO_ARM_PREP/first_up_trial_code.py"
+OUTPUT = Path.home() / "BMO_ARM_PREP/legacy_full_swing_v2_code.py"
 PORT = Path("/dev/ttyACM1")
 
 # Candidate pulse values derived from the previously used old code.py:
 # arm_angle=180 -> left(180-180)=0 -> 600us,
 #                  right(180)=180 -> 2400us.
 # This has no positional encoder. Only a single inward 10us first step is allowed.
-PROFILE = {
-    "reviewed": True,
-    "left": {"min_us": 600, "home_us": 600, "max_us": 620},
-    "right": {"min_us": 2380, "home_us": 2400, "max_us": 2400},
-}
+PROFILE = LEGACY_REVIEWED_LIMITS
 STEPS = {"left": 610, "right": 2390}
 
 
@@ -47,13 +44,13 @@ def candidate_text():
     checks = (
         ("ARM_OUTPUT_BUILD_ENABLED = False", "ARM_OUTPUT_BUILD_ENABLED = True"),
         ("REVIEWED_CALIBRATION = None", "REVIEWED_CALIBRATION = " + repr(PROFILE)),
-        ("if self.red_pressed and not red and controller.armed:", "if self.red_pressed and not red and controller.armed:"),
+        ("controller.manual_toggle()", "controller.manual_toggle()"),
     )
     for original, replacement in checks:
         if source.count(original) != 1:
             raise RuntimeError("firmware_template_unreviewed")
         source = source.replace(original, replacement, 1)
-    if "board.GP12" in source or "controller.emergency_stop(\"gp7_hold_released\")" not in source:
+    if "board.GP12" in source or "controller.manual_toggle()" not in source:
         raise RuntimeError("gp7_deadman_not_reviewed")
     compile(source, str(FW), "exec")
     return source
@@ -195,9 +192,9 @@ def run_one_step(side, layout):
         raise RuntimeError("servo_layout_not_confirmed")
     if input("BMO entire power can be cut immediately? type POWER_OFF_READY: ").strip() != "POWER_OFF_READY":
         raise RuntimeError("power_cutoff_not_confirmed")
-    # Verify the real software PIN remains GP7 deadman held until STOP.
-    if input("Ready to HOLD GP7 red, then press keyboard Enter? type HOLDING_GP7: ").strip() != "HOLDING_GP7":
-        raise RuntimeError("gp7_not_confirmed")
+    # The red GP7 keeps original both-arm toggle semantics; never press during USB trial.
+    if input("Keep GP7 RED released during USB test? type GP7_RELEASED: ").strip() != "GP7_RELEASED":
+        raise RuntimeError("gp7_conflict")
     with RawCdcPort() as port:
         exchange = BoundedCdcExchange(port)
         host = ArmHostV2(exchange, profile=PROFILE,
@@ -233,7 +230,7 @@ def run_one_step(side, layout):
                         host.stop("bench_abort")
                 except Exception:
                     pass
-            print("RELEASE GP7. If unexpected motion occurs, cut ALL BMO power.")
+            print("If unexpected motion occurs, cut ALL BMO power. USB STOP latches until RP2040 reboots.")
 
 
 def main(argv=None):
@@ -254,10 +251,10 @@ def main(argv=None):
                 cli.error("--one-step also needs --servo-layout")
             run_one_step(args.one_step, args.servo_layout)
         else:
-            print("PLAN ONLY: user-reported fully-up maps left=600us, right=2400us.")
-            print("Step target: left=610us OR right=2390us (never both in first test).")
+            print("PLAN ONLY: old physically verified GP7 red toggles full 0/180 both-arm travel.")
+            print("Full range: left 600..2400us, right 2400..600us, initial up 600/2400.")
             print("Execute --prepare, review, then install while both plugs detached.")
-            print("Nonmotor USB hello: --probe. First finite test: --one-step left --servo-layout none.")
+            print("Nonmotor USB hello: --probe. Optional one-side test: --one-step left --servo-layout none.")
             print("Motion disabled by default in normal BMO. No host, USB or GPIO touched.")
         return 0
     except (RuntimeError, OSError, ArmV2Error, ValueError) as error:
