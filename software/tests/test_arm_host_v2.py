@@ -8,7 +8,7 @@ import unittest
 
 from bmo_ai.features.motion.arm_host_v2 import (
     ArmHostV2, ArmV2Error, BoundedCdcExchange, decode_ack,
-    encode_arm, encode_hello, encode_move, encode_ping, encode_stop,
+    encode_arm, encode_hello, encode_move, encode_ping, encode_stop, encode_hold,
     reviewed_limits,
 )
 
@@ -102,10 +102,11 @@ class ArmHostV2Tests(unittest.TestCase):
         self.assertEqual(encode_move("m1", "boot_fixture", "left", 1505),
                          b"V2 MOVE m1 boot_fixture left 1505\n")
         self.assertEqual(encode_stop("stop1"), b"V2 STOP stop1\n")
+        self.assertEqual(encode_hold("h1", "boot_fixture"), b"V2 HOLD h1 boot_fixture\n")
         for packet in [encode_hello("q1"), encode_arm("a1", "boot_fixture"),
                        encode_ping("p1", "boot_fixture", 3),
                        encode_move("m1", "boot_fixture", "right", 1530),
-                       encode_stop("stop1")]:
+                       encode_hold("h1", "boot_fixture"), encode_stop("stop1")]:
             self.assertEqual(core.decode_frame(packet)[0], packet.split(b" ")[1].decode())
 
     def test_simulated_arm_move_both_independent(self):
@@ -191,6 +192,18 @@ class ArmHostV2Tests(unittest.TestCase):
         self.assertTrue(self.link.controller.armed)
         self.assertEqual(self.host.ping("p2").code, "ALIVE")
         self.assertEqual(self.host.ping_counter, 2)
+
+    def test_hold_without_latching_allows_next_gesture(self):
+        self.host.hello()
+        self.host.arm("arm1")
+        self.host.move("left1", "left", 1540)
+        self.clock.advance(.021)
+        self.link.controller.tick()
+        self.assertEqual(self.host.hold("hold1").code, "HELD_POSITION_UNVERIFIED")
+        self.assertTrue(self.host.snapshot()["armed"])
+        self.assertEqual(self.link.io.stops, 0)
+        self.assertEqual(self.link.controller.targets, self.link.controller.positions)
+        self.assertEqual(self.host.move("left2", "left", 1520).code, "ACCEPTED_POSITION_UNVERIFIED")
 
     def test_stop_latches_and_no_second_motion(self):
         self.host.hello()
