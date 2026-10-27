@@ -91,6 +91,10 @@ class FeatureHost:
         self.runtime = runtime if runtime is not None else RuntimePolicy()
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
+        from .motion.live_feature_v2 import LiveArmMotionFeatureV2
+        if ((self.runtime.arms_supervised and not isinstance(motion, LiveArmMotionFeatureV2))
+                or (isinstance(motion, LiveArmMotionFeatureV2) and not self.runtime.arms_supervised)):
+            raise FeatureError("arm_supervision_injection_required")
         if any(type(value) is not bool for value in (camera_supervised, camera_video_supervised)):
             raise FeatureError("invalid_camera_runtime")
         if (camera_supervised and (photo_directory is None or camera is not None)
@@ -678,11 +682,13 @@ class FeatureHost:
             return False
         self._transition("conversation")
         self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
-            "real_features_enabled": False,
+            "real_features_enabled": self.runtime.arms_supervised,
             "games": [{"id": item.id, "readiness": item.readiness} for item in self.games.catalog()],
             "songs": [{"id": item.id, "readiness": item.readiness} for item in self.media.catalog()],
             "camera": "synthetic_only" if self.runtime.simulate else "human_action_only" if self.runtime.camera_supervised else "denied",
-            "arm": "mock_ack_position_unverified" if self.runtime.simulate else "denied",
+            "arm": ("mock_ack_position_unverified" if self.runtime.simulate
+                    else "explicit_supervised_position_unverified" if self.runtime.arms_supervised
+                    else "denied"),
             "imu": "physical_unverified_no_control"})
         self._voice_lease = self.audio.acquire("conversation", stop=self.cancel_conversation)
         if input_provider is not None:
@@ -981,8 +987,10 @@ class FeatureHost:
         for event in self.motion.poll():
             if event.kind == "motion_result":
                 data = event.data
-                result = HostResult(event.request_id, data["status"], event.code, True, False,
-                                    False, data.get("completion", "position_unverified"))
+                result = HostResult(event.request_id, data["status"], event.code,
+                                    data.get("simulated", True), data.get("executed", False),
+                                    data.get("completed", False),
+                                    data.get("completion", "position_unverified"))
                 if event.mode_generation == self.modes.generation:
                     self._finish_result(result)
                 else:
