@@ -22,7 +22,7 @@ SOFTWARE = ROOT / "software"
 if str(SOFTWARE) not in sys.path:
     sys.path.insert(0, str(SOFTWARE))
 
-from bmo_ai.features.motion.arm_host_v2 import ArmHostV2, ArmV2Error, decode_ack
+from bmo_ai.features.motion.arm_host_v2 import ArmHostV2, ArmV2Error, decode_ack, encode_ping
 from bmo_ai.features.motion.arm_host_v2 import BoundedCdcExchange
 from bmo_ai.features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
 
@@ -176,6 +176,25 @@ def run_probe():
             raise RuntimeError("controller_not_ready")
 
 
+def run_button_status():
+    """USB read of the GP7 manual-owner flag. Does not ARM or MOVE any motor."""
+    identify_data_port()
+    with RawCdcPort() as port:
+        exchange = BoundedCdcExchange(port)
+        hello = decode_ack(exchange(b"V2 HELLO check_button\\n"))
+        if hello.request_id != "check_button" or hello.code != "READY":
+            raise RuntimeError("arm_button_status_not_ready")
+        reply = decode_ack(exchange(encode_ping("red_state", hello.boot_id, 1)))
+        if reply.request_id != "red_state" or reply.boot_id != hello.boot_id:
+            raise RuntimeError("arm_button_status_untrusted")
+        if reply.code == "BUTTON_OVERRIDE":
+            print("GP7 RED TOGGLE CONTROLLER OWNER VERIFIED (PWM pins only; position unverified)")
+        elif reply.code == "ALIVE":
+            print("GP7 manual toggle not active yet (press RED once with both servos unplugged)")
+        else:
+            raise RuntimeError("arm_button_status_unknown")
+
+
 def run_one_step(side, layout):
     if layout not in ("none", side):
         raise RuntimeError("unapproved_servo_connector_layout")
@@ -238,6 +257,8 @@ def main(argv=None):
     action = cli.add_mutually_exclusive_group()
     action.add_argument("--prepare", action="store_true")
     action.add_argument("--probe", action="store_true")
+    action.add_argument("--button-status", action="store_true",
+                        help="read manual GP7 controller ownership; no host ARM/MOVE")
     action.add_argument("--one-step", choices=("left", "right"))
     cli.add_argument("--servo-layout", choices=("none", "left", "right"))
     args = cli.parse_args(argv)
@@ -246,6 +267,8 @@ def main(argv=None):
             prepare()
         elif args.probe:
             run_probe()
+        elif args.button_status:
+            run_button_status()
         elif args.one_step:
             if args.servo_layout is None:
                 cli.error("--one-step also needs --servo-layout")
@@ -254,7 +277,7 @@ def main(argv=None):
             print("PLAN ONLY: old physically verified GP7 red toggles full 0/180 both-arm travel.")
             print("Full range: left 600..2400us, right 2400..600us, initial up 600/2400.")
             print("Execute --prepare, review, then install while both plugs detached.")
-            print("Nonmotor USB hello: --probe. Optional one-side test: --one-step left --servo-layout none.")
+            print("USB HELLO: --probe; red-button owner readback: --button-status.")
             print("Motion disabled by default in normal BMO. No host, USB or GPIO touched.")
         return 0
     except (RuntimeError, OSError, ArmV2Error, ValueError) as error:
