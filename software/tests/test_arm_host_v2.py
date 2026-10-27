@@ -277,7 +277,7 @@ class ArmHostV2Tests(unittest.TestCase):
         error_code("arm_ack_ambiguous",
                    lambda: decode_ack(b"V2 ACK a boot READY POSITION_UNVERIFIED\nextra\n"))
         error_code("arm_ack_oversized",
-                   lambda: decode_ack(b"V2" + b"x" * 125 + b"\n"))
+                   lambda: decode_ack(b"V2" + b"x" * 126 + b"\n"))
 
     def test_not_a_serial_opener(self):
         import ast
