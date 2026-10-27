@@ -101,8 +101,8 @@ class RawCdcPort:
     def __init__(self):
         self.fd = None
         self.previous = None
-        self.timeout = .18
-        self.write_timeout = .18
+        self.timeout = .45
+        self.write_timeout = .16
         self.is_open = False
 
     def __enter__(self):
