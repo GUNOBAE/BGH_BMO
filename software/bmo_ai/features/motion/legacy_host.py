@@ -45,10 +45,11 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
 
 class LegacyArmLink:
     """One outstanding B1 request. Require exact ACK and fresh boot token."""
-    def __init__(self, port):
+    def __init__(self, port, *, motor_permission=None):
         if not callable(getattr(port, "write", None)) or not callable(getattr(port, "read_until", None)):
             raise LegacyArmError("owned_cdc_port_required")
         self.port, self.boot = port, None
+        self.motor_permission = motor_permission or (lambda: False)
         self.counter = 0
         self.unknown = False
         self.stopped = False
@@ -100,6 +101,8 @@ class LegacyArmLink:
     def gesture(self, name):
         if self.boot is None or name not in NAMED_GESTURES:
             raise LegacyArmError("invalid_gesture_or_not_connected")
+        if self.motor_permission() is not True:
+            raise LegacyArmError("physical_supervision_required")
         code = self._request("DO {rid} {boot} " + name)
         if code != "ACCEPTED":
             raise LegacyArmError("gesture_" + code.lower())
