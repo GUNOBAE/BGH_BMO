@@ -95,6 +95,14 @@ def set_one_arm(side, physical_angle):
     elif side == "right":
         servo_angle(right_servo, physical_angle)
 
+def set_both_from_host(angle):
+    # Keep the original GP7 logical toggle in sync after explicit both_up/down.
+    # servo_angle() and set_arms() remain byte-for-byte unchanged.
+    global arm_angle
+    set_arms(angle)
+    if angle in (0, 180):
+        arm_angle = angle
+
 try:
     bridge_boot_id = "b" + os.urandom(6).hex()
 except Exception:
@@ -106,7 +114,7 @@ if data_port is not None:
     data_port.timeout = 0
     data_port.write_timeout = 0.03
 bridge = LegacyBridge(data_port, bridge_boot_id, set_one_arm,
-                      set_arms, lambda: arm_angle, enabled=REMOTE_ENABLED)
+                      set_both_from_host, lambda: arm_angle, enabled=REMOTE_ENABLED)
 
 # =========================
 # Main Loop
