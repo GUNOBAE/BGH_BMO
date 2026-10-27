@@ -175,7 +175,7 @@ class ArmHostV2Tests(unittest.TestCase):
     def test_clock_expiry_latches_and_prevents_retry(self):
         self.host.hello()
         self.host.arm("arm1")
-        self.clock.advance(.31)
+        self.clock.advance(.67)
         error_code("arm_host_heartbeat_expired", lambda: self.host.move("m1", "left", 1530))
         self.assertTrue(self.host.snapshot()["latched"])
         error_code("arm_not_armed", lambda: self.host.move("m2", "left", 1530))
@@ -256,6 +256,15 @@ class ArmHostV2Tests(unittest.TestCase):
             with self.subTest(ack=bad):
                 with self.assertRaises(ArmV2Error):
                     decode_ack(bad)
+
+    def test_missing_vs_incomplete_ack_explains_previous_field_failure(self):
+        error_code("arm_ack_missing", lambda: decode_ack(b""))
+        error_code("arm_ack_incomplete",
+                   lambda: decode_ack(b"V2 ACK a boot READY POSITION_UNVERIFIED"))
+        error_code("arm_ack_ambiguous",
+                   lambda: decode_ack(b"V2 ACK a boot READY POSITION_UNVERIFIED\nextra\n"))
+        error_code("arm_ack_oversized",
+                   lambda: decode_ack(b"V2" + b"x" * 125 + b"\n"))
 
     def test_not_a_serial_opener(self):
         import ast
