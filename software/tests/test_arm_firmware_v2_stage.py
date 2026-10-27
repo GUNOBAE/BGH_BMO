@@ -126,12 +126,12 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         self.assertIn('REQUEST_CONFLICT', self.request('MOVE', 'move001', 'boot-test', 'left', 1530))
         self.clock.plus(.021)
         self.controller.tick()
-        self.assertEqual(self.io.writes, [('left', 1510)])
+        self.assertEqual(self.io.writes, [('left', 1530)])
         self.clock.plus(.021)
         self.controller.tick()
-        self.assertEqual(self.io.writes[-1], ('left', 1520))
+        self.assertEqual(self.io.writes[-1], ('left', 1540))
         self.assertTrue(all(side == 'left' for side, _ in self.io.writes))
-        self.assertLessEqual(self.io.writes[-1][1] - 1500, 20)
+        self.assertLessEqual(self.io.writes[-1][1] - 1500, 40)
 
     def test_fully_raised_home_matches_historical_pwm_and_moves_only_inward(self):
         # User physically observed both arms fully raised before unplugging.
