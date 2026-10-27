@@ -915,7 +915,7 @@ class FeatureHost:
                 if self.clock() - at <= .5:
                     self.gaze.offer("reaction", .12, -.04, generation=generation,
                                     expires_at=at + .65)
-                if (self.runtime.simulate and proposal["gesture"] != "none" and self.clock() - at <= .5
+                if ((self.runtime.simulate or self.runtime.arms_supervised) and proposal["gesture"] != "none" and self.clock() - at <= .5
                         and self.session.snapshot()["playback"] == "started"):
                     request = "gesture_" + uuid5(self._namespace, turn).hex
                     try:
