@@ -7,7 +7,7 @@ import time
 
 MAX_FRAME = 128
 MAX_COMMANDS = 32
-WATCHDOG_S = 0.35
+WATCHDOG_S = 0.80  # tolerate Pi/Linux CDC scheduling; host renews far sooner
 TICK_S = 0.02
 STEP_US = 10
 MANUAL_STEP_US = 45  # preserve the original full 0/180 travel, ramped on each tick
