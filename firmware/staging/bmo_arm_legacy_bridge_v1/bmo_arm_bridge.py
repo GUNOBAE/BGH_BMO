@@ -286,10 +286,10 @@ class LegacyBridge:
                                 ack = self.handle(bytes(self.data) + b"\n")
                                 if ack is not None and self.port.write(ack) != len(ack):
                                     raise RuntimeError("cdc_partial_write")
-                            self.data.clear()
+                            self.data = bytearray()
                             self.overflow = False
                         elif byte == 13 or len(self.data) >= MAX_FRAME - 1:
-                            self.data.clear()
+                            self.data = bytearray()
                             self.overflow = True
                         elif not self.overflow:
                             self.data.append(byte)
