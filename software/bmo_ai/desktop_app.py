@@ -45,6 +45,8 @@ def parser():
                    help="EXPLICIT live opt-in, only after physical GP7/full-swing acceptance")
     p.add_argument("--emotion-arms", action="store_true",
                    help="opt-in emotional arm gestures; simulation only until supervised firmware works")
+    p.add_argument("--arm-legacy-bridge", action="store_true",
+                   help="separate B1 bridge derived from SHA-verified original GP7 firmware")
     p.add_argument("--arm-reviewed-code-sha", metavar="SHA256",
                    help="manually reviewed exact SHA of deployed full-range RP2040 code.py")
     p.add_argument("--arm-power-off-ready", action="store_true",
@@ -85,6 +87,9 @@ def public_plan(args):
                             "raw_audio_logged": False, "transcripts_logged": False},
         "voice_direction": {"requested": not args.plain_voice, "speaker_changed": False,
                             "listening_approval": "NOT_RUN"},
+        "arm_legacy_bridge": {"requested": args.arm_legacy_bridge,
+                              "default_disabled": not args.arms_supervised,
+                              "physical_verified": False},
         "emotion_arms": {"requested": args.emotion_arms, "gesture_names_only": True,
                          "automatic_serial_or_firmware_changes": False},
         "camera": {"supervised_opt_in": args.camera_supervised,
@@ -111,6 +116,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--music-directory and --demo-assets are separate catalogs")
     if args.ptt_ambient_profile is not None and not args.ptt_microphone:
         p.error("--ptt-ambient-profile requires --ptt-microphone")
+    if args.arm_legacy_bridge and not args.arms_supervised:
+        p.error("--arm-legacy-bridge requires an independently supervised physical arm session")
     if args.emotion_arms and not (args.simulate or args.arms_supervised):
         p.error("--emotion-arms requires --simulate or an independently approved --arms-supervised")
     if args.arms_supervised and (not args.live or not args.arm_reviewed_code_sha
@@ -242,21 +249,33 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 client = (client_factory or create_client)(config, api_key=credentials.openai_api_key)
                 settings.update(client=client, fish_api_key=credentials.fish_api_key)
             if args.arms_supervised:
-                from .features.motion.arm_serial_posix_v2 import (
-                    OwnedCdcDataPort, validate_reviewed_install)
-                from .features.motion.arm_host_v2 import ArmHostV2, BoundedCdcExchange
-                from .features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
-                from .features.motion.live_feature_v2 import LiveArmMotionFeatureV2
-                source_core = (Path(__file__).resolve().parents[2]
-                               / "firmware/staging/bmo_arm_supervised_v1/safe_arm_core.py")
-                validate_reviewed_install(source_core, args.arm_reviewed_code_sha)
-                arm_port = OwnedCdcDataPort().open()
-                arm_host = ArmHostV2(
-                    BoundedCdcExchange(arm_port), profile=LEGACY_REVIEWED_LIMITS,
-                    clock=clock, power_cutoff_confirmed=lambda: args.arm_power_off_ready,
-                    operator_present=lambda: bool(app is not None and app._ready
-                                                  and not app.exiting and not app.failed))
-                settings["motion"] = LiveArmMotionFeatureV2(arm_host, clock=clock)
+                from .features.motion.arm_serial_posix_v2 import OwnedCdcDataPort
+                if args.arm_legacy_bridge:
+                    from .features.motion.legacy_host import (
+                        LegacyArmLink, LegacyMotionFeature, validate_legacy_install)
+                    firmware_root = (Path(__file__).resolve().parents[2]
+                                     / "firmware/staging/bmo_arm_legacy_bridge_v1")
+                    validate_legacy_install(firmware_root, args.arm_reviewed_code_sha)
+                    arm_port = OwnedCdcDataPort().open()
+                    arm_host = LegacyArmLink(arm_port, motor_permission=lambda:
+                        bool(args.arm_power_off_ready and app is not None and app._ready
+                             and not app.exiting and not app.failed))
+                    settings["motion"] = LegacyMotionFeature(arm_host, clock=clock)
+                else:
+                    from .features.motion.arm_serial_posix_v2 import validate_reviewed_install
+                    from .features.motion.arm_host_v2 import ArmHostV2, BoundedCdcExchange
+                    from .features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
+                    from .features.motion.live_feature_v2 import LiveArmMotionFeatureV2
+                    source_core = (Path(__file__).resolve().parents[2]
+                                   / "firmware/staging/bmo_arm_supervised_v1/safe_arm_core.py")
+                    validate_reviewed_install(source_core, args.arm_reviewed_code_sha)
+                    arm_port = OwnedCdcDataPort().open()
+                    arm_host = ArmHostV2(
+                        BoundedCdcExchange(arm_port), profile=LEGACY_REVIEWED_LIMITS,
+                        clock=clock, power_cutoff_confirmed=lambda: args.arm_power_off_ready,
+                        operator_present=lambda: bool(app is not None and app._ready
+                                                      and not app.exiting and not app.failed))
+                    settings["motion"] = LiveArmMotionFeatureV2(arm_host, clock=clock)
             host = host_factory(**settings)
             app.set_host(host, None)  # Retain ownership even if greeting setup fails.
             stage = "greeting_init"
