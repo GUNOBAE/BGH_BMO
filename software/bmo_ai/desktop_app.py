@@ -41,6 +41,12 @@ def parser():
     p.add_argument("--ptt-trace", action="store_true", help="opt-in bounded stage/timing/RMS diagnostics; never PCM, transcript, keys or provider messages")
     p.add_argument("--ptt-ambient-profile", type=Path, help="explicit supervised calibration profile; no automatic calibration or idle listening")
     p.add_argument("--plain-voice", action="store_true", help="use plain Aaron voice instead of supported, allowlisted emotional direction")
+    p.add_argument("--arms-supervised", action="store_true",
+                   help="EXPLICIT live opt-in, only after physical GP7/full-swing acceptance")
+    p.add_argument("--arm-reviewed-code-sha", metavar="SHA256",
+                   help="manually reviewed exact SHA of deployed full-range RP2040 code.py")
+    p.add_argument("--arm-power-off-ready", action="store_true",
+                   help="affirm user physically present with immediate entire-BMO power cut")
     p.add_argument("--camera-supervised", action="store_true", help="explicit user-present camera activation path; no camera opens until a requested action")
     p.add_argument("--photo-directory", type=Path, help="required private local destination for supervised camera photos")
     p.add_argument("--camera-video-supervised", action="store_true", help="also permit explicitly requested supervised camera video; requires camera and video directory")
@@ -101,6 +107,11 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--music-directory and --demo-assets are separate catalogs")
     if args.ptt_ambient_profile is not None and not args.ptt_microphone:
         p.error("--ptt-ambient-profile requires --ptt-microphone")
+    if args.arms_supervised and (not args.live or not args.arm_reviewed_code_sha
+                                or not args.arm_power_off_ready):
+        p.error("--arms-supervised needs --live, --arm-reviewed-code-sha and --arm-power-off-ready")
+    if not args.arms_supervised and (args.arm_reviewed_code_sha or args.arm_power_off_ready):
+        p.error("arm-related confirmations require explicit --arms-supervised")
     if args.camera_supervised and (not args.live or args.photo_directory is None):
         p.error("--camera-supervised requires --live and --photo-directory")
     if args.photo_directory is not None and not args.camera_supervised:
@@ -134,7 +145,7 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             return 1
     if not (args.simulate or args.live):
         p.error("choose --simulate or explicit --live")
-    lock = client = app = temporary = None
+    lock = client = app = temporary = arm_port = None
     previous_handlers = {}
     outcome = 0
     stage = "lock"
@@ -204,7 +215,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         try:
             stage = "engine_init"
             settings = {"config": config, "runtime": RuntimePolicy(simulate=args.simulate,
-                        conversation_ptt_microphone=args.simulate or args.ptt_microphone),
+                        conversation_ptt_microphone=args.simulate or args.ptt_microphone,
+                        arms_supervised=args.arms_supervised),
                         "demo_assets": args.demo_assets, "clock": clock,
                         "ptt_trace": args.ptt_trace, "ptt_ambient_profile": args.ptt_ambient_profile,
                         "ptt_speech_safe": True,
@@ -222,6 +234,22 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 credentials = (credential_resolver or (lambda: resolve_credentials(interactive=False)))()
                 client = (client_factory or create_client)(config, api_key=credentials.openai_api_key)
                 settings.update(client=client, fish_api_key=credentials.fish_api_key)
+            if args.arms_supervised:
+                from .features.motion.arm_serial_posix_v2 import (
+                    OwnedCdcDataPort, validate_reviewed_install)
+                from .features.motion.arm_host_v2 import ArmHostV2, BoundedCdcExchange
+                from .features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
+                from .features.motion.live_feature_v2 import LiveArmMotionFeatureV2
+                source_core = (Path(__file__).resolve().parents[2]
+                               / "firmware/staging/bmo_arm_supervised_v1/safe_arm_core.py")
+                validate_reviewed_install(source_core, args.arm_reviewed_code_sha)
+                arm_port = OwnedCdcDataPort().open()
+                arm_host = ArmHostV2(
+                    BoundedCdcExchange(arm_port), profile=LEGACY_REVIEWED_LIMITS,
+                    clock=clock, power_cutoff_confirmed=lambda: args.arm_power_off_ready,
+                    operator_present=lambda: bool(app is not None and app._ready
+                                                  and not app.exiting and not app.failed))
+                settings["motion"] = LiveArmMotionFeatureV2(arm_host, clock=clock)
             host = host_factory(**settings)
             app.set_host(host, None)  # Retain ownership even if greeting setup fails.
             stage = "greeting_init"
@@ -272,6 +300,12 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                   ensure_ascii=False, sort_keys=True), file=sys.stderr)
         elif client is not None:
             client.close()
+        if arm_port is not None:
+            try:
+                arm_port.close()
+            except Exception:
+                print("BMO desktop arm CDC owner cleanup failed.", file=sys.stderr)
+                outcome = 1
         if temporary is not None:
             try:
                 temporary.cleanup()
