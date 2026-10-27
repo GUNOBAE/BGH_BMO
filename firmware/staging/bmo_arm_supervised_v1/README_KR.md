@@ -1,87 +1,73 @@
-# BMO RP2040-Zero 양팔 제어 v2 — *배포 금지* 펌웨어 초안
+# BMO RP2040 + Raspberry Pi 통합 — 기존 버튼/팔 규칙 복구판
 
-**상태: STAGING / MOTOR_OUTPUT_DISABLED.** 실제 RP2040에는 이전 commit `a6d7c9f`의 `code.py`/`safe_arm_core.py`/`boot.py`가 이미 사용자 감독하에 설치됐다. 두 서보 3핀 분리 상태에서 GP8 HID와 `ttyACM1` 전용 CDC `HELLO` 실제 왕복이 성공했다. **이 브랜치의 이후 수정본은 아직 RP2040에 복사되지 않았다.**
-기존 원본 백업은 그대로 보존. GP7 버튼 의미가 이전 firmware와 달라지므로 업데이트 시 주의. 어떠한 펌웨어에서도 실제 모터 출력 활성화는 사용자 승인 전 금지.
+> **상태: GitHub 개발·자동 테스트판 / 이 브랜치의 최신 코드는 아직 실기 배포되지 않음.**
+> R10 얼굴, Fish Audio Aaron 목소리, 카메라·PTT 코드는 변경하지 않는다.
+> PR #34, JSON V1(#32)과 섞지 말고 이 V2 코어·코드·호스트를 **같은 커밋**으로 사용한다.
 
-## 작업 이유
+## 실기 관측 (2026-10-27)
 
-2026-10-26 사용자 보고: GP8 음성 대화, Camera Module3 Wide 실제 사진과 저속 무음 영상이 작동함. 다음 목표는 양팔을 **각각** 안전하게 제어하는 것.
+- Pi에서 GP8 초록 버튼 Enter → PTT 입력 성공.
+- `ttyACM1` = RP2040-Zero의 USB interface `02`, `CircuitPython CDC2 control`. `V2 HELLO`→`ACK ... UNCALIBRATED`, 이후 시험판에서 `READY` 실제 응답 확인.
+- 당시 실기에 설치한 **구 시험판** `code.py`는 SHA-256 `95260ad44ae01da1bd05210f2d05c06fe4ea3b7b40b950a5e5afffa4d0d42229`, 좁은 `left 600..620/right 2380..2400`을 사용. **현재 신규 버전이 아님.**
+- 첫 `--one-step left`에서 `HELLO READY` 이후 `invalid_arm_ack` 발생. 실제 모터 동작 성공/STOP 성공으로 기록하지 않는다. 이전 응답 대기 180ms와 ACK 프레이밍이 후보 원인이며, **정확한 원인은 미확정**. 신규 코드에서는 구분된 누락/불완전 응답 오류 및 더 넉넉한 유한 대기와 watchdog을 적용했다.
+- 사용자는 서보 분리 전에 두 팔이 **최대 UP** 상태라고 확인했고, **구 원본 GP7 빨간 버튼으로 0↔180 왕복이 정상 작동**했다고 확인했다. 별도 각도·끝점 재보정이 아니라 이 기존 동작을 그대로 재사용한다.
+- 사용자는 양팔의 3핀을 분리할 수 있음. 마지막 보고에는 **왼팔을 다시 연결했다**고 했으며 이후 실제 분리 완료 여부는 확인되지 않았다. 새 펌웨어를 쓸 때 반드시 모든 BMO 전원 OFF → 양쪽 3핀 분리부터 시작한다.
 
-읽기 전용 기존 펌웨어 조사에서 다음이 확인됐다.
+## 잠금 규칙 (실물 원본에서 검증된 것)
 
-- GP2 UP / GP3 LEFT / GP4 RIGHT / GP5 DOWN / GP6 triangle(Z) / GP8 green(Enter): USB HID 입력
-- GP7 빨간 버튼: 원본 펌웨어의 양팔 0°↔180° 토글을 사용하지 않는다. **현재 Pi 실기 버전(a6d7c9f)은 누르면 STOP**, 새 코드에서는 **누르고 있을 때만 소프트웨어 ARM 허용, 놓는 즉시 STOP 래치** 방식이다. 둘 다 물리적 전원 차단은 아니다.
-- right PWM GP10 / left PWM GP11, 50 Hz, 부팅 `set_arms(0)` 호출이 기존 펌웨어에 있음
-- 현재 컨트롤러에는 안전한 개별 팔 host command/ACK/STOP/watchdog 규약이 확인되지 않음
-- IMU MPU6050은 건강 문제 기록이 있어 팔 제어/안전 피드백에 사용하지 않음
+| 버튼 / GPIO | 동작 |
+|---|---|
+| GP2 | USB HID ArrowUp |
+| GP3 | USB HID ArrowLeft |
+| GP4 | USB HID ArrowRight |
+| GP5 | USB HID ArrowDown |
+| GP6 | USB HID KeyZ |
+| **GP7 빨강** | **누를 때마다 양팔 위↔아래 토글**. X 키, 길게 누르기, STOP 버튼 아님 |
+| **GP8 초록** | **USB HID Enter** — 평소 BMO 대화 PTT; 게임 진입 시 기존 Enter |
+| GP10 | 오른팔 서보 PWM 50Hz |
+| GP11 | 왼팔 서보 PWM 50Hz |
 
-## 이번에 실제 작성한 소스
+구 원본 펌웨어: `set_arms(angle)` → **왼팔 (180-angle), 오른팔 angle**. 50Hz `600..2400µs`:
 
-- `safe_arm_core.py`: GPIO/장치 import가 **전혀 없는** 제한된 `V2` ASCII/LF 명령 파서, boot-id gate, 좌우 별도 reviewed pulse bounds, 중복 ID 방어, 느린 pulse slew, 350ms heartbeat watchdog, GP7 software STOP에 대응하는 latch, 위치 피드백 **없음**
-- `code.py`: 실제 CircuitPython의 GP2~6/8 HID 유지. **미연결 GP12 사용을 제거**하고 실물 GP7 빨간 버튼을 **누르는 동안만 활성화되는 소프트웨어 deadman**으로 사용한다. GP7을 놓으면 STOP 래치. 기본 `ARM_OUTPUT_BUILD_ENABLED = False` + `REVIEWED_CALIBRATION = None`이므로 **서보 PWM은 비활성화된다.** 두 플래그는 임의로 해제하지 말 것.
-- `boot.py`: 명시적 테스트 시의 `usb_cdc.enable(console=True, data=True)` 예시. 전용 `usb_cdc.data`만 사용하며 `usb_cdc.console` (REPL)로 모터 명령을 보내지 않음. RP2040의 USB endpoint 예산 확인/재열거 전엔 설치 금지
-- `software/tests/test_arm_firmware_v2_stage.py`: pure CPython fake PWM으로 부팅 무동작, 부정 frame, physical gate, boot ID, 중복, 2개의 pulse 한계, slew, timeout, STOP latch 확인. **실제 하드웨어/펌웨어 테스트가 아님**
-- `software/bmo_ai/features/motion/arm_host_v2.py`: Pi 호스트의 **같은 V2 프로토콜**을 encode/decode한다. `HELLO/ARM/PING/MOVE/STOP`과 `ACK`의 ID·boot 불일치, 미승인 물리 조건, heartbeat 만료를 차단한다. `BoundedCdcExchange`는 **외부에서 이미 열고 식별·검수한 전용 포트 객체만 받는다**. 포트 자동 검색, 시리얼 open, DTR/RTS 변경 또는 기존 HID 제어를 하지 않는다.
-- `software/tests/test_arm_host_v2.py`: 호스트 → 실제 staged firmware parser/controller core → ACK 왕복과 둘 다 좌우 개별 target, STOP, heartbeat, 중복/실패/이전 boot를 오프라인에서 검사. **현재 보드와 통신하는 실기 드라이버는 아님**.
+| 자세 | 왼팔 GP11 | 오른팔 GP10 |
+|---|---:|---:|
+| **UP (원본 180°)** | 600µs | 2400µs |
+| DOWN (원본 0°) | 2400µs | 600µs |
 
-### 왜 기본 실행이 막혀 있는가
+새 펌웨어 `code.py`는 모터를 **부팅 시 출력하지 않고**, GP7 첫 누름에서 **마지막으로 확인된 UP 위치**로 PWM을 초기화한 후 DOWN으로 서서히 이동한다. 그 다음 누름은 UP으로 복귀. 좌우 독립 호스트 명령은 기존 제한 안에서 따로 동작하고, GP7 새 입력은 호스트 움직임보다 우선한다.
 
-세 단계가 모두 필요하다.
+### AI가 팔을 움직이는 기준
 
-1. 펌웨어 배포 변경을 사용자가 감독하고, 기존 `code.py` 및 `boot.py`·키/HID·USB 열거·서보 전원 케이블을 백업·대조
-2. 실제 좌우 서보의 물리 home과 pulse(µs) min/max를 각각 측정해 작성. **예제 테스트 범위 `1450..1550us`는 실기 값이 아니다.** 최초 PWM 부여는 현재 관절 위치를 모르면 크게 움직일 수 있음
-3. 첫 벤치 시험은 **서보 3핀 커넥터를 통째로 뽑은 상태**에서 시행했고, 이 조건으로 실기 GP8·CDC HELLO 성공을 확인했다. GP7 deadman은 **소프트웨어 게이트**일 뿐 실제 서보 전원을 끊는 스위치가 아니다. 서보 재연결·움직임 시험은 BMO 전체 전원을 끈 다음 한쪽 커넥터만 연결하고, 전원을 즉시 끌 수 있게 준비한 상태에서 검수된 home/범위로 수행해야 한다.
+GPT는 PWM·각도·속도·횟수·임의 코드/경로를 절대 생성하지 않는다. 이미 확정된 제스처 이름만 제안하고 Pi 호스트가 고정된 동작표로 해석한다.
 
-`ARM_OUTPUT_BUILD_ENABLED`를 단순히 True로 바꾸거나 임의로 1500us를 전송하지 말 것. 리뷰 후 원본과 합쳐야 하는 staging 코드이지 지금의 RP2040 코드를 즉시 대체하는 제품 릴리스가 아니다.
+- `wave` (인사) = **오른팔만** 흔들기
+- `celebrate` (명시적 축하/신남) = **양팔** 움직이기
+- `shrug` (가벼운 모르겠어) = **양팔 작은 동작**
+- 명시적 `raise_left_arm`, `raise_right_arm` / 양팔 UP·DOWN은 별도 사용자 동작으로만.
+- 감정 `happy`만 보고 자동 팔 동작을 추가하지 않음. `FeatureReply.gesture`는 **응답 재생 시작에 한 번**, `cancel/stop`은 새 제스처보다 우선.
+- 긴급 `V2 STOP`은 PWM 중단 시도 후 **재시작까지 래치**. 일반 제스처 취소용 `V2 HOLD`는 현재 pulse에서 명령 보류, 해제·다음 제스처를 허용. **둘 다 물리적 전원 차단이나 위치 도달 보증이 아님**.
+- IMU는 건강 문제로 제어에 사용하지 않음.
 
-## 프로토콜 v2 초안 (전용 data CDC만; 기존 JSON/LF v1과 의도적으로 **호환되지 않음**)
+## 안전한 프로젝트 구성
 
-LF로 끝나는 ASCII 한 줄, 128바이트 상한, 1개 공백 구분. 리플레이/요청 ID는 한 부팅 안에서 32개까지만 저장하며 오래된 ID를 지우고 재실행하지 않는다.
+- `code.py`: 버튼 HID + 기존 GP7 토글 + CDC V2. **기본 `ARM_OUTPUT_BUILD_ENABLED=False`, `REVIEWED_CALIBRATION=None`**이어서 빌드만으로 모터는 움직이지 않는다.
+- `safe_arm_core.py`: GPIO 없는 순수 상태기계, 소프트웨어 STOP, 800ms 호스트 watchdog / 수동 GP7 이동은 호스트 heartbeat 불필요. Host 이동은 한 tick 30µs (20ms), GP7 수동은 45µs (20ms)까지.
+- `boot.py`: 콘솔 외 두 번째 전용 CDC data interface 활성화.
+- `software/bmo_ai/features/motion/arm_host_v2.py`: ID·부팅 식별자·승인된 pulse 범위 확인, 한 요청 단위 ACK, 이상 응답 때 **중복 재전송 없음**.
+- `gesture_rules_v2.py`: 고정 `wave/celebrate/shrug` 매핑 및 기존 600~2400µs 전체 범위.
+- `live_feature_v2.py`: 음성 재생 시작/취소 이벤트, 실제 제스처 직렬화, heartbeat/HOLD/STOP.
+- `arm_serial_posix_v2.py`: 사용자가 허용할 때만 실제 `ttyACM1` 장치 ID 검사 후 단독 소유. 구 코드·타코어·새 설치본 SHA 바이트 일치를 요구.
+- `scripts/arm_up_bench_v1.py --prepare`: **Pi 로컬** `~/BMO_ARM_PREP/legacy_full_swing_v2_code.py`에 구 600~2400µs 구동 규칙을 넣은 후보 파일만 생성. **CIRCUITPY 자동 복사·서보 출력 없음**.
+- `RuntimePolicy.arms_supervised`: 기본 False. `FeatureHost`는 명시적 실기 드라이버를 주입하지 않으면 거부.
+- `launch-desktop --arms-supervised --arm-reviewed-code-sha <SHA> --arm-power-off-ready`: **명시적으로 opt-in한 실기만**. 파일/펌웨어 ID가 맞지 않으면 포트 열기 전에 중단. 기본 `launch-desktop --live`는 기존대로 팔 비활성화. **USB port, servo, GPT action 실제 물리 검증 완료 전에는 사용하지 않는다.**
 
-```text
-V2 HELLO check1
-V2 ARM begin1 BOOT_ID
-V2 PING beat1 BOOT_ID 1
-V2 MOVE req001 BOOT_ID left REVIEWED_PULSE_US
-V2 MOVE req002 BOOT_ID right REVIEWED_PULSE_US
-V2 STOP stop1
-```
+## 다음 실기 단계
 
-응답은 `V2 ACK ID BOOT_ID CODE POSITION_UNVERIFIED` 이다. `ACK`는 수신·요청 검사 결과이고 실제 관절 위치나 각도 도달 보증이 아니다. 별도 feedback encoder가 없다.
+1. 전체 전원 OFF, **왼팔·오른팔 모두 3핀 분리** → Pi/RP2040 다시 켜기. 예전 백업 `/home/bgh/BMO_RP2040_BACKUPS/original_EWJ1G4sz/code.py` 보존.
+2. 이 브랜치 CI가 통과한 **단일 커밋**에서 `scripts/arm_up_bench_v1.py --prepare` 실행. 출력 SHA를 기록.
+3. SHA/구 버전 대조 후 펌웨어 `safe_arm_core.py` → 시험 `code.py` 순으로 복사, 기존 `boot.py` 유지, GP8 Enter와 `V2 HELLO READY` 확인.
+4. 서보가 없는 상태에서 **GP7 눌림 토글과 STOP 및 호스트 독립 좌우 대상**을 검수. GPIO에만 PWM 출력이 있을 수 있으며 위치 피드백 없음.
+5. BMO 전체 전원을 끈 후 연결을 바꾼다. 사용자 입회·즉시 전체 전원 차단 가능·움직임 범위에 손/케이블 없음. 구 전체 스윙이 검증됐으나 **새 프로그램의 물리 움직임과 비상 STOP은 아직 미검증**: 한쪽부터, 이후 양쪽 버튼/음성 제스처.
+6. 정상 확인 후에만 데스크톱의 **명시적 실기 opt-in**을 사용할 것. 앱 R10 얼굴/목소리/카메라/GP8 PTT는 변경하지 않는다.
 
-- `STOP`: 명령 도착 또는 **GP7 deadman 놓기**에 의해 software stop latch. 같은 세션에서 재arm 불가, PWM 비활성화 시도. GP7은 현재 장치 버전에서는 *누르면 STOP*이므로 두 버전의 차이를 분명히 확인한다.
-- `ARM`: *물리 활성 신호 + 검수 설정 + 맞는 BOOT_ID*를 모두 요구. 처음 `PWMOut`을 만들며 **home pulse에서 실제 서보가 움직일 수 있음**. 이 위험 때문에 기본 source build flag는 False
-- `MOVE`: 각각의 검수된 `min_us..max_us`로만 target을 등록. 20ms 단위 최대 10us 순차 변화. 실제 angle feedback은 없음
-- `PING`: 350ms 간격 이상의 통신 상실 시 latched software stop. Host가 주기적으로 보내야 하나 **현재 제품 host transport는 아직 미구현**
-- 부팅에는 어떤 서보 PWM이나 명령도 출력하지 않는다. 전원이 공급된 서보의 안전이 자동 보장되는 것은 아니다
-
-## 개발·실물 검수 순서
-
-1. 먼저 코드/CI 전수 검사. **현재 장치에 복사 금지**.
-2. 운영자가 **서보 전원 분리** 상태에서 기존 RP2040 `code.py`와 `boot.py`를 백업하고 GP2~GP8 USB HID 동작, USB endpoint/CDC data port 가용성을 검수. REPL/DTR/open 동작이 자동 리셋·부팅 팔 움직임을 일으킬 수 있으므로 무인 포트 접속 금지
-3. 새 GP7 deadman 동작을 서보 커넥터 분리 상태에서 검증한다. 원본에서 GP7은 양팔 토글, 기존 staged 실기는 누르면 STOP, 이번 새 staging은 **놓으면 STOP**이다. USB HID 키 GP8이 계속 Enter를 보내는지 검수한다. BMO 전체 전원을 끄는 동작과 서보 외부 전원/배선·공통 GND 확인.
-4. 2개 실제 서보가 부하 없는 지그에서 어느 방향으로 어느 pulse에서 어느 위치에 있는지 각각 확인. 임의 0°·90°·180° 명령 금지
-5. 테스트 장비·운영자·물리 컷오프를 준비한 후 **별도 검수된 펌웨어**만 수동 적용. 먼저 모든 팔 출력 OFF/HID·data handshake 검수, 다음 한 팔의 아주 작은 이동, 응급 STOP/heartbeat failure/전원 분리 확인
-6. Pi 측 V2 host protocol은 현재 **코드 구현 및 fake-controller 검증 단계**이다. 실제 `usb_cdc.data` endpoint를 열고 유지할 승인된 Pi 포트 소유자는 아직 없으며, `MotionFeature`와 BMO AI action 라우팅은 물리 검증 전 자동 이동을 허용하지 않는다. 사용자 입회 하드웨어를 확인한 뒤 포트 식별·한 소유자·부팅 ID·주기적 heartbeat·우선 STOP·수동 조작/소각 테스트를 검수한 다음에만 이 인터페이스에 연결한다. LLM은 팔 angle/pulse를 직접 생성하지 않고 검수된 제스처만 제안한다.
-
-## 공식 API 참고
-
-- CircuitPython USB CDC 문서: https://docs.circuitpython.org/en/latest/shared-bindings/usb_cdc/ — data 포트는 `boot.py`에서 별도 활성화해야 하며 USB endpoint 부족 가능
-- CircuitPython PWM 문서: https://docs.circuitpython.org/en/latest/shared-bindings/pwmio/ — `duty_cycle`는 16비트 값, `frequency=50` 선택은 실제 기구각 범위를 보증하지 않음
-- Adafruit HID: https://github.com/adafruit/Adafruit_CircuitPython_HID — 키보드 키 전송
-
-## 이번 실기 제약 (사용자 확인 2026-10-26)
-
-양팔 서보의 전원에 별도 스위치는 없지만, 사용자가 **전체 전원을 끄고 양팔의 각 3핀 커넥터를 뽑을 수 있음**을 확인했다. 실제로 이를 분리했다고 보고한 상태에서 펌웨어/HID/USB CDC 실기 테스트에 성공했다. 현 보드 `/media/bgh/CIRCUITPY/code.py` 원본은 로컬 `/home/bgh/BMO_RP2040_BACKUPS/original_EWJ1G4sz/code.py`에 보존됐고 SHA-256은 `fdc65bebef17b78b945281549ddce80fb749e1a94262751d8d2f0146c394a01e`로 일치한다. 기존 `code.py`는 부팅 시 `set_arms(0)`을 호출하므로, 저장·리로드·boot.py 교체·USB CDC 재열거가 **의도하지 않은 움직임**을 만들 수 있다. **새 소스는 아직 RP2040의 설치판과 다르다.** 이번 버전은 GPIO GP12 가정을 제거하고 GP7 deadman을 사용한다. 하지만 기본 PWM 출력을 여전히 비활성화하며, 실제 서보 연결 및 움직임을 승인하지 않는다. GPIO 입력 기반 소프트웨어 STOP을 물리적 전원 차단으로 부르지 않는다.
-
-### Pi의 안전한 코드 검사 (장치 접근 없음)
-
-```bash
-cd /home/bgh/BMO_REAL_ROBOT
-# 해당 GitHub 브랜치가 별도 worktree에 반영된 경우에만:
-PYTHONPATH=software python3 -B -m unittest software.tests.test_arm_firmware_v2_stage software.tests.test_arm_host_v2 -v
-```
-
-이때 `BoundedCdcExchange`는 **포트를 여는 코드가 아니며**, 실제 사용하려면 별도의 안전 검수 후 구성한 *이미 열린* 데이터 포트 객체를 받아야 한다. `ttyACM0`이 보인다고 전용 데이터 포트라고 단정하지 않는다. 기본 BMO 앱은 신규 팔 이동 기능을 여전히 비활성화한다.
-
-**실기 수락: 기존 staged `a6d7c9f`에서 GP8 HID / dedicated CDC V2 HELLO(\`UNCALIBRATED\`) 실제 성공. 최신 GP7 deadman 브랜치의 실물 적용·STOP·모터 시험은 NOT_RUN. 최종 수락: firmware & host V2 STAGED / MOTOR_PHYSICAL_NOT_RUN / POSITION_UNVERIFIED.**
+**인수 테스트: GitHub CI 통과 여부는 해당 커밋의 Actions run에서 확인. 물리 모터 구동 및 실제 중단 테스트는 아직 수행되지 않았다.**
