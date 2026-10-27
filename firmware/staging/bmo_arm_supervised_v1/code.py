@@ -1,8 +1,9 @@
 """STAGING ONLY: NOT A DROP-IN REPLACEMENT FOR THE USER'S LIVE RP2040.
 
 Never copy this code to CIRCUITPY without a supervised physical/firmware review.
-Keeps GP8 Enter and directions as HID. GP7 is a hold-to-enable software
-interlock for supervised bench work; release latches STOP. NOT a power cutoff.
+Keeps GP8 Enter and directions as HID. GP7 PRESSES toggle the original both-
+arm up/down action (0/180) in a reviewed motor-enabled build. Host V2 commands
+can instead move each arm independently. V2 STOP latches until reboot.
 There is intentionally NO servo PWM on boot and NO enabled motor command by default.
 A separate physical servo-power cutoff remains mandatory.
 """
@@ -19,16 +20,16 @@ from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keycode import Keycode
 from safe_arm_core import SafeArmController, MAX_FRAME
 
-# Requires code review, measured calibration and the EXISTING GP7 red button
-# held continuously by a human for any eventual ARM/MOVE. Release latches STOP.
-# A software stop is NOT an electrical power cutoff. Keep these OFF by default.
+# GP7 is the existing local both-arm toggle; GP8 remains Enter for voice PTT.
+# Software STOP / watchdog are NOT an electrical power cutoff.
+# Default flags MUST remain OFF until supervised physical integration review.
 ARM_OUTPUT_BUILD_ENABLED = False
 REVIEWED_CALIBRATION = None
 # Explicit review must supply {'reviewed': True,
 #  'left': {'min_us':..., 'home_us':..., 'max_us':...},
 #  'right': {'min_us':..., 'home_us':..., 'max_us':...}}
 # Correct angles and mechanical limits CANNOT be inferred from 50 Hz or 0/180.
-# No GP12 input is assumed: the existing, known GP7 button is the bench deadman.
+# No unconnected GP12 input is assumed. GP7 works exactly like the original toggle.
 
 POLL_INTERVAL_S = 0.01
 
@@ -49,10 +50,10 @@ class Pins:
         self.red.direction = digitalio.Direction.INPUT
         self.red.pull = digitalio.Pull.UP
         self.red_pressed = False
+        self.red_change_at = -1.0
 
     def physical_enabled(self):
-        return (ARM_OUTPUT_BUILD_ENABLED and REVIEWED_CALIBRATION is not None
-                and self.red.value is False)
+        return (ARM_OUTPUT_BUILD_ENABLED and REVIEWED_CALIBRATION is not None)
 
     def poll(self, controller):
         now = time.monotonic()
@@ -71,11 +72,14 @@ class Pins:
                     # Losing HID cannot be used as permission to operate arms.
                     controller.emergency_stop("hid_error")
         red = self.red.value is False
-        if self.red_pressed and not red and controller.armed:
-            # Release latches STOP only if motor outputs were actually armed;
-            # a GP7 press/release while disabled must not poison a later session.
-            controller.emergency_stop("gp7_hold_released")
-        self.red_pressed = red
+        if red != self.red_pressed and now - self.red_change_at >= 0.04:
+            self.red_pressed = red
+            self.red_change_at = now
+            if red:
+                # Original GP7 action: one PRESS toggles both arms, NOT a hold.
+                # No motor output is allocated unless operator-reviewed flags
+                # explicitly unlock the supervised build.
+                controller.manual_toggle()
 
 class ServoOutputs:
     """No PWM instance is allocated during construction or before real ARM."""
