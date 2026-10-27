@@ -40,7 +40,7 @@ def decode_frame(frame):
     op = terms[1]
     if op in ("HELLO", "STOP") and len(terms) == 3 and _identifier(terms[2]):
         return (op, terms[2])
-    if op == "ARM" and len(terms) == 4 and _identifier(terms[2]) and _identifier(terms[3]):
+    if op in ("ARM", "HOLD") and len(terms) == 4 and _identifier(terms[2]) and _identifier(terms[3]):
         return (op, terms[2], terms[3])
     if (op == "PING" and len(terms) == 5 and _identifier(terms[2])
             and _identifier(terms[3]) and terms[4].isdigit() and len(terms[4]) <= 10):
@@ -243,6 +243,14 @@ class SafeArmController:
             self.last_ping = self.clock()
             self.last_tick = self.last_ping
             return self._ack(rid, "ARMED_POSITION_UNVERIFIED")
+        if op == "HOLD":
+            if not self.armed or self.owner != "host":
+                return self._ack(rid, "NOT_ARMED")
+            # Stop at last commanded pulse; keep heartbeat, do not release
+            # power and do not falsely report a reached physical position.
+            self.targets = dict(self.positions)
+            self.last_ping = self.clock()
+            return self._ack(rid, "HELD_POSITION_UNVERIFIED")
         if op == "MOVE":
             if not self.armed or not self._physical():
                 return self._ack(rid, "NOT_ARMED")
