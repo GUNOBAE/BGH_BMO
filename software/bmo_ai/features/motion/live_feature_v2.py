@@ -36,6 +36,7 @@ class LiveArmMotionFeatureV2:
         self._stage = 0
         self._side = 0
         self._not_before = 0.
+        self._step_travel_s = 0.
         self._last_gesture = float("-inf")
         self._next_ping = 0.
         self._counter = 0
@@ -103,6 +104,7 @@ class LiveArmMotionFeatureV2:
         self._seen.add(request_id)
         self.pending = {"request": request_id, "steps": steps}
         self._stage, self._side, self._not_before = 0, 0, now
+        self._step_travel_s = 0.
         return HostResult(request_id, "accepted", "gesture_queued",
                           simulated=False, executed=False, completed=False)
 
@@ -147,10 +149,19 @@ class LiveArmMotionFeatureV2:
                             self._side += 1
                             previous = self._position_guess[side]
                             self._position_guess[side] = pulse
-                            # Never claim actual arrival; estimate the time
-                            # allowed by the firmware's bounded pulse slew.
+                            # Both arms in one gesture stage receive near-
+                            # simultaneous requests; then allow the slower
+                            # servo slew to finish. Never claim sensed arrival.
                             travel = abs(pulse - previous) / 30 * .02
-                            self._not_before = self._now() + max(step.dwell_s, travel + .15)
+                            self._step_travel_s = max(self._step_travel_s,
+                                step.dwell_s, travel + .15)
+                            if self._side == len(side_targets):
+                                self._stage += 1
+                                self._side = 0
+                                self._not_before = self._now() + self._step_travel_s
+                                self._step_travel_s = 0.
+                            else:
+                                self._not_before = self._now()
                         else:
                             self._stage += 1
                             self._side = 0
