@@ -83,7 +83,7 @@ class FeatureHost:
                  ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None,
                  ptt_trace=False, ptt_ambient_profile=None, expressive_voice=False,
                  camera_supervised=False, photo_directory=None, camera_video_supervised=False,
-                 ptt_speech_safe=False):
+                 ptt_speech_safe=False, emotion_arms=False):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -91,6 +91,11 @@ class FeatureHost:
         self.runtime = runtime if runtime is not None else RuntimePolicy()
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
+        if (type(emotion_arms) is not bool or
+                (emotion_arms and not (self.runtime.simulate or self.runtime.arms_supervised))):
+            raise FeatureError("emotion_arms_requires_supervision")
+        self._emotion_arms = emotion_arms
+        self._last_spoken_emotion = None
         from .motion.live_feature_v2 import LiveArmMotionFeatureV2
         if ((self.runtime.arms_supervised and not isinstance(motion, LiveArmMotionFeatureV2))
                 or (isinstance(motion, LiveArmMotionFeatureV2) and not self.runtime.arms_supervised)):
@@ -583,6 +588,7 @@ class FeatureHost:
             elif action == "reset":
                 stopped = self.stop()
                 self.session.reset()
+                self._last_spoken_emotion = None
                 if self.session.busy:
                     return self._await_voice_cleanup(request, "reset")
                 if not stopped:
@@ -909,6 +915,17 @@ class FeatureHost:
                 self._proposals[turn] = {"gesture": data[0], "intent": data[1], "ended": False}
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
+                # Never command an arm on idle/listening/thinking or in replay:
+                # only use the emotion actually displayed at speech start.
+                if (self._emotion_arms and self.clock() - at <= .5
+                        and self.session.snapshot()["playback"] == "started"):
+                    from .motion.emotion_gestures import select_emotion_gesture
+                    spoken_emotion = self.session.snapshot()["emotion"]
+                    proposal["gesture"] = select_emotion_gesture(
+                        spoken_emotion, proposal["gesture"],
+                        previous_spoken_emotion=self._last_spoken_emotion,
+                        intent=proposal["intent"], enabled=True)
+                    self._last_spoken_emotion = spoken_emotion
                 # A single short, deterministic look at actual speech start.
                 # Native activity and tracking retain higher priority; no idle
                 # timer, random motion or emotion/mouth setter is introduced.
