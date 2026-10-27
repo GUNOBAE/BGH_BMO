@@ -12,8 +12,8 @@ import time
 
 MAX_FRAME_BYTES = 128
 MAX_ACK_BYTES = 128
-ACK_TIMEOUT_S = .20
-MAX_HOST_HEARTBEAT_AGE_S = .30
+ACK_TIMEOUT_S = .50
+MAX_HOST_HEARTBEAT_AGE_S = .65
 IDENT = re.compile(r"[A-Za-z0-9_-]{1,32}\Z", re.ASCII)
 CODE = re.compile(r"[A-Z][A-Z0-9_]{0,47}\Z", re.ASCII)
 
@@ -81,9 +81,14 @@ class ArmV2Ack:
 
 
 def decode_ack(raw):
-    if (type(raw) is not bytes or not 1 < len(raw) <= MAX_ACK_BYTES
-            or not raw.endswith(b"\n") or b"\r" in raw or b"\n" in raw[:-1]):
-        raise ArmV2Error("invalid_arm_ack")
+    if type(raw) is not bytes or not raw:
+        raise ArmV2Error("arm_ack_missing")
+    if len(raw) > MAX_ACK_BYTES:
+        raise ArmV2Error("arm_ack_oversized")
+    if not raw.endswith(b"\n"):
+        raise ArmV2Error("arm_ack_incomplete")
+    if b"\r" in raw or b"\n" in raw[:-1]:
+        raise ArmV2Error("arm_ack_ambiguous")
     try:
         parts = raw[:-1].decode("ascii").split(" ")
     except UnicodeError:
