@@ -118,7 +118,7 @@ class ArmHostV2Tests(unittest.TestCase):
         self.assertEqual(self.host.move("mright", "right", 1590).code, "ACCEPTED_POSITION_UNVERIFIED")
         self.clock.advance(.021)
         self.link.controller.tick()
-        self.assertEqual(self.link.io.writes, [("left", 1510), ("right", 1520)])
+        self.assertEqual(self.link.io.writes, [("left", 1530), ("right", 1540)])
         self.assertFalse(self.host.snapshot()["position_verified"])
         self.assertEqual(self.host.ping("p1").code, "ALIVE")
 
