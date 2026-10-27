@@ -64,6 +64,10 @@ def encode_ping(request_id, boot_id, counter):
     return _packet("PING", _id(request_id), _boot(boot_id), str(counter))
 
 
+def encode_hold(request_id, boot_id):
+    return _packet("HOLD", _id(request_id), _boot(boot_id))
+
+
 def encode_move(request_id, boot_id, side, pulse_us):
     if side not in ("left", "right") or type(side) is not str:
         raise ArmV2Error("invalid_arm_side")
@@ -292,6 +296,19 @@ class ArmHostV2:
         ack = self._transact(encode_move(rid, self.boot_id, side, pulse_us), rid)
         if ack.code != "ACCEPTED_POSITION_UNVERIFIED":
             raise ArmV2Error("arm_move_rejected")
+        return ack
+
+    def hold(self, request_id):
+        """Cancel current gesture trajectory without latching the STOP."""
+        if not self.armed:
+            raise ArmV2Error("arm_not_armed")
+        self._motion_guard()
+        self._heartbeat_fresh()
+        rid = _id(request_id)
+        ack = self._transact(encode_hold(rid, self.boot_id), rid)
+        if ack.code != "HELD_POSITION_UNVERIFIED":
+            raise ArmV2Error("arm_hold_rejected")
+        self.last_ping = self._now()
         return ack
 
     def stop(self, request_id):
