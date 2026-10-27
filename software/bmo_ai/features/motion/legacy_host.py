@@ -30,7 +30,7 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
     if hashlib.sha256(original).hexdigest() != "fdc65bebef17b78b945281549ddce80fb749e1a94262751d8d2f0146c394a01e":
         raise LegacyArmError("original_source_mismatch")
     template = (root / "code.py").read_bytes()
-    if template.count(b"REMOTE_ENABLED = False") != 1:
+    if template.count(b"\nREMOTE_ENABLED = False\n") != 1:
         raise LegacyArmError("invalid_reviewed_template")
     expected = template.replace(b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)
     if (hashlib.sha256(expected).hexdigest() != reviewed_sha
