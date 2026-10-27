@@ -87,8 +87,14 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         app = APP.read_text()
         self.assertNotIn('board.GP12', app)
         self.assertIn('self.red.value is False', app)
-        self.assertIn('if self.red_pressed and not red and controller.armed:', app)
-        self.assertIn('controller.emergency_stop("gp7_hold_released")', app)
+        self.assertIn('if red != self.red_pressed and now - self.red_change_at >= 0.04:', app)
+        self.assertIn('controller.manual_toggle()', app)
+        self.assertNotIn('gp7_hold_released', app)
+        self.assertIn('(board.GP8, Keycode.ENTER)', app)
+        self.assertIn('(board.GP6, Keycode.Z)', app)
+        for gp, name in [('GP2','UP_ARROW'), ('GP3','LEFT_ARROW'),
+                         ('GP4','RIGHT_ARROW'), ('GP5','DOWN_ARROW')]:
+            self.assertIn('board.' + gp + ', Keycode.' + name, app)
         for file in (CORE, APP, BOOT):
             compile(file.read_text(), str(file), 'exec')
         source = CORE.read_text()
@@ -149,6 +155,66 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         self.assertNotIn(('left', 590), outputs.writes)
         self.assertNotIn(('right', 2410), outputs.writes)
 
+    def test_old_gp7_button_toggles_full_stroke_without_host_ping(self):
+        # EXACT original mapping and last physically confirmed UP position.
+        profile = {'reviewed': True,
+            'left': {'min_us': 600, 'home_us': 600, 'max_us': 2400},
+            'right': {'min_us': 600, 'home_us': 2400, 'max_us': 2400}}
+        motors = FakeIO()
+        ctrl = arm.SafeArmController(motors, 'boot-red',
+            settings=profile, physical_enabled=lambda: True, clock=self.clock)
+        self.assertEqual(motors.armed, [])  # no startup servo command
+        self.assertTrue(ctrl.manual_toggle())  # first red press: UP -> DOWN
+        self.assertEqual(motors.armed, [{'left':600, 'right':2400}])
+        self.assertEqual(ctrl.targets, {'left':2400, 'right':600})
+        self.assertEqual(ctrl.owner, 'red_button')
+        self.clock.plus(.021)
+        ctrl.tick()
+        self.assertEqual(motors.writes, [('left',645),('right',2355)])
+        self.clock.plus(.95)  # no host heartbeat required for old GP7
+        ctrl.tick()
+        self.assertTrue(ctrl.armed)
+        self.assertTrue(ctrl.manual_toggle())  # next red press: DOWN -> UP
+        self.assertEqual(ctrl.targets, {'left':600, 'right':2400})
+        self.assertEqual(len(motors.armed), 1)
+        self.assertFalse(ctrl.stop_latched)
+
+    def test_button_overrides_host_and_host_can_adopt_without_home_jump(self):
+        profile = {'reviewed': True,
+            'left': {'min_us':600, 'home_us':600, 'max_us':2400},
+            'right': {'min_us':600, 'home_us':2400, 'max_us':2400}}
+        motors = FakeIO()
+        ctrl = arm.SafeArmController(motors, 'boot-r',
+            settings=profile, physical_enabled=lambda: True, clock=self.clock)
+        self.assertTrue(ctrl.manual_toggle())
+        self.clock.plus(.021)
+        ctrl.tick()
+        current = dict(ctrl.positions)
+        self.assertIn('ARMED_POSITION_UNVERIFIED',
+            ctrl.handle(cmd('ARM','host_takeover','boot-r')).decode())
+        self.assertEqual(ctrl.positions, current)
+        self.assertEqual(motors.armed, [{'left':600,'right':2400}])
+        self.assertIn('ACCEPTED_', ctrl.handle(
+            cmd('MOVE','right01','boot-r','right',2000)).decode())
+        self.assertTrue(ctrl.manual_toggle())  # operator overrides any host target
+        self.assertEqual(ctrl.owner, 'red_button')
+        self.assertIn('BUTTON_OVERRIDE', ctrl.handle(
+            cmd('PING','p2','boot-r',1)).decode())
+        self.assertIn('BUTTON_OVERRIDE', ctrl.handle(
+            cmd('MOVE','left01','boot-r','left',1600)).decode())
+        self.assertIn('STOP_LATCHED', ctrl.handle(cmd('STOP','emergency')).decode())
+        self.assertFalse(ctrl.manual_toggle())
+        self.assertFalse(ctrl.armed)
+
+    def test_gp7_never_moves_when_build_disabled_or_unreviewed(self):
+        motors = FakeIO()
+        ctrl = arm.SafeArmController(motors, 'boot-disabled',
+            settings=None, physical_enabled=lambda: False, clock=self.clock)
+        self.assertFalse(ctrl.manual_toggle())
+        self.assertEqual(motors.armed, [])
+        self.assertEqual(motors.writes, [])
+        self.assertEqual(motors.stops, 0)
+
     def test_zero_width_calibration_not_accepted(self):
         invalid = {
             'reviewed': True,
@@ -171,7 +237,7 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         self.controller.tick()
         self.assertTrue(self.controller.armed)
         self.assertIn('PING_REPLAY', self.request('PING', 'ping2', 'boot-test', 1))
-        self.clock.plus(.16)
+        self.clock.plus(.70)
         self.controller.tick()
         self.assertFalse(self.controller.armed)
         self.assertTrue(self.controller.stop_latched)
