@@ -97,8 +97,10 @@ class FeatureHost:
         self._emotion_arms = emotion_arms
         self._last_spoken_emotion = None
         from .motion.live_feature_v2 import LiveArmMotionFeatureV2
-        if ((self.runtime.arms_supervised and not isinstance(motion, LiveArmMotionFeatureV2))
-                or (isinstance(motion, LiveArmMotionFeatureV2) and not self.runtime.arms_supervised)):
+        from .motion.legacy_host import LegacyMotionFeature
+        physical_motion = (LiveArmMotionFeatureV2, LegacyMotionFeature)
+        if ((self.runtime.arms_supervised and not isinstance(motion, physical_motion))
+                or (isinstance(motion, physical_motion) and not self.runtime.arms_supervised)):
             raise FeatureError("arm_supervision_injection_required")
         if any(type(value) is not bool for value in (camera_supervised, camera_video_supervised)):
             raise FeatureError("invalid_camera_runtime")
