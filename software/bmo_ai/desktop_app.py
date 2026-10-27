@@ -43,6 +43,8 @@ def parser():
     p.add_argument("--plain-voice", action="store_true", help="use plain Aaron voice instead of supported, allowlisted emotional direction")
     p.add_argument("--arms-supervised", action="store_true",
                    help="EXPLICIT live opt-in, only after physical GP7/full-swing acceptance")
+    p.add_argument("--emotion-arms", action="store_true",
+                   help="opt-in emotional arm gestures; simulation only until supervised firmware works")
     p.add_argument("--arm-reviewed-code-sha", metavar="SHA256",
                    help="manually reviewed exact SHA of deployed full-range RP2040 code.py")
     p.add_argument("--arm-power-off-ready", action="store_true",
@@ -83,6 +85,8 @@ def public_plan(args):
                             "raw_audio_logged": False, "transcripts_logged": False},
         "voice_direction": {"requested": not args.plain_voice, "speaker_changed": False,
                             "listening_approval": "NOT_RUN"},
+        "emotion_arms": {"requested": args.emotion_arms, "gesture_names_only": True,
+                         "automatic_serial_or_firmware_changes": False},
         "camera": {"supervised_opt_in": args.camera_supervised,
                    "photo_storage_selected": args.photo_directory is not None,
                    "automatic_capture": False, "physical_verified": False},
@@ -107,6 +111,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--music-directory and --demo-assets are separate catalogs")
     if args.ptt_ambient_profile is not None and not args.ptt_microphone:
         p.error("--ptt-ambient-profile requires --ptt-microphone")
+    if args.emotion_arms and not (args.simulate or args.arms_supervised):
+        p.error("--emotion-arms requires --simulate or an independently approved --arms-supervised")
     if args.arms_supervised and (not args.live or not args.arm_reviewed_code_sha
                                 or not args.arm_power_off_ready):
         p.error("--arms-supervised needs --live, --arm-reviewed-code-sha and --arm-power-off-ready")
@@ -220,7 +226,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "demo_assets": args.demo_assets, "clock": clock,
                         "ptt_trace": args.ptt_trace, "ptt_ambient_profile": args.ptt_ambient_profile,
                         "ptt_speech_safe": True,
-                        "expressive_voice": not args.plain_voice}
+                        "expressive_voice": not args.plain_voice,
+                        "emotion_arms": args.emotion_arms}
             if args.camera_supervised:
                 settings.update(camera_supervised=True, photo_directory=args.photo_directory,
                                 camera_video_supervised=args.camera_video_supervised)
