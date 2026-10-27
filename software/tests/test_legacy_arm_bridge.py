@@ -62,6 +62,48 @@ class TestLegacyBridge(unittest.TestCase):
         self.assertIn("READY", self.send("B1 HELLO h2\n"))
         self.assertFalse(self.motions)
 
+    def test_circuitpython_style_buffer_without_clear_handles_consecutive_disabled_frames(self):
+        # CircuitPython has no bytearray.clear. Using a fake that rejects it
+        # prevents a CPython-only pass from hiding a real CDC disconnect.
+        class CircuitPythonBytearray(bytearray):
+            def clear(self):
+                raise AssertionError("unsupported bytearray.clear on CircuitPython")
+
+        self.bridge.enabled = False
+        self.bridge.data = CircuitPythonBytearray()
+        self.port.buffer += b"B1 HELLO first\nB1 HELLO second\n"
+        self.bridge.poll()
+        self.assertEqual(len(self.port.writes), 2)
+        self.assertTrue(all(b" DISABLED " in ack for ack in self.port.writes))
+        self.assertIs(self.bridge.port, self.port)
+        self.assertIsNone(self.bridge.fault)
+        self.assertIn("DISABLED", self.send("B1 HELLO third\n"))
+        self.assertEqual(len(self.port.writes), 3)
+        self.assertFalse(self.motions)
+
+    def test_circuitpython_style_buffer_without_clear_recovers_overflow_and_cr(self):
+        class CircuitPythonBytearray(bytearray):
+            def clear(self):
+                raise AssertionError("unsupported bytearray.clear on CircuitPython")
+
+        self.bridge.enabled = False
+        self.bridge.data = CircuitPythonBytearray()
+        self.port.buffer = b"X" * (module.MAX_FRAME + 50) + b"\n"
+        for _ in range(8):
+            self.bridge.poll()
+            if not self.port.in_waiting:
+                break
+        self.assertEqual(self.port.writes, [])
+        self.assertIsNone(self.bridge.fault)
+        self.assertIs(self.bridge.port, self.port)
+        self.bridge.data = CircuitPythonBytearray()
+        self.port.buffer = b"BAD\r\nB1 HELLO recovered\n"
+        self.bridge.poll()
+        self.assertEqual(len(self.port.writes), 1)
+        self.assertIn(b" DISABLED ", self.port.writes[0])
+        self.assertIsNone(self.bridge.fault)
+        self.assertFalse(self.motions)
+
     def test_wave_only_moves_right_with_original_range_and_restores_pose(self):
         self.assertIn("ACCEPTED", self.send("B1 DO bmo_00000001 bA1 wave\n"))
         self.assertEqual(self.motions, [])  # Admission cannot jump to an endpoint.
