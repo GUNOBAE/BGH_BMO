@@ -24,10 +24,15 @@ def parser():
     mode.add_argument("--simulate", action="store_true")
     mode.add_argument("--live", action="store_true")
     p.add_argument("--windowed", action="store_true", help="explicit development window, default kiosk")
+    p.add_argument("--frontend", choices=("auto", "native", "chromium"), default="auto",
+                   help="auto selects optional system Qt when present; Chromium remains the explicit fallback")
     p.add_argument("--developer", action="store_true", help="enable /developer and hidden Ctrl+Alt+D")
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
     p.add_argument("--video-directory", type=Path, help="user-selected private local synthetic-video storage; live camera video remains denied")
-    p.add_argument("--music-directory", type=Path, help="explicit reviewed private WAV library; simulation uses silent backend and live music stays denied")
+    p.add_argument("--music-directory", type=Path, help="explicit reviewed private WAV library; live playback additionally needs --music-supervised")
+    p.add_argument("--music-supervised", action="store_true", help="explicit opt-in to requested local WAV playback; requires --live and --music-directory")
+    p.add_argument("--usb-gamepad", action="store_true", help="opt-in browser USB gamepad routing in game/menu modes only; never starts PTT or arms")
+    p.add_argument("--no-startup-chime", action="store_true", help="skip the original offline boot sound; never changes the approved Aaron greeting")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--status", action="store_true")
     p.add_argument("--diagnose-startup", action="store_true", help="read-only session metadata, original face SHA and lock check; no launch or repair")
@@ -45,6 +50,8 @@ def parser():
                    help="EXPLICIT live opt-in, only after physical GP7/full-swing acceptance")
     p.add_argument("--emotion-arms", action="store_true",
                    help="opt-in emotional arm gestures; simulation only until supervised firmware works")
+    p.add_argument("--arm-legacy-bridge", action="store_true",
+                   help="separate B1 bridge derived from SHA-verified original GP7 firmware")
     p.add_argument("--arm-reviewed-code-sha", metavar="SHA256",
                    help="manually reviewed exact SHA of deployed full-range RP2040 code.py")
     p.add_argument("--arm-power-off-ready", action="store_true",
@@ -73,6 +80,9 @@ def public_plan(args):
     return {"version": 1, "mode": "simulate" if args.simulate else "live" if args.live else "not_selected",
         "screen_profile": args.screen_profile, "screen_sha256": SCREEN_PROFILES[args.screen_profile]["sha256"],
         "window": "windowed" if args.windowed else "kiosk", "developer_enabled": args.developer,
+        "frontend": args.frontend, "native_pi_verified": "NOT_RUN",
+        "startup_sound": {"enabled": not args.no_startup_chime,
+                          "source": "original_local_pcm", "automatic_synthesis": False},
         "greeting": {"text": GREETING_TEXT, "asset_version": "english-v3", "source": "approved_private_cache", "automatic_synthesis": False},
         "configuration": effective_config(config, emotion_mode="auto"),
         "credentials_accessed": False, "ports_opened": False, "processes_started": False,
@@ -85,6 +95,9 @@ def public_plan(args):
                             "raw_audio_logged": False, "transcripts_logged": False},
         "voice_direction": {"requested": not args.plain_voice, "speaker_changed": False,
                             "listening_approval": "NOT_RUN"},
+        "arm_legacy_bridge": {"requested": args.arm_legacy_bridge,
+                              "default_disabled": not args.arms_supervised,
+                              "physical_verified": False},
         "emotion_arms": {"requested": args.emotion_arms, "gesture_names_only": True,
                          "automatic_serial_or_firmware_changes": False},
         "camera": {"supervised_opt_in": args.camera_supervised,
@@ -93,7 +106,9 @@ def public_plan(args):
         "camera_video": {"storage_selected": args.video_directory is not None,
                          "live_enabled": args.camera_video_supervised, "automatic_capture": False},
         "music_library": {"selected": args.music_directory is not None,
-                          "live_playback_enabled": False, "automatic_import": False},
+                          "live_playback_enabled": args.music_supervised, "automatic_import": False},
+        "usb_gamepad": {"enabled": args.usb_gamepad, "physical_verified": False,
+                        "conversation_input": False, "motor_input": False},
         "pi_kiosk_verified": "NOT_RUN"}
 
 
@@ -109,8 +124,12 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--demo-assets requires --simulate")
     if args.music_directory is not None and args.demo_assets:
         p.error("--music-directory and --demo-assets are separate catalogs")
+    if args.music_supervised and (not args.live or args.music_directory is None):
+        p.error("--music-supervised requires --live and --music-directory")
     if args.ptt_ambient_profile is not None and not args.ptt_microphone:
         p.error("--ptt-ambient-profile requires --ptt-microphone")
+    if args.arm_legacy_bridge and not args.arms_supervised:
+        p.error("--arm-legacy-bridge requires an independently supervised physical arm session")
     if args.emotion_arms and not (args.simulate or args.arms_supervised):
         p.error("--emotion-arms requires --simulate or an independently approved --arms-supervised")
     if args.arms_supervised and (not args.live or not args.arm_reviewed_code_sha
@@ -141,8 +160,23 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         from .desktop_install import install_desktop
         try:
             install_settings = {"install": not args.dry_run, "simulate": args.simulate}
+            install_settings["frontend"] = args.frontend
             if args.ptt_microphone:
                 install_settings["ptt_microphone"] = True
+            if args.usb_gamepad:
+                install_settings["usb_gamepad"] = True
+            if args.music_directory is not None:
+                install_settings["music_directory"] = args.music_directory
+            if args.music_supervised:
+                install_settings["music_supervised"] = True
+            if args.no_startup_chime:
+                install_settings["startup_chime"] = False
+            if args.camera_supervised:
+                install_settings.update(camera_supervised=True, photo_directory=args.photo_directory)
+            if args.video_directory is not None:
+                install_settings["video_directory"] = args.video_directory
+            if args.camera_video_supervised:
+                install_settings["camera_video_supervised"] = True
             result = install_desktop(**install_settings)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
@@ -208,12 +242,18 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                                desktop=app, developer=args.developer)
         stage = "server_start"
         app.set_server(server.start())
-        if browser_factory is None:
+        using_builtin_browser = browser_factory is None
+        if using_builtin_browser:
             from .desktop_browser import DesktopBrowser
             browser_factory = DesktopBrowser
         stage = "browser_init"
-        browser = browser_factory(server.url, windowed=args.windowed,
-                                  startup_timeout=args.startup_timeout, clock=clock)
+        browser_settings = dict(windowed=args.windowed,
+                                startup_timeout=args.startup_timeout, clock=clock)
+        # Existing embedded/test factories retain their constructor contract;
+        # default auto detection belongs to the built-in frontend owner only.
+        if args.frontend != "chromium" and (using_builtin_browser or args.frontend != "auto"):
+            browser_settings["frontend"] = args.frontend
+        browser = browser_factory(server.url, **browser_settings)
         app.set_browser(browser)
         stage = "browser_start"
         browser.start()
@@ -228,6 +268,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "ptt_speech_safe": True,
                         "expressive_voice": not args.plain_voice,
                         "emotion_arms": args.emotion_arms}
+            if args.music_supervised:
+                settings["music_supervised"] = True
+            if args.usb_gamepad:
+                settings["usb_gamepad"] = True
             if args.camera_supervised:
                 settings.update(camera_supervised=True, photo_directory=args.photo_directory,
                                 camera_video_supervised=args.camera_video_supervised)
@@ -242,21 +286,33 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 client = (client_factory or create_client)(config, api_key=credentials.openai_api_key)
                 settings.update(client=client, fish_api_key=credentials.fish_api_key)
             if args.arms_supervised:
-                from .features.motion.arm_serial_posix_v2 import (
-                    OwnedCdcDataPort, validate_reviewed_install)
-                from .features.motion.arm_host_v2 import ArmHostV2, BoundedCdcExchange
-                from .features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
-                from .features.motion.live_feature_v2 import LiveArmMotionFeatureV2
-                source_core = (Path(__file__).resolve().parents[2]
-                               / "firmware/staging/bmo_arm_supervised_v1/safe_arm_core.py")
-                validate_reviewed_install(source_core, args.arm_reviewed_code_sha)
-                arm_port = OwnedCdcDataPort().open()
-                arm_host = ArmHostV2(
-                    BoundedCdcExchange(arm_port), profile=LEGACY_REVIEWED_LIMITS,
-                    clock=clock, power_cutoff_confirmed=lambda: args.arm_power_off_ready,
-                    operator_present=lambda: bool(app is not None and app._ready
-                                                  and not app.exiting and not app.failed))
-                settings["motion"] = LiveArmMotionFeatureV2(arm_host, clock=clock)
+                from .features.motion.arm_serial_posix_v2 import OwnedCdcDataPort
+                if args.arm_legacy_bridge:
+                    from .features.motion.legacy_host import (
+                        LegacyArmLink, LegacyMotionFeature, validate_legacy_install)
+                    firmware_root = (Path(__file__).resolve().parents[2]
+                                     / "firmware/staging/bmo_arm_legacy_bridge_v1")
+                    validate_legacy_install(firmware_root, args.arm_reviewed_code_sha)
+                    arm_port = OwnedCdcDataPort().open()
+                    arm_host = LegacyArmLink(arm_port, motor_permission=lambda:
+                        bool(args.arm_power_off_ready and app is not None and app._ready
+                             and not app.exiting and not app.failed))
+                    settings["motion"] = LegacyMotionFeature(arm_host, clock=clock)
+                else:
+                    from .features.motion.arm_serial_posix_v2 import validate_reviewed_install
+                    from .features.motion.arm_host_v2 import ArmHostV2, BoundedCdcExchange
+                    from .features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
+                    from .features.motion.live_feature_v2 import LiveArmMotionFeatureV2
+                    source_core = (Path(__file__).resolve().parents[2]
+                                   / "firmware/staging/bmo_arm_supervised_v1/safe_arm_core.py")
+                    validate_reviewed_install(source_core, args.arm_reviewed_code_sha)
+                    arm_port = OwnedCdcDataPort().open()
+                    arm_host = ArmHostV2(
+                        BoundedCdcExchange(arm_port), profile=LEGACY_REVIEWED_LIMITS,
+                        clock=clock, power_cutoff_confirmed=lambda: args.arm_power_off_ready,
+                        operator_present=lambda: bool(app is not None and app._ready
+                                                      and not app.exiting and not app.failed))
+                    settings["motion"] = LiveArmMotionFeatureV2(arm_host, clock=clock)
             host = host_factory(**settings)
             app.set_host(host, None)  # Retain ownership even if greeting setup fails.
             stage = "greeting_init"
@@ -266,10 +322,11 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 # Never inspect real greeting/credential storage during simulation.
                 temporary = TemporaryDirectory(prefix="bmo-desktop-synthetic-")
                 cache = make_synthetic_greeting_cache(Path(temporary.name)/"greeting", config)
-                greeting = GreetingPlayer(config, cache, simulate=True)
+                greeting = GreetingPlayer(config, cache, simulate=True,
+                    startup_chime=not args.no_startup_chime, chime_home=Path(temporary.name))
             else:
                 cache = GreetingCache(default_greeting_directory(), GreetingSpec.from_config(config))
-                greeting = GreetingPlayer(config, cache)
+                greeting = GreetingPlayer(config, cache, startup_chime=not args.no_startup_chime)
             app.greeting = greeting
         except Exception as error:
             code = getattr(error, "code", "engine_startup_failed")

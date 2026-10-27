@@ -119,8 +119,17 @@ def _source(path, *, limit, executable=False):
                 os.close(value)
 
 
-def _configuration(project_root, home, environ, simulate, ptt_microphone=False):
-    if type(simulate) is not bool or type(ptt_microphone) is not bool:
+def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
+                   frontend="auto", usb_gamepad=False, music_directory=None,
+                   music_supervised=False, startup_chime=True, camera_supervised=False,
+                   photo_directory=None, camera_video_supervised=False, video_directory=None):
+    if (any(type(value) is not bool for value in (simulate, ptt_microphone, usb_gamepad, music_supervised, startup_chime,
+                                                       camera_supervised, camera_video_supervised))
+            or type(frontend) is not str or frontend not in ("auto", "native", "chromium")
+            or music_supervised and (simulate or music_directory is None)
+            or camera_supervised and (simulate or photo_directory is None)
+            or photo_directory is not None and not camera_supervised
+            or camera_video_supervised and (not camera_supervised or video_directory is None)):
         raise DesktopInstallError("desktop_invalid_config")
     source = os.environ if environ is None else environ
     project = _path(project_root if project_root is not None else Path(__file__).resolve().parents[2])
@@ -146,8 +155,24 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False):
         launcher_verified = False
     icon_path = data / "icons" / "hicolor" / "scalable" / "apps" / "bmo-desktop.svg"
     command = [str(launcher), "--simulate" if simulate else "--live"]
+    if frontend != "auto":
+        command.extend(("--frontend", frontend))
     if ptt_microphone:
         command.append("--ptt-microphone")
+    if usb_gamepad:
+        command.append("--usb-gamepad")
+    if music_directory is not None:
+        command.extend(("--music-directory", str(_path(music_directory))))
+    if music_supervised:
+        command.append("--music-supervised")
+    if not startup_chime:
+        command.append("--no-startup-chime")
+    if camera_supervised:
+        command.extend(("--camera-supervised", "--photo-directory", str(_path(photo_directory))))
+    if video_directory is not None:
+        command.extend(("--video-directory", str(_path(video_directory))))
+    if camera_video_supervised:
+        command.append("--camera-video-supervised")
     template = ("[Desktop Entry]\nType=Application\nName=BMO\n"
                 "Comment=Start the BMO desktop app manually\n"
                 "Exec=" + " ".join('"' + value + '"' for value in command) + "\n"
@@ -188,8 +213,13 @@ def _existing(directory, name, raw, mode):
             os.close(descriptor)
 
 
-def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate=False, ptt_microphone=False):
-    _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone)
+def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate=False, ptt_microphone=False,
+                         frontend="auto", usb_gamepad=False, music_directory=None,
+                         music_supervised=False, startup_chime=True, camera_supervised=False,
+                   photo_directory=None, camera_video_supervised=False, video_directory=None):
+    _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
+        frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
+        camera_supervised, photo_directory, camera_video_supervised, video_directory)
     rows = []
     for path, raw, mode in targets:
         directory = _directory(path.parent, home=user_home)
@@ -203,6 +233,9 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
             "template": template, "targets": rows, "icon_sha256": ICON_SHA256,
             "files_written": 0, "autostart": False, "services_changed": False,
             "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
+            "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
+            "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
+            "camera_opt_in": camera_supervised, "camera_video_opt_in": camera_video_supervised,
             "activation": "NOT_RUN", "desktop_trust": "NOT_RUN"}
 
 
@@ -216,13 +249,22 @@ def _remove_owned(directory, name, identity):
     os.unlink(name, dir_fd=directory)
 
 
-def install_desktop(*, project_root=None, home=None, environ=None, simulate=False, install=False, ptt_microphone=False):
+def install_desktop(*, project_root=None, home=None, environ=None, simulate=False, install=False, ptt_microphone=False,
+                    frontend="auto", usb_gamepad=False, music_directory=None,
+                    music_supervised=False, startup_chime=True, camera_supervised=False,
+                   photo_directory=None, camera_video_supervised=False, video_directory=None):
     if type(install) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     if not install:
         return desktop_install_plan(project_root=project_root, home=home, environ=environ, simulate=simulate,
-                                    ptt_microphone=ptt_microphone)
-    _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone)
+                                    ptt_microphone=ptt_microphone, frontend=frontend,
+                                    usb_gamepad=usb_gamepad, music_directory=music_directory,
+                                    music_supervised=music_supervised, startup_chime=startup_chime,
+                                    camera_supervised=camera_supervised, photo_directory=photo_directory,
+                                    camera_video_supervised=camera_video_supervised, video_directory=video_directory)
+    _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
+        frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
+        camera_supervised, photo_directory, camera_video_supervised, video_directory)
     if not verified:
         raise DesktopInstallError("desktop_launcher_pending")
     created, descriptors, stages, published = [], [], [], []
@@ -273,6 +315,9 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                 "files_written": len(published), "icon_sha256": ICON_SHA256,
                 "autostart": False, "services_changed": False,
                 "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
+            "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
+            "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
+            "camera_opt_in": camera_supervised, "camera_video_opt_in": camera_video_supervised,
                 "activation": "NOT_RUN", "desktop_trust": "NOT_RUN"}
     except BaseException as error:
         rollback_failed = False
@@ -312,11 +357,25 @@ def main(argv=None):
     parser.add_argument("--install-desktop", action="store_true")
     parser.add_argument("--simulate", action="store_true")
     parser.add_argument("--ptt-microphone", action="store_true", help="explicitly persist button-only finite microphone admission in the new icon")
+    parser.add_argument("--frontend", choices=("auto", "native", "chromium"), default="auto")
+    parser.add_argument("--usb-gamepad", action="store_true")
+    parser.add_argument("--music-directory", type=Path)
+    parser.add_argument("--music-supervised", action="store_true")
+    parser.add_argument("--no-startup-chime", action="store_true")
+    parser.add_argument("--camera-supervised", action="store_true")
+    parser.add_argument("--photo-directory", type=Path)
+    parser.add_argument("--camera-video-supervised", action="store_true")
+    parser.add_argument("--video-directory", type=Path)
     parser.add_argument("--project-root", type=Path)
     args = parser.parse_args(argv)
     try:
         report = install_desktop(project_root=args.project_root, simulate=args.simulate,
-                                 install=args.install_desktop, ptt_microphone=args.ptt_microphone)
+                                 install=args.install_desktop, ptt_microphone=args.ptt_microphone,
+                                 frontend=args.frontend, usb_gamepad=args.usb_gamepad,
+                                 music_directory=args.music_directory, music_supervised=args.music_supervised,
+                                 startup_chime=not args.no_startup_chime,
+                                 camera_supervised=args.camera_supervised, photo_directory=args.photo_directory,
+                                 camera_video_supervised=args.camera_video_supervised, video_directory=args.video_directory)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     except DesktopInstallError as error:

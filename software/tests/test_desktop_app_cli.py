@@ -55,7 +55,7 @@ class DesktopCLITests(unittest.TestCase):
                 patch("bmo_ai.private_credentials.resolve_credentials", side_effect=AssertionError("No keys")), \
                 redirect_stdout(io.StringIO()):
             self.assertEqual(main(["--install-desktop", "--dry-run"]), 0)
-        install.assert_called_once_with(install=False, simulate=False)
+        install.assert_called_once_with(install=False, simulate=False, frontend="auto")
 
     def test_explicit_prepare_and_approval_are_separate_and_never_start_engine_or_player(self):
         cache = Mock()

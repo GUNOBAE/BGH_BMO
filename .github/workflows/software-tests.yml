@@ -1,9 +1,9 @@
 name: Software tests
 on:
   push:
-    paths: ['software/**', '.github/workflows/software-tests.yml']
+    paths: ['software/**', 'firmware/staging/bmo_arm_legacy_bridge_v1/**', '.github/workflows/software-tests.yml']
   pull_request:
-    paths: ['software/**', '.github/workflows/software-tests.yml']
+    paths: ['software/**', 'firmware/staging/bmo_arm_legacy_bridge_v1/**', '.github/workflows/software-tests.yml']
 permissions:
   contents: read
 jobs:
@@ -23,6 +23,8 @@ jobs:
         working-directory: software
       - run: python -m compileall -q bmo_ai tests
         working-directory: software
+      # Syntax only: compiling does not import board/PWM/USB or deploy firmware.
+      - run: python -m compileall -q firmware/staging/bmo_arm_legacy_bridge_v1
   public-browser:
     runs-on: ubuntu-latest
     steps:
@@ -44,5 +46,8 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
       - run: python -B software/checks/check_camera_media_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_bmo_release_e2e.py --chromium --skip-media
         env:
           PYTHONDONTWRITEBYTECODE: '1'

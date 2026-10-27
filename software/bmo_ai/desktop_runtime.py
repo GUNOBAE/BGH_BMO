@@ -69,7 +69,8 @@ def public_code(code, default="startup_failed"):
     from .greeting_cache import _CODES
     from .private_credentials import _ERRORS
     from .desktop_browser import _MESSAGES
-    allowed = _CODES | _ERRORS.keys() | _MESSAGES.keys() | {
+    from .startup_sound import CODES as startup_codes
+    allowed = _CODES | startup_codes | _ERRORS.keys() | _MESSAGES.keys() | {
         "startup_failed", "engine_startup_failed", "host_startup_timeout", "face_ready_timeout",
         "browser_failed", "browser_disconnected", "greeting_failed", "greeting_cancelled",
         "greeting_completed", "greeting_timeout", "missing_key", "missing_sdk"}
