@@ -181,7 +181,7 @@ def run_button_status():
     identify_data_port()
     with RawCdcPort() as port:
         exchange = BoundedCdcExchange(port)
-        hello = decode_ack(exchange(b"V2 HELLO check_button\\n"))
+        hello = decode_ack(exchange(b"V2 HELLO check_button\n"))
         if hello.request_id != "check_button" or hello.code != "READY":
             raise RuntimeError("arm_button_status_not_ready")
         reply = decode_ack(exchange(encode_ping("red_state", hello.boot_id, 1)))
