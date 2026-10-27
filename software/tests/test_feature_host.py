@@ -288,6 +288,39 @@ class FeatureHostTests(unittest.TestCase):
         self.finish_voice(host)
         self.assertEqual(gesture.call_count, 1)
 
+    def test_opt_in_emotion_gesture_happens_once_at_real_player_start(self):
+        host = self.host([reply(emotion="happy", gesture="none")], emotion_arms=True)
+        entered, release = Event(), Event()
+        self.releases.append(release)
+        original = host.session.voice._player
+        def playing(command, **settings):
+            original(command, **settings)
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError("Synthetic player timed out")
+            settings["cancel_check"]()
+        host.session.voice._player = playing
+        submit = self.enterContext(patch.object(host.motion, "submit", wraps=host.motion.submit))
+        self.assertTrue(host.start_question())
+        self.assertTrue(entered.wait(1))
+        host.poll()
+        self.assertEqual(submit.call_count, 1)
+        self.assertEqual(submit.call_args.args[0], "celebrate")
+        host.poll()
+        self.assertEqual(submit.call_count, 1)
+        release.set()
+        self.finish_voice(host)
+        host.control(HostControl("repeat"), "repeat:emotion-arms")
+        self.finish_voice(host)
+        self.assertEqual(submit.call_count, 1)
+
+    def test_emotion_arms_disabled_keeps_existing_no_gesture_behavior(self):
+        host = self.host([reply(emotion="happy", gesture="none")])
+        submit = self.enterContext(patch.object(host.motion, "submit", wraps=host.motion.submit))
+        self.assertTrue(host.start_question())
+        self.finish_voice(host)
+        self.assertEqual(submit.call_count, 0)
+
     def test_reset_keeps_feature_journal_dedup_while_clearing_conversation_only(self):
         host = self.host([reply()]); self.seed(host)
         launch = self.enterContext(patch.object(host.games, "start", wraps=host.games.start))
