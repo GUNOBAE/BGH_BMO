@@ -155,6 +155,18 @@ class FeatureReplySDKTests(unittest.TestCase):
                 reply = decode_feature_reply(feature_envelope(emotion=emotion, gesture=gesture))
                 self.assertEqual((reply.emotion, reply.gesture), (emotion, gesture))
 
+    def test_explicit_voice_arm_intents_accept_only_named_legacy_actions(self):
+        from bmo_ai.expression_contract import ExpressionFormatError
+        for action in ("raise_left_arm", "raise_right_arm", "both_up", "both_down"):
+            with self.subTest(action=action):
+                result = decode_feature_reply(feature_envelope(
+                    intent={"name": "arm_gesture", "target": action}, gesture="none"))
+                self.assertEqual(result.intent, HostIntent("arm_gesture", action))
+        for forbidden in ("left=1500", "both", "wave 1500", "GP10", "180"):
+            with self.subTest(forbidden=forbidden), self.assertRaises(ExpressionFormatError):
+                decode_feature_reply(feature_envelope(
+                    intent={"name": "arm_gesture", "target": forbidden}, gesture="none"))
+
     def test_original_two_field_and_plain_manual_clients_keep_their_original_formats(self):
         fixture = self.wired([sdk_response('{"speech":"Original expression.","emotion":"sad"}'),
                              sdk_response("Plain manual answer.")])

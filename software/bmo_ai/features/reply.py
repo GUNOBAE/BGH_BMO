@@ -8,6 +8,7 @@ from ..expression_contract import (ExpressionFormatError, decode_expression,
                                    expression_request, FACE_EMOTIONS)
 from .contracts import GESTURES, INTENTS, valid_id
 from ..expressive_voice import REACTIONS
+from .motion.gesture_rules_v2 import EXPLICIT_ACTIONS as ARM_INTENT_ACTIONS
 
 
 TARGET_INTENTS = frozenset({"launch_game", "play_song", "arm_gesture"})
@@ -21,7 +22,7 @@ class HostIntent:
     def __post_init__(self):
         if (type(self.name) is not str or self.name not in INTENTS or (self.name in TARGET_INTENTS and not valid_id(self.target))
                 or (self.name not in TARGET_INTENTS and self.target is not None)
-                or (self.name == "arm_gesture" and self.target not in GESTURES)):
+                or (self.name == "arm_gesture" and self.target not in ARM_INTENT_ACTIONS)):
             raise ExpressionFormatError()
 
     def public(self):
@@ -49,6 +50,9 @@ or bracket tags. Gesture defaults to none; use wave only for greeting, celebrate
 for explicit celebration, shrug for mild uncertainty. Never map happy directly to
 arm movement. Propose at most one allowlisted intent, only when requested, using
 catalog IDs provided by the trusted host. No paths, URLs, shell, PWM or angles.
+For a user request to move a specified arm, explicit arm_gesture intent targets
+raise_left_arm or raise_right_arm are allowed; both_up or both_down only if
+the user explicitly requested both arms. Never choose one of these from emotion.
 Do not claim completion: the host must verify the actual outcome. Missing assets,
 unverified hardware and simulated actions are not real execution. For an explicit
 arm_gesture intent, keep the separate gesture field none. Stop/cancel is immediate

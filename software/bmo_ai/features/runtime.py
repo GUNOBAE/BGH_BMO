@@ -18,12 +18,14 @@ class RuntimePolicy:
     conversation_ptt_microphone: bool = False
     camera_supervised: bool = False
     camera_video_supervised: bool = False
+    arms_supervised: bool = False  # injected ArmHostV2 only; default OFF
 
     def __post_init__(self):
         if any(type(value) is not bool for value in (self.simulate, self.conversation_ptt_microphone,
-                                                    self.camera_supervised, self.camera_video_supervised)):
+                                                    self.camera_supervised, self.camera_video_supervised,
+                                                    self.arms_supervised)):
             raise FeatureError("invalid_runtime")
-        if ((self.camera_supervised or self.camera_video_supervised) and self.simulate
+        if ((self.camera_supervised or self.camera_video_supervised or self.arms_supervised) and self.simulate
                 or self.camera_video_supervised and not self.camera_supervised):
             raise FeatureError("invalid_camera_runtime")
 
@@ -34,6 +36,8 @@ class RuntimePolicy:
             return
         if capability not in DEVICE_CAPABILITIES:
             raise FeatureError("unknown_capability")
+        if capability == "arms" and self.arms_supervised:
+            return
         if capability == "camera" and self.camera_supervised:
             return
         if capability == "camera_video" and self.camera_video_supervised:
@@ -48,4 +52,6 @@ class RuntimePolicy:
                 **{name: "mock" if self.simulate else "denied" for name in DEVICE_CAPABILITIES},
                 **({"camera": "explicit_supervised"} if self.camera_supervised else {}),
                 **({"camera_video": "explicit_supervised"} if self.camera_video_supervised else {}),
-                "real_features_enabled": self.camera_supervised, "pi_live_verified": False}
+                **({"arms": "explicit_supervised"} if self.arms_supervised else {}),
+                "real_features_enabled": self.camera_supervised or self.arms_supervised,
+                "pi_live_verified": False}
