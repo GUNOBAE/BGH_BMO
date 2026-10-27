@@ -10,6 +10,7 @@ MAX_COMMANDS = 32
 WATCHDOG_S = 0.35
 TICK_S = 0.02
 STEP_US = 10
+MANUAL_STEP_US = 45  # preserve the original full 0/180 travel, ramped on each tick
 
 
 def _identifier(text):
@@ -77,6 +78,8 @@ class SafeArmController:
         self.targets = {}
         self.requests = {}
         self.stop_reason = "boot_disabled"
+        self.owner = None  # None, 'host', or 'red_button'
+        self.manual_up = True  # original physical up=left 600us/right 2400us
         # Merely constructing this policy NEVER touches PWM or GPIO.
 
     def _calibration_valid(self):
@@ -119,26 +122,66 @@ class SafeArmController:
         self.stop_reason = reason
         self.targets = {}
         self.last_ping = None
+        self.owner = None
         try:
             self.io.stop()
         except Exception:
             self.stop_reason = "output_release_unknown"
 
+    def manual_toggle(self):
+        """Preserve verified GP7: each *press* toggles both arms up/down.
+
+        Legacy convention, not a new calibration: up is left 600/right 2400;
+        down is left 2400/right 600. Uses each arm's independently reviewed
+        bounds and only runs in an explicitly motor-enabled build. The first
+        PWM is aligned to the user's last physically confirmed UP position.
+        STOP latch cannot be defeated by a button press.
+        """
+        if self.stop_latched or not self._calibration_valid() or not self._physical():
+            return False
+        s = self.settings
+        if not (s["left"]["home_us"] == s["left"]["min_us"]
+                and s["right"]["home_us"] == s["right"]["max_us"]):
+            return False  # Never infer a new physical home.
+        if not self.armed:
+            first = {side: s[side]["home_us"] for side in ("left", "right")}
+            try:
+                self.io.arm(first)
+            except Exception:
+                self._stop("manual_pwm_arm_failed")
+                return False
+            self.positions = dict(first)
+            self.targets = dict(first)
+            self.armed = True
+            self.manual_up = True
+        self.owner = "red_button"  # real user button overrides pending host motion
+        self.last_ping = None
+        self.manual_up = not self.manual_up
+        self.targets = ({
+            "left": s["left"]["min_us"], "right": s["right"]["max_us"]
+        } if self.manual_up else {
+            "left": s["left"]["max_us"], "right": s["right"]["min_us"]
+        })
+        self.last_tick = self.clock()
+        return True
+
     def tick(self):
-        """Drive no outputs unless recent host heartbeat AND physical gate."""
+        """GP7 button moves autonomously; HOST ownership needs fresh heartbeats."""
         if not self.armed:
             return
         now = self.clock()
         if not self._physical():
             self._stop("physical_gate_open")
             return
-        if self.last_ping is None or now - self.last_ping > WATCHDOG_S or now < self.last_ping:
-            self._stop("watchdog")
-            return
-        if self.last_tick is not None and now - self.last_tick < TICK_S:
-            return
+        if self.owner == "host":
+            if (self.last_ping is None or now - self.last_ping > WATCHDOG_S
+                    or now < self.last_ping):
+                self._stop("watchdog")
+                return
         if self.last_tick is not None and now < self.last_tick:
             self._stop("clock_error")
+            return
+        if self.last_tick is not None and now - self.last_tick < TICK_S:
             return
         self.last_tick = now
         try:
@@ -146,7 +189,8 @@ class SafeArmController:
                 current = self.positions[side]
                 target = self.targets[side]
                 if current != target:
-                    delta = min(STEP_US, abs(target - current))
+                    step = MANUAL_STEP_US if self.owner == "red_button" else STEP_US
+                    delta = min(step, abs(target - current))
                     next_us = current + (delta if target > current else -delta)
                     self.io.set_pulse(side, next_us)
                     self.positions[side] = next_us
@@ -171,6 +215,8 @@ class SafeArmController:
         if parts[2] != self.boot_id:
             return self._ack(rid, "BOOT_MISMATCH")
         if op == "PING":
+            if self.armed and self.owner != "host":
+                return self._ack(rid, "BUTTON_OVERRIDE")
             if parts[3] <= self.ping_counter:
                 return self._ack(rid, "PING_REPLAY")
             self.ping_counter = parts[3]
@@ -184,7 +230,6 @@ class SafeArmController:
                 initial = {side: self.settings[side]["home_us"] for side in ("left", "right")}
                 try:
                     # Physical linkage MUST already be aligned with reviewed home.
-                    # This first PWM pulse can cause physical motion.
                     self.io.arm(initial)
                 except Exception:
                     self._stop("pwm_arm_failed")
@@ -192,12 +237,17 @@ class SafeArmController:
                 self.positions = dict(initial)
                 self.targets = dict(initial)
                 self.armed = True
-                self.last_ping = self.clock()
-                self.last_tick = self.last_ping
+            # If the button moved arms first, ADOPT existing PWM/positions and
+            # never snap them back to either home. Host now owns the heartbeat.
+            self.owner = "host"
+            self.last_ping = self.clock()
+            self.last_tick = self.last_ping
             return self._ack(rid, "ARMED_POSITION_UNVERIFIED")
         if op == "MOVE":
             if not self.armed or not self._physical():
                 return self._ack(rid, "NOT_ARMED")
+            if self.owner != "host":
+                return self._ack(rid, "BUTTON_OVERRIDE")
             previous = self.requests.get(rid)
             if previous is not None:
                 return self._ack(rid, "DUPLICATE" if previous == frame else "REQUEST_CONFLICT")
