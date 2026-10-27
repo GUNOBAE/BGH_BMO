@@ -253,6 +253,19 @@ class SafeArmFirmwareStagingTests(unittest.TestCase):
         self.assertTrue(self.controller.stop_latched)
         self.assertIn('physical_gate_open', self.controller.stop_reason)
 
+    def test_hold_is_not_emergency_stop(self):
+        self.hold = True
+        self.request('ARM', 'first', 'boot-test')
+        self.assertIn('ACCEPTED_', self.request('MOVE', 'm1', 'boot-test', 'left', 1540))
+        self.clock.plus(.021)
+        self.controller.tick()
+        self.assertIn('HELD_POSITION_UNVERIFIED',
+                      self.request('HOLD', 'h1', 'boot-test'))
+        self.assertEqual(self.controller.targets, self.controller.positions)
+        self.assertTrue(self.controller.armed)
+        self.assertEqual(self.io.stops, 0)
+        self.assertIn('ACCEPTED_', self.request('MOVE', 'm2', 'boot-test', 'left', 1530))
+
     def test_stop_latches_when_id_is_duplicate(self):
         self.hold = True
         self.request('ARM', 'start', 'boot-test')
