@@ -42,6 +42,7 @@ function render(next){state=next;window.BMODesktop.state=next;
 async function modes(){if(state?.phase!=='ready')return;const r=await fetch('/api/features',{cache:'no-store'});if(!r.ok)return;const next=await r.json();currentMode=next.mode;
  window.BMODesktop.features=next;
  featureState=next;renderFeatures(next);
+ syncGamepad(next);
  pttEnabled=next.ptt?.enabled===true&&next.capabilities?.conversation_ptt_microphone!=='denied';
  // Bind completion to THIS admitted command, rather than a stale snapshot's
  // idle phase or a previous capture generation. Queued input stays cancellable.
@@ -90,14 +91,17 @@ function renderFeatures(next){
  if(liveCamera&&!next.system_diagnostics?.camera?.tracking_available)$('camera-track').disabled=true;
  const preview=next.camera?.preview_available&&$('camera-dialog').open;
  $('camera-image').hidden=!preview;if(preview)$('camera-image').src='/api/preview?sequence='+next.sequence;
- $('music-readiness').textContent=next.media?.catalog?.length?'현재 목록은 검증된 모의 재생 자료예요. 실제 음원·출력은 별도 검수가 필요해요.':'사용자 음원과 출처·라이선스 검토가 필요해요.';
+ const liveMusic=next.capabilities?.music==='explicit_supervised';
+ $('music-readiness').textContent=next.media?.catalog?.length?(liveMusic?'검토한 로컬 WAV를 선택한 스피커에서 재생해요. 실제 음량은 사용자 검수가 필요해요.':next.simulation?'현재 목록은 검증된 모의 재생 자료예요. 실제 음원·출력은 별도 검수가 필요해요.':'로컬 음원은 준비됐어요. 실제 재생에는 감독 실행과 음량 검토가 필요해요.'):'사용자 음원과 출처·라이선스 검토가 필요해요.';
  const catalogKey=JSON.stringify(next.media?.catalog||[]);
- if(catalogKey!==musicCatalogKey){musicCatalogKey=catalogKey;$('music-list').replaceChildren();for(const item of next.media?.catalog||[]){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY'||next.capabilities?.music!=='mock';b.onclick=()=>intent('play_song',item.id).catch(()=>error('음악을 시작하지 못했어요.'));$('music-list').append(b);}}
- for(const id of ['music-pause','music-resume','music-next','music-stop'])$(id).disabled=next.mode!=='music';
+ if(catalogKey!==musicCatalogKey){musicCatalogKey=catalogKey;$('music-list').replaceChildren();for(const item of next.media?.catalog||[]){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY'||!['mock','explicit_supervised'].includes(next.capabilities?.music);b.onclick=()=>intent('play_song',item.id).catch(()=>error('음악을 시작하지 못했어요.'));$('music-list').append(b);}}
+ for(const [id,capability] of [['music-pause','pause'],['music-resume','resume']])$(id).disabled=next.mode!=='music'||!next.media?.capabilities?.includes(capability);
+ for(const id of ['music-next','music-stop'])$(id).disabled=next.mode!=='music';
  const telemetry=next.system_diagnostics?.telemetry;
  $('system-readiness').textContent=telemetry?.power?.status==='OBSERVED'?('전원 현재 이상: '+(telemetry.power.current_fault?'있음':'없음')+' · 과거 기록: '+(telemetry.power.historical_fault?'있음':'없음')):'온도·전원 실측은 아직 실행하지 않았어요. 자동 설정 변경은 하지 않아요.';
  $('turn-diagnostics').textContent=JSON.stringify(next.turn_diagnostics||{enabled:false},null,2);
  $('input-evidence').textContent=JSON.stringify(inputEvidence,null,2);
+ $('gamepad-readiness').textContent=next.usb_gamepad?.enabled?'USB 패드 입력 사용: 표준 매핑의 게임·게임 목록에만 전달해요. 실제 패드 검수는 별도예요.':'USB 패드는 기본으로 꺼져 있어요. GP8 대화 입력은 그대로 사용할 수 있어요.';
 }
 async function poll(){if(closed||document.hidden)return;const current=epoch;controller=new AbortController();const abort=setTimeout(()=>controller?.abort(),1200);try{
  const r=await fetch('/api/desktop',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error();const next=await r.json();if(current!==epoch||closed)return;
@@ -145,7 +149,44 @@ window.addEventListener('blur',blurPTT);
 let touchStart=null,inputDocument=null;function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',cancelPTT);
  doc.addEventListener('pointerdown',event=>{touchStart={x:event.clientX,y:event.clientY};if(event.clientX<60&&event.clientY<60)touchStart.timer=setTimeout(menu,1200);});for(const name of ['pointerup','pointercancel'])doc.addEventListener(name,()=>{clearTimeout(touchStart?.timer);touchStart=null;});doc.addEventListener('pointermove',event=>{if(touchStart&&Math.hypot(event.clientX-touchStart.x,event.clientY-touchStart.y)>12){clearTimeout(touchStart.timer);touchStart=null;}});}catch(_){}}
 frame.addEventListener('load',()=>{cancelPTT();bindFrameInputs();});bindFrameInputs();
-window.addEventListener('pagehide',()=>{cancelPTT();closed=true;epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
-document.addEventListener('visibilitychange',()=>{epoch++;clearTimeout(timer);controller?.abort();if(document.hidden)cancelPTT();else{refreshAdapter();poll();}});
-window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence};poll();
+// The standard browser mapping is opt-in and game-only. Never map a pad button
+// to GP8/TALK, GP7, a servo command, camera capture or a provider API.
+let padTimer=null,padIndex=null,padGeneration=null,padHeld=new Set(),padSuppressed=new Set(),padSequence=0,padHeartbeat=0,padChain=Promise.resolve(),padPending=0;
+const padEvidence={polls:0,edges:0,disconnects:0,mapping:'standard_game_only',physical_verified:false};
+function sendPad(key,pressed,generation){
+ if(generation===null||closed||padPending>=32)return;
+ const value={key,pressed,sequence:++padSequence,generation},created=performance.now();padPending++;
+ padChain=padChain.catch(()=>{}).then(()=>{if(closed||performance.now()-created>450)return;return control('gamepad',value);}).catch(()=>{}).finally(()=>{padPending--;});
+}
+function releasePad(disconnected=true){
+ clearTimeout(padTimer);padTimer=null;
+ for(const key of padHeld)sendPad(key,false,padGeneration);
+ if(padIndex!==null){if(disconnected)padEvidence.disconnects++;sendPad(disconnected?'PAD_LOST':'RELEASE',true,padGeneration);}
+ padIndex=null;padGeneration=null;padHeld=new Set();padSuppressed=new Set();padHeartbeat=0;
+}
+function normalizedPad(pad){
+ const keys=new Set(),mapping=[[0,'A'],[1,'B'],[8,'SELECT'],[9,'START'],[12,'UP'],[13,'DOWN'],[14,'LEFT'],[15,'RIGHT']];
+ for(const [index,key] of mapping)if(pad.buttons?.[index]?.pressed===true)keys.add(key);
+ const x=pad.axes?.[0],y=pad.axes?.[1];if(Number.isFinite(x)){if(x<-.6)keys.add('LEFT');if(x>.6)keys.add('RIGHT');}if(Number.isFinite(y)){if(y<-.6)keys.add('UP');if(y>.6)keys.add('DOWN');}
+ return keys;
+}
+function gamepadAllowed(next){return next?.usb_gamepad?.enabled===true&&state?.phase==='ready'&&!document.hidden&&document.hasFocus()&&['game','game_menu'].includes(next.mode)&&!document.querySelector('dialog[open]:not(#game-menu)');}
+function pollPad(){
+ padTimer=null;if(!gamepadAllowed(featureState)){releasePad();return;}
+ let pad;try{padEvidence.polls++;pad=Array.from(navigator.getGamepads?.()||[]).find(p=>p&&p.connected&&p.mapping==='standard');}catch(_){releasePad();return;}
+ if(!pad){releasePad();return;}
+ const keys=normalizedPad(pad),generation=featureState.mode_generation;
+ if(pad.index!==padIndex||padGeneration!==generation){releasePad(false);padIndex=pad.index;padGeneration=generation;padSuppressed=new Set(keys);}
+ for(const key of [...padSuppressed])if(!keys.has(key))padSuppressed.delete(key);
+ for(const key of [...padHeld])if(!keys.has(key)){sendPad(key,false,generation);padHeld.delete(key);padEvidence.edges++;}
+ for(const key of keys)if(!padHeld.has(key)&&!padSuppressed.has(key)){sendPad(key,true,generation);padHeld.add(key);padEvidence.edges++;}
+ if(performance.now()-padHeartbeat>=250){sendPad('HEARTBEAT',true,generation);padHeartbeat=performance.now();}
+ padTimer=setTimeout(pollPad,50);
+}
+function syncGamepad(next){padSequence=Math.max(padSequence,next?.usb_gamepad?.sequence_floor||0);if(!gamepadAllowed(next)){releasePad(false);return;}if(padTimer===null)padTimer=setTimeout(pollPad,0);}
+window.addEventListener('blur',event=>{setTimeout(()=>{if(event.isTrusted&&document.hasFocus()&&document.activeElement===frame)return;releasePad();},0);});
+window.addEventListener('gamepaddisconnected',()=>releasePad());
+window.addEventListener('pagehide',()=>{releasePad();cancelPTT();closed=true;epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
+document.addEventListener('visibilitychange',()=>{epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){releasePad();cancelPTT();}else{refreshAdapter();poll();}});
+window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence};poll();
 })();

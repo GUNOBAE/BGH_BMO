@@ -35,6 +35,9 @@ class HostControl:
             valid = (type(self.value) is dict and set(self.value) == {"key", "pressed"}
                      and type(self.value["key"]) is str and self.value["key"] in LOGICAL_INPUTS
                      and type(self.value["pressed"]) is bool)
+        elif self.action == "gamepad":
+            from .input.gamepad import validate_gamepad
+            valid = validate_gamepad(self.value)
         elif self.action == "question":
             valid = type(self.value) is str and 0 < len(self.value) <= 512
         elif self.action == "emotion":
@@ -83,7 +86,8 @@ class FeatureHost:
                  ptt_source_factory=None, ptt_transcriber=None, video_directory=None, music_directory=None,
                  ptt_trace=False, ptt_ambient_profile=None, expressive_voice=False,
                  camera_supervised=False, photo_directory=None, camera_video_supervised=False,
-                 ptt_speech_safe=False, emotion_arms=False):
+                 ptt_speech_safe=False, emotion_arms=False, music_supervised=False,
+                 usb_gamepad=False):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -91,6 +95,14 @@ class FeatureHost:
         self.runtime = runtime if runtime is not None else RuntimePolicy()
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
+        if any(type(value) is not bool for value in (music_supervised, usb_gamepad)):
+            raise FeatureError("invalid_runtime")
+        if music_supervised:
+            if self.runtime.simulate or music_directory is None or media is not None:
+                raise FeatureError("music_supervision_requires_library")
+            self.runtime = replace(self.runtime, music_supervised=True)
+        elif self.runtime.music_supervised:
+            raise FeatureError("music_configuration_conflict")
         if (type(emotion_arms) is not bool or
                 (emotion_arms and not (self.runtime.simulate or self.runtime.arms_supervised))):
             raise FeatureError("emotion_arms_requires_supervision")
@@ -142,8 +154,14 @@ class FeatureHost:
         else:
             media_items = make_fixture_media(content) if demo_assets and media is None else ()
         self._music_library_selected = music_directory is not None
+        if music_supervised:
+            from .media import AlsaWavBackend
+            music_backend = AlsaWavBackend(device=self.config.speaker_device, enabled=True,
+                                         volume_reviewed=True, clock=clock)
+        else:
+            music_backend = FakeMediaBackend(clock=clock, pausable=True)
         self.media = media or MediaFeature(content, items=media_items,
-            backend=FakeMediaBackend(clock=clock, pausable=True), clock=clock)
+            backend=music_backend, clock=clock)
         from .camera.live import LiveCameraOptions, build_live_camera, probe_camera_capability
         self._camera_capability = probe_camera_capability()
         if camera_supervised:
@@ -172,6 +190,7 @@ class FeatureHost:
         self.journal = journal or ActionJournal()
         self._namespace = uuid4()
         self._commands, self._voice_events = PriorityQueue(32), Queue(64)
+        self._gamepad_commands = deque(maxlen=64)
         self._command_sequence = self._command_epoch = 0
         self._records, self._nonce_map = {}, {}
         # Stop/cancel are idempotent safety controls, coalesced by action in two
@@ -193,6 +212,7 @@ class FeatureHost:
         self._last_result = None
         self._result_history = {}
         self._closed = False
+        self._cleanup_errors = []
         self._transition_target = None
         self._last_shell_seen = None
         self._preview = self._photo_png = None
@@ -215,6 +235,8 @@ class FeatureHost:
         self.inputs = InputRouter(self.modes, stop=self.stop, talk=self._talk_input)
         self.inputs.bind("game_menu", self._menu_input)
         self.inputs.bind("game", self._game_input)
+        from .input.gamepad import BrowserGamepadGate
+        self.gamepad = BrowserGamepadGate(self.inputs, enabled=usb_gamepad, clock=clock)
         from .input import InputAdapter, PcmTurnGate, WakeWordGate
         self.input_adapter = (InputAdapter(self.inputs, input_source, mapping=input_mapping, clock=clock)
                               if input_source is not None else None)
@@ -298,6 +320,7 @@ class FeatureHost:
 
     def _transition(self, mode, context=None, *, force=False):
         if mode != self.modes.mode or force:
+            self.gamepad.release()
             self._cancel_video("video_mode_changed")
             if self.microphone is not None:
                 self.microphone.cancel()
@@ -353,7 +376,22 @@ class FeatureHost:
         self._active_media_request = context["request_id"]
 
     def _stop_music_audio(self):
-        return self.media.stop("mode_change").status != "unknown"
+        result = self.media.stop("mode_change")
+        if self.runtime.music_supervised:
+            self._finish_media_terminal(result.request_id, "mode_change", result.status != "unknown")
+        return result.status != "unknown"
+
+    def _finish_media_terminal(self, request, code, released):
+        previous = self._result_history.get(request)
+        if previous is None or previous.status != "running" or previous.simulated:
+            return
+        natural = code == "ended"
+        failed = code == "media_failed"
+        status = "unknown" if not released else "failed" if failed else "succeeded" if natural else "cancelled"
+        self._finish_result(HostResult(request, status,
+            "cleanup_failed" if not released else "media_failed" if failed else "media_completed" if natural else "media_stopped",
+            simulated=False, executed=previous.executed, completed=released and not failed,
+            completion="unknown" if not released or failed else "playback_finished" if natural else "stopped"))
 
     def _leave_music(self):
         if not self._stop_music_audio():
@@ -425,6 +463,7 @@ class FeatureHost:
             return self._finish_result(HostResult(request, "rejected", "stale_mode"))
         try:
             name = intent.name
+            media_was_active = self.media.snapshot()["active_id"] is not None
             capability = {"launch_game": "external_games", "play_song": "music",
                 "take_photo": "camera", "start_face_tracking": "camera", "arm_gesture": "arms"}.get(name)
             if capability is not None:
@@ -437,7 +476,7 @@ class FeatureHost:
                 if item is None or item.readiness != "READY":
                     raise FeatureError("unknown_game" if item is None and name == "launch_game" else
                                        "unknown_media" if item is None else item.reason_code)
-                if item.simulated is not True:
+                if item.simulated is not True and not (name == "play_song" and self.runtime.music_supervised):
                     raise FeatureError("real_disabled")
             if name == "open_game_menu":
                 self._transition("game_menu")
@@ -482,6 +521,12 @@ class FeatureHost:
             if name in ("start_face_tracking", "stop_face_tracking") and not self.runtime.simulate:
                 result = HostResult(request, "succeeded", "ok", simulated=False,
                                     executed=True, completed=True, completion="camera_request_applied")
+            elif name == "play_song" and self.runtime.music_supervised:
+                result = HostResult(request, "running", "playback_started", simulated=False,
+                                    executed=True, completed=False, completion="running")
+            elif name == "stop_media" and self.runtime.music_supervised:
+                result = HostResult(request, "succeeded", "media_stopped", simulated=False,
+                                    executed=media_was_active, completed=True, completion="stopped")
             else:
                 result = HostResult(request, "simulated", "ok", completed=True, completion="simulated")
         except FeatureError as error:
@@ -499,6 +544,16 @@ class FeatureHost:
         request = "web_" + uuid5(self._namespace, nonce).hex
         fingerprint = json.dumps(intent.public(), sort_keys=True)
         with self._records_lock:
+            if isinstance(intent, HostControl) and intent.action == "gamepad":
+                if not self.gamepad.enabled:
+                    raise FeatureError("gamepad_disabled")
+                if len(self._gamepad_commands) >= self._gamepad_commands.maxlen:
+                    raise FeatureError("gamepad_queue_full")
+                generation = self.snapshot()["mode_generation"]
+                self._gamepad_commands.append((request, intent, generation, self._command_epoch, self.clock()))
+                # Streaming edges never consume the bounded durable action ledger.
+                # Their sequence high-water remains in the owner-thread gate.
+                return HostResult(request, "accepted", "gamepad_queued").public()
             safety = (intent.action if isinstance(intent, HostControl) and intent.action in ("stop", "cancel")
                       else "stop" if isinstance(intent, HostControl) and intent.action == "input"
                       and intent.value == {"key": "STOP", "pressed": True} else None)
@@ -636,6 +691,11 @@ class FeatureHost:
                 if isinstance(outcome, HostResult):
                     return self._remember(HostResult(request, outcome.status, outcome.code,
                         outcome.simulated, outcome.executed, outcome.completed, outcome.completion))
+            elif action == "gamepad":
+                outcome = self.gamepad.feed(value)
+                if isinstance(outcome, HostResult):
+                    return self._remember(HostResult(request, outcome.status, outcome.code,
+                        outcome.simulated, outcome.executed, outcome.completed, outcome.completion))
             elif action in ("pause", "resume"):
                 if self.modes.mode != "music":
                     raise FeatureError("media_inactive")
@@ -645,10 +705,22 @@ class FeatureHost:
             elif action == "next":
                 if self.modes.mode != "music":
                     raise FeatureError("media_inactive")
+                entry = self.journal.begin(request, {"control": "next"})
+                if entry["duplicate"]:
+                    return self._remember(self._result_history.get(request) or HostResult(
+                        request, entry["status"], entry["code"]))
+                previous = self._active_media_request
+                previous_asset = self.media.snapshot()["active_id"]
                 result = self.media.next(request_id=request, mode_generation=self.modes.generation)
+                if (self.runtime.music_supervised and previous is not None
+                        and previous_asset != self.media.snapshot()["active_id"]):
+                    # next() intentionally emits no intermediate ended event.
+                    # Its old descriptor is released before a different asset
+                    # can become active; retire that original action here.
+                    self._finish_media_terminal(previous, "next_track", True)
                 if result.status in ("simulated", "running", "succeeded") and self.media.snapshot()["active_id"] is not None:
                     self._active_media_request = request
-                return self._remember(result)
+                return self._finish_result(result)
             result = HostResult(request, "simulated", "ok", completed=True, completion="simulated")
         except FeatureError as error:
             result = HostResult(request, "rejected", error.code)
@@ -829,7 +901,10 @@ class FeatureHost:
             self._transition("conversation", force=True)
         except FeatureError:
             success = False
-        self.motion.stop()
+        try:
+            self.motion.stop()
+        except Exception:
+            success = False
         try:
             self.camera.off()
             success = success and not self.camera.snapshot()["on"]
@@ -870,6 +945,16 @@ class FeatureHost:
             if action in safety:
                 request, control = safety[action]
                 self.control(control, request)
+        with self._records_lock:
+            gamepad, self._gamepad_commands = self._gamepad_commands, deque(maxlen=64)
+        for request, control, generation, epoch, received in gamepad:
+            age = self.clock() - received
+            if (epoch != self._command_epoch or generation != self.modes.generation
+                    or not 0 <= age <= .5):
+                self.gamepad.release(disconnected=True)
+                continue
+            self.control(control, request)
+        self.gamepad.poll()
         for _ in range(32):
             try:
                 _, _, request, intent, generation, epoch = self._commands.get_nowait()
@@ -942,9 +1027,17 @@ class FeatureHost:
                     except Exception:
                         entry = {"duplicate": True}  # Never decorate without a reservation.
                     if not entry["duplicate"]:
-                        self.motion.submit(proposal["gesture"], request_id=request,
-                            session_id=self.session.session_id, turn_id=turn, mode_generation=generation,
-                            started_at=at)
+                        try:
+                            result = self.motion.submit(proposal["gesture"], request_id=request,
+                                session_id=self.session.session_id, turn_id=turn, mode_generation=generation,
+                                started_at=at)
+                        except Exception:
+                            # Decorative motion must not terminate PTT/session
+                            # polling or leave a permanent accepted receipt.
+                            result = HostResult(request, "failed", "motion_admission_failed",
+                                                simulated=self.runtime.simulate)
+                        if result.status not in ("accepted", "running"):
+                            self._finish_result(result)
             elif kind == "ended" and turn in self._proposals:
                 self._proposals[turn]["ended"] = True
         for event in finished:
@@ -988,6 +1081,10 @@ class FeatureHost:
                     and event.kind in ("game_ended", "game_failed", "game_exit_requested")):
                 self._transition("game_menu")
         for event in self.media.poll():
+            if (self.runtime.music_supervised and event.kind in ("media_ended", "media_failed")
+                    and event.data.get("simulated") is False):
+                self._finish_media_terminal(event.request_id, event.code,
+                                            event.data.get("resource_released") is True)
             if (event.mode_generation == self.modes.generation and self.modes.mode == "music"
                     and event.request_id == self._active_media_request
                     and event.kind in ("media_ended", "media_failed")):
@@ -1044,7 +1141,7 @@ class FeatureHost:
             recent = ([dict(value["result"]) for value in list(self._records.values())[-8:]]
                       + [dict(value) for value in self._safety_results.values()])[-8:]
         state = {"version": 1, "sequence": self._state_sequence, "simulation": self.runtime.simulate,
-            "capabilities": self.runtime.public(), "real_features_enabled": self.runtime.camera_supervised,
+            "capabilities": self.runtime.public(), "real_features_enabled": self.runtime.public()["real_features_enabled"],
             "mode": self.modes.mode, "mode_generation": self.modes.generation,
             "mode_error": self.modes.last_error, "audio_owner": self.audio.owner,
             "conversation_busy": self.session.busy, "emotion": face["emotion"],
@@ -1058,6 +1155,7 @@ class FeatureHost:
             "motion": self.motion.snapshot(), "imu": self.imu.snapshot(),
             "input": self.input_adapter.snapshot() if self.input_adapter else
                      {"enabled": False, "real_input": "NOT_RUN", "device_opens": 0},
+            "usb_gamepad": self.gamepad.snapshot(),
             "ptt": (dict(ptt, enabled=True,
                         cleanup_fault=self._ptt_cleanup_fault,
                         source="synthetic_pcm" if self.runtime.simulate else "explicit_microphone",
@@ -1067,7 +1165,11 @@ class FeatureHost:
             "last_result": self._last_result, "requests": recent,
             "asset_status": {"real_game_pack": "ASSET_PENDING",
                 "user_songs": "AVAILABLE_FOR_REVIEW" if self._music_library_selected and self.media.catalog() else "ASSET_PENDING",
-                "music_playback": "SILENT_MOCK" if self.runtime.simulate else "DENIED",
+                "music_playback": "SILENT_MOCK" if self.runtime.simulate else "SUPERVISED_NOT_VERIFIED" if self.runtime.music_supervised else "DENIED",
+                "extensions": {"games": "bmo_ai.features.games.GamesFeature",
+                    "game_asset_review": "python -m bmo_ai.game_assets --dry-run",
+                    "music_import": "python -m bmo_ai.media_assets --help",
+                    "media_types": ["audio/wav"], "external_game_runtime": "NOT_CONFIGURED"},
                 "real_camera_video": "NOT_RUN"}}
         with self._snapshot_lock:
             self._public = state
@@ -1102,11 +1204,18 @@ class FeatureHost:
             return None
 
     def close(self):
-        if self._closed:
+        if self._closed and not self._cleanup_errors:
             return
         self._closed = True
-        self.stop()
         errors = []
+        try:
+            self.gamepad.close()
+        except Exception:
+            errors.append("cleanup_failed")
+        try:
+            self.stop()
+        except Exception:
+            errors.append("cleanup_failed")
         if self.microphone is not None:
             try:
                 if self.microphone.close() is not True:
@@ -1134,12 +1243,21 @@ class FeatureHost:
                 feature.close()
             except Exception:
                 errors.append("cleanup_failed")
-        self.journal.close()
-        if self.input_adapter is not None:
-            self.input_adapter.close()
-        self.pcm.close()
-        self.wake_word.close()
-        self._temporary.cleanup()
+        try:
+            self.journal.close()
+        except Exception:
+            errors.append("cleanup_failed")
+        for feature in (self.input_adapter, self.pcm, self.wake_word):
+            if feature is not None:
+                try:
+                    feature.close()
+                except Exception:
+                    errors.append("cleanup_failed")
+        try:
+            self._temporary.cleanup()
+        except Exception:
+            errors.append("cleanup_failed")
+        self._cleanup_errors = errors
         if errors:
             raise FeatureError("cleanup_failed")
 
@@ -1147,12 +1265,20 @@ class FeatureHost:
         session = self.session.cleanup_snapshot()
         microphone = self.microphone.snapshot() if self.microphone is not None else {}
         camera = self.camera.cleanup_snapshot()
+        motion_cleanup = getattr(self.motion, "cleanup_snapshot", None)
+        try:
+            motion = motion_cleanup() if callable(motion_cleanup) else {"resources_cleaned": not self._cleanup_errors}
+        except Exception:
+            motion = {"resources_cleaned": False, "code": "arm_cleanup_pending"}
         clean = (self._closed and session["resources_cleaned"] and not self._ptt_cleanup_fault
                  and not microphone.get("cleanup_pending", False)
                  and not microphone.get("microphone_open", False)
                  and not self.video.snapshot()["recording"] and camera["resources_cleaned"]
-                 and self.video.snapshot()["code"] != "video_close_failed")
+                 and self.video.snapshot()["code"] != "video_close_failed"
+                 and motion.get("resources_cleaned") is True and not self._cleanup_errors
+                 and self.games.snapshot()["state"] == "idle" and self.media.snapshot()["state"] == "idle")
         return dict(resources_cleaned=clean, session=session, camera=camera,
+                    motion=motion,
                     microphone_closed=not microphone.get("microphone_open", False),
                     microphone_cleanup_pending=microphone.get("cleanup_pending", False),
                     code="resources_cleaned" if clean else "owned_cleanup_pending",

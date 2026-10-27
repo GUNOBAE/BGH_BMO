@@ -19,6 +19,7 @@ MAX_REQUEST_SEQUENCE = 99999999999999999999
 # 15-second hard gesture budget; the host finally HOLDs rather than abandoning
 # a possibly unfinished gesture. This is not proof of a physical end position.
 ACTIVE_BUDGET_S = 15.2
+LEDGER_LIMIT = 4096
 
 
 def _finite_time(value):
@@ -78,9 +79,10 @@ class LegacyArmLink:
         self.counter = 0
         self.unknown = False
         self.stopped = False
+        self.closed = False
 
     def _request(self, command, *, is_hello=False, before_write=None):
-        if self.unknown or self.stopped:
+        if self.closed or self.unknown or self.stopped:
             raise LegacyArmError("bridge_unavailable")
         try:
             sequence = self.sequence_clock()
@@ -165,9 +167,18 @@ class LegacyArmLink:
         self.stopped = True
 
     def close(self):
+        if self.closed:
+            return
         close = getattr(self.port, "close", None)
-        if callable(close):
+        if not callable(close):
+            self.unknown = True
+            raise LegacyArmError("port_close_unverified")
+        try:
             close()
+        except Exception:
+            self.unknown = True
+            raise LegacyArmError("port_close_failed") from None
+        self.closed = True
 
 
 class LegacyMotionFeature:
@@ -185,18 +196,23 @@ class LegacyMotionFeature:
         self.generation = 0
         self.pending = None
         self.active_until = None
+        self._active_pending = None
+        self._inflight_pending = None
         self.last_gesture = float("-inf")
         self.next_ping = 0.
         self.seen = set()
+        self._auto_contexts = set()
         self.events = []
         self.stopped = False
         self.closed = False
         self.fault = None
+        self.last_error = None
 
     def set_context(self, session_id, turn_id, mode_generation):
-        if type(turn_id) is int:
+        if type(turn_id) is int and turn_id >= 0:
             turn_id = str(turn_id)
-        if not request_id_ok(session_id) or not request_id_ok(turn_id) or type(mode_generation) is not int:
+        if (not request_id_ok(session_id) or not request_id_ok(turn_id)
+                or type(mode_generation) is not int or mode_generation < 0):
             raise FeatureError("invalid_motion_context")
         new_context = (session_id, turn_id, mode_generation)
         if new_context != self.context:
@@ -211,10 +227,14 @@ class LegacyMotionFeature:
         if (self.closed or self.stopped or self.fault or self.pending is not None
                 or self.active_until is not None or request_id in self.seen):
             return HostResult(request_id, "rejected", "arm_unavailable", simulated=False)
+        if len(self.seen) >= LEDGER_LIMIT:
+            return HostResult(request_id, "rejected", "motion_ledger_full", simulated=False)
         if self.context != (session_id, str(turn_id), mode_generation):
             return HostResult(request_id, "rejected", "stale_context", simulated=False)
         if type(explicit) is not bool or gesture_id not in (NAMED_GESTURES if explicit else MODEL_ONLY):
             return HostResult(request_id, "rejected", "invalid_gesture", simulated=False)
+        if not explicit and self.context in self._auto_contexts:
+            return HostResult(request_id, "rejected", "turn_gesture_limit", simulated=False)
         now = _clock_value(self.clock)
         if not _finite_time(now) or not explicit and (not _finite_time(started_at) or
                              not 0 <= now - started_at <= self.ttl):
@@ -222,6 +242,8 @@ class LegacyMotionFeature:
         if now - self.last_gesture < self.cooldown:
             return HostResult(request_id, "rejected", "gesture_cooldown", simulated=False)
         self.seen.add(request_id)
+        if not explicit:
+            self._auto_contexts.add(self.context)
         self.pending = (request_id, gesture_id, started_at, self.context, explicit, now)
         return HostResult(request_id, "accepted", "gesture_queued", simulated=False)
 
@@ -241,11 +263,23 @@ class LegacyMotionFeature:
             "executed": False, "completed": False, "completion": "not_started",
             "position_verified": False}))
 
+    def _event(self, pending, status, code, *, executed=False):
+        self.events.append(FeatureEvent("motion_result", pending[3][2], pending[0],
+            code, {"status": status, "simulated": False, "executed": executed,
+            "completed": False, "completion": "position_unverified" if executed or status == "unknown" else "not_started",
+            "position_verified": False}))
+
+    def _clear_active(self):
+        self.active_until = None
+        self._active_pending = None
+
     def poll(self):
         if self.closed or self.stopped or self.fault:
             result, self.events = tuple(self.events), []
             return result
         pending = self.pending
+        attempted_pending = None
+        dispatched_pending = None
         try:
             if pending is not None:
                 if not self._pending_fresh(pending):
@@ -257,7 +291,21 @@ class LegacyMotionFeature:
                         self._expire_pending()
                     else:
                         request_id, gesture = self.pending[:2]
+                        attempted_pending = self._inflight_pending = pending
                         self.link.gesture(gesture, before_write=lambda: self._pending_fresh(pending))
+                        dispatched_pending = pending
+                        # Cancellation, a newer turn, or expiry can happen while
+                        # the device ACK is in flight. The DO already reached
+                        # the controller: never call this a zero-write expiry or
+                        # resurrect the cancelled trajectory. HOLD once while
+                        # the exact boot/link is still known; never retry DO.
+                        if not self._pending_fresh(pending):
+                            if self.pending is pending:
+                                self.pending = None
+                            self.link.hold()
+                            self._event(pending, "cancelled", "obsolete_motion_held", executed=True)
+                            result, self.events = tuple(self.events), []
+                            return result
                         self.pending = None
                         now = _clock_value(self.clock)
                         if not _finite_time(now):
@@ -265,6 +313,7 @@ class LegacyMotionFeature:
                             raise LegacyArmError("invalid_motion_clock")
                         self.last_gesture = now
                         self.active_until = now + ACTIVE_BUDGET_S
+                        self._active_pending = pending
                         self.next_ping = now
                         self.events.append(FeatureEvent("motion_result", self.generation, request_id,
                             "ack_position_unverified", {"status": "running", "simulated": False,
@@ -277,7 +326,8 @@ class LegacyMotionFeature:
                     raise LegacyArmError("invalid_motion_clock")
                 if now >= self.active_until:
                     self.link.hold()
-                    self.active_until = None
+                    self._event(self._active_pending, "unknown", "gesture_budget_held", executed=True)
+                    self._clear_active()
                 elif now >= self.next_ping:
                     self.link.ping()
                     after_ping = _clock_value(self.clock)
@@ -289,48 +339,92 @@ class LegacyMotionFeature:
             if error.code == "stale_playback_start":
                 if self.pending is pending:
                     self._expire_pending()
+                elif attempted_pending is not None:
+                    self._event(attempted_pending, "cancelled", "gesture_cancelled")
                 result, self.events = tuple(self.events), []
                 return result
             self.fault = "arm_link_unknown"
-            if self.pending is not None:
+            self.last_error = error.code
+            if dispatched_pending is not None:
+                self._event(dispatched_pending, "unknown", "arm_link_unknown", executed=True)
+                # A replacement turn can be queued by the owner while the old
+                # ACK returns. It has sent no DO and must not inherit the old
+                # command's receipt or survive this unknown transport.
+                if self.pending is not None and self.pending is not dispatched_pending:
+                    self._event(self.pending, "cancelled", "arm_link_unknown")
+            elif attempted_pending is not None:
+                # A partial write or missing ACK may already have started the
+                # old command, including when cancel cleared the pending slot.
+                self._event(attempted_pending, "unknown", "arm_link_unknown")
+                if self.pending is not None and self.pending is not attempted_pending:
+                    self._event(self.pending, "cancelled", "arm_link_unknown")
+            elif self.pending is not None:
                 self.events.append(FeatureEvent("motion_result", self.generation,
                     self.pending[0], "arm_link_unknown", {"status": "unknown",
                     "simulated": False, "executed": False, "completed": False,
                     "completion": "position_unverified", "position_verified": False}))
+            elif self._active_pending is not None:
+                self._event(self._active_pending, "unknown", "arm_link_unknown", executed=True)
             self.pending = None
-            self.active_until = None
+            self._clear_active()
+        finally:
+            self._inflight_pending = None
         result, self.events = tuple(self.events), []
         return result
 
     def cancel(self, request_id=None):
         if self.pending is not None and request_id not in (None, self.pending[0]):
             return
-        self.pending = None
+        if (self.pending is None and self._active_pending is not None
+                and request_id not in (None, self._active_pending[0])):
+            return
+        pending, self.pending = self.pending, None
+        if pending is not None and pending is not self._inflight_pending:
+            self._event(pending, "cancelled", "gesture_cancelled")
+        active = self._active_pending
         if self.active_until is not None and not self.link.unknown:
             try:
                 self.link.hold()
-            except LegacyArmError:
+            except LegacyArmError as error:
                 self.fault = "arm_link_unknown"
-        self.active_until = None
+                self.last_error = error.code
+        if active is not None:
+            self._event(active, "unknown" if self.fault else "cancelled",
+                "arm_link_unknown" if self.fault else "gesture_cancelled", executed=True)
+        self._clear_active()
 
     def stop(self):
+        if self.stopped:
+            return
         self.cancel()
         self.stopped = True
         try:
             self.link.stop()
-        except LegacyArmError:
+        except LegacyArmError as error:
             self.fault = "stop_unverified"
+            self.last_error = error.code
 
     def close(self):
         if not self.closed:
             self.stop()
-            self.link.close()
+            try:
+                self.link.close()
+            except LegacyArmError as error:
+                self.fault = self.last_error = error.code
+                raise FeatureError("arm_cleanup_failed") from None
             self.closed = True
+
+    def cleanup_snapshot(self):
+        clean = self.closed and self.link.closed
+        return {"resources_cleaned": clean, "port_closed": self.link.closed,
+                "code": "resources_cleaned" if clean else "arm_cleanup_pending",
+                "physical_release_verified": False}
 
     def snapshot(self):
         return {"simulated": False, "real_enabled": True,
                 "readiness": "UNVERIFIED" if self.fault else "READY",
                 "reason_code": self.fault or "position_unverified",
+                "last_error_code": self.last_error,
                 "queued": int(self.pending is not None),
                 "active": self.pending is not None or self.active_until is not None,
                 "stopped": self.stopped, "closed": self.closed,

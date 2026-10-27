@@ -48,3 +48,6 @@ jobs:
       - run: python -B software/checks/check_camera_media_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_bmo_release_e2e.py --chromium --skip-media
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'

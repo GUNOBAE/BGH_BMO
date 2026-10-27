@@ -1,0 +1,9 @@
+{
+  "python": "3.13.5",
+  "tests": 1327,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "seconds": 82.523,
+  "status": "PASS"
+}

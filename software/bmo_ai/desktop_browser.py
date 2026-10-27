@@ -22,6 +22,7 @@ _MESSAGES = {
     "browser_invalid_config": "Browser configuration is invalid.",
     "browser_environment_missing": "A usable Wayland session is required.",
     "browser_executable_unsafe": "The Chromium executable is unavailable or unsafe.",
+    "native_window_unavailable": "The optional Qt WebEngine native window is unavailable; use the Chromium frontend.",
     "browser_profile_failed": "A private browser profile could not be prepared.",
     "runtime_directory_permissions": "The session runtime directory must be owned by this user with mode 0700. No permissions were changed.",
     "browser_spawn_failed": "The BMO browser could not be started.",
@@ -166,12 +167,18 @@ class DesktopBrowser:
     def __init__(self, url, *, windowed=False, executable=None, runtime_root=None, environ=None,
                  process_factory=None, group_signaler=None, clock=time.monotonic,
                  startup_timeout=10.0, stop_timeout=2.0, observer=None, group_probe=None,
-                 cleanup_clock=time.monotonic, cleanup_sleep=time.sleep):
+                 cleanup_clock=time.monotonic, cleanup_sleep=time.sleep,
+                 frontend="chromium", native_probe=None):
         self._url = _url(url)
-        if (type(windowed) is not bool or not _finite(startup_timeout, 1, 60)
+        if (type(windowed) is not bool or type(frontend) is not str
+                or frontend not in ("chromium", "native", "auto")
+                or native_probe is not None and not callable(native_probe)
+                or not _finite(startup_timeout, 1, 60)
                 or not _finite(stop_timeout, .05, 10) or not all(map(callable, (clock, cleanup_clock, cleanup_sleep)))):
             raise BrowserError("browser_invalid_config")
         self.windowed, self.clock = windowed, clock
+        self.frontend, self._selected_frontend = frontend, None
+        self._native_probe = native_probe
         self.startup_timeout, self.stop_timeout = startup_timeout, stop_timeout
         source = os.environ if environ is None else environ
         self._environ = {name: source.get(name) for name in (
@@ -194,6 +201,7 @@ class DesktopBrowser:
 
     def snapshot(self):
         return {"state": self._state, "code": self._code, "ready": self._ready,
+                "frontend": self.frontend, "selected_frontend": self._selected_frontend,
                 "windowed": self.windowed, "owned_child": self._pgid is not None and not self._cleaned,
                 "private_profile": self._profile_name is not None, "cleanup_complete": self._cleaned,
                 "automatic_relaunch": False, "cleanup": self.cleanup_snapshot()}
@@ -204,7 +212,7 @@ class DesktopBrowser:
         group = "not_acquired" if self._process is None else "released" if self._group_quiet else "unknown"
         profile = ("not_acquired" if not self._profile_acquired else
                    "released" if self._profile_parent is None and self._cleaned else "unknown")
-        return {"version": 1, "scope": "owned_chromium_only",
+        return {"version": 1, "scope": "owned_bmo_native_window" if self._selected_frontend == "native" else "owned_chromium_only",
                 "resources_cleaned": all(item != "unknown" for item in (root, group, profile)),
                 "stage": self._cleanup_stage, "code": self._cleanup_code,
                 "resources": {"root": root, "process_group": group, "private_profile": profile},
@@ -290,25 +298,26 @@ class DesktopBrowser:
         if self._state != "idle":
             raise BrowserError("browser_invalid_config")
         try:
-            candidates = (self._executable,) if self._executable is not None else (
-                "/usr/lib/chromium/chromium", "/usr/bin/chromium", "/usr/bin/chromium-browser")
-            executable = None
-            for candidate in candidates:
-                try:
-                    executable = _executable(candidate)
-                    break
-                except BrowserError:
-                    continue
-            if executable is None:
-                raise BrowserError("browser_executable_unsafe")
             profile = self._profile()
             environment = self._environment(profile)
-            arguments = [executable, "--ozone-platform=wayland", "--user-data-dir=" + str(profile),
-                         "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
-                         "--disable-background-networking", "--disable-component-update", "--disable-sync",
-                         "--disable-extensions", "--mute-audio", "--window-size=800,480", "--app=" + self._url]
-            if not self.windowed:
-                arguments.extend(("--kiosk", "--start-fullscreen"))
+            frontend = self.frontend
+            if frontend in ("native", "auto"):
+                from .desktop_native_window import available
+                present = (self._native_probe or available)(environment)
+                if type(present) is not bool:
+                    raise BrowserError("native_window_unavailable")
+                if frontend == "native" and not present:
+                    raise BrowserError("native_window_unavailable")
+                frontend = "native" if present else "chromium"
+            self._selected_frontend = frontend
+            if frontend == "native":
+                from .desktop_native_window import command
+                try:
+                    arguments = command(self._url, windowed=self.windowed)
+                except ValueError:
+                    raise BrowserError("native_window_unavailable") from None
+            else:
+                arguments = self._chromium_arguments(profile)
             self._process = self._factory(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                           stderr=subprocess.DEVNULL, env=environment, close_fds=True,
                                           start_new_session=True)
@@ -336,6 +345,26 @@ class DesktopBrowser:
             if self._process is None:
                 self._cleanup_profile()
             raise BrowserError(self._code) from None
+
+    def _chromium_arguments(self, profile):
+        candidates = (self._executable,) if self._executable is not None else (
+            "/usr/lib/chromium/chromium", "/usr/bin/chromium", "/usr/bin/chromium-browser")
+        executable = None
+        for candidate in candidates:
+            try:
+                executable = _executable(candidate)
+                break
+            except BrowserError:
+                continue
+        if executable is None:
+            raise BrowserError("browser_executable_unsafe")
+        arguments = [executable, "--ozone-platform=wayland", "--user-data-dir=" + str(profile),
+                     "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
+                     "--disable-background-networking", "--disable-component-update", "--disable-sync",
+                     "--disable-extensions", "--mute-audio", "--window-size=800,480", "--app=" + self._url]
+        if not self.windowed:
+            arguments.extend(("--kiosk", "--start-fullscreen"))
+        return arguments
 
     def mark_ready(self):
         if self._state != "starting":

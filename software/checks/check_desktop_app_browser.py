@@ -69,6 +69,8 @@ counts=dict(hosts=0,browsers=0,browser_reaped=0,greeting_calls=0,greeting_starte
     greeting_ended=0,cache_published=0,brain=0,synthesis=0,players=0,reaped=0,
     forbidden=0,max_players=0,initial_history=0,initial_dialogue_cache=False)
 counts.update(mic_sources=0,mic_closed=0,stt=0,active_mics=0,max_mics=0)
+counts.update(b1_commands=0,b1_pings=0,b1_holds=0,b1_stops=0,b1_updates=0,b1_closed=0,
+              b1_gestures=[],b1_active=False,b1_latched=False)
 hosts=[];players=[];browsers=[];apps=[]
 real_popen,real_open=subprocess.Popen,os.open
 real_synthesis=IntegrationVoice._synthesize
@@ -94,8 +96,9 @@ def clock():
     return time.monotonic()+offset
 
 class FakeBrowser:
-    def __init__(self,url,*,windowed,startup_timeout,clock):
+    def __init__(self,url,*,windowed,startup_timeout,clock,frontend='chromium'):
         assert url.startswith('http://127.0.0.1:')
+        assert frontend in ('auto','native','chromium')
         self.url,self.ready,self.process,self.closed=url,False,None,False
         self.directory=None;browsers.append(self)
     def start(self):
@@ -134,8 +137,13 @@ def host_factory(**settings):
         def create(self,**request):
             counts['brain']+=1;time.sleep(.15)
             return super().create(**request)
-    client=Client([dict(version=1,speech='A synthetic desktop response.',emotion='crying',gesture='none',intent=None)]*3)
-    if scenario.startswith('ptt'):
+    replies=[dict(version=1,speech='A synthetic desktop response.',emotion='crying',gesture='none',intent=None)]*3
+    if scenario=='release':
+        replies=[dict(version=1,speech='A synthetic cheerful reply.',emotion='happy',gesture='wave',intent=None),
+                 dict(version=1,speech='A synthetic surprised reply.',emotion='surprised',gesture='shrug',intent=None),
+                 dict(version=1,speech='A synthetic happy reply.',emotion='happy',gesture='none',intent=None)]
+    client=Client(replies)
+    if scenario.startswith('ptt') or scenario=='release':
         from bmo_ai.features.input.microphone import SyntheticPcmSource
         class Source(SyntheticPcmSource):
             def __init__(self):
@@ -150,7 +158,7 @@ def host_factory(**settings):
                     raise MicError('microphone_tool_unavailable')
                 for frame in super().frames(*args,**kwargs):
                     if scenario=='ptt_slow':time.sleep(.03)
-                    elif scenario=='ptt':time.sleep(.01)
+                    elif scenario in ('ptt','release'):time.sleep(.01)
                     yield frame
             def close(self):
                 if not self.closed_once:
@@ -164,6 +172,35 @@ def host_factory(**settings):
             counts['stt']+=1
             return 'Synthetic button question.'
         settings.update(ptt_source_factory=Source,ptt_transcriber=transcribe)
+    bridge=None
+    if scenario=='release':
+        import importlib.util
+        from bmo_ai.features.motion.legacy_host import LegacyArmLink,LegacyMotionFeature
+        from bmo_ai.features.runtime import RuntimePolicy
+        source=Path(os.environ['PYTHONPATH']).parent/'firmware/staging/bmo_arm_legacy_bridge_v1/bmo_arm_bridge.py'
+        spec=importlib.util.spec_from_file_location('release_b1_controller',source)
+        core=importlib.util.module_from_spec(spec);spec.loader.exec_module(core)
+        class Wire:
+            in_waiting=0
+            reply=b''
+            def write(self,frame):
+                if frame.startswith(b'B1 DO '):
+                    counts['b1_commands']+=1;counts['b1_gestures'].append(frame.decode('ascii').split()[-1])
+                elif frame.startswith(b'B1 PING '):counts['b1_pings']+=1
+                elif frame.startswith(b'B1 HOLD '):counts['b1_holds']+=1
+                elif frame.startswith(b'B1 STOP '):counts['b1_stops']+=1
+                self.reply=bridge.handle(frame);return len(frame)
+            def read_until(self,*args):return self.reply
+            def close(self):counts['b1_closed']+=1
+        wire=Wire()
+        def move(*_):counts['b1_updates']+=1
+        bridge=core.LegacyBridge(wire,'syntheticBoot',move,move,lambda:0,enabled=True,clock=clock)
+        # Exercise the production supervised B1 path, with EVERY device/provider
+        # boundary replaced in this test child. These counters are not Pi proof.
+        settings.update(runtime=RuntimePolicy(simulate=False,conversation_ptt_microphone=True,arms_supervised=True),
+            demo_assets=False,emotion_arms=True,motion=LegacyMotionFeature(
+                LegacyArmLink(wire,motor_permission=lambda:True),clock=clock),
+            voice=IntegrationVoice(settings['config'],client,simulate=True,emit=lambda *_a,**_kw:None))
     host=FeatureHost(**settings,client=client);hosts.append(host)
     if scenario=='media':
         # Pause/next UI gets an explicitly frozen synthetic media clock. The
@@ -171,11 +208,14 @@ def host_factory(**settings):
         host.media.backend.clock=lambda:0.0
         host.session.set_emotion('sad');host.session.set_emotion('auto')
         host.microphone.source_factory=forbidden
-    if scenario.startswith('ptt'):
+    if scenario.startswith('ptt') or scenario=='release':
         original_poll=host.poll
         def poll():
             if (root/'hold-host').exists():return
-            return original_poll()
+            value=original_poll()
+            if bridge is not None:
+                bridge.poll();counts['b1_active']=bool(bridge.steps);counts['b1_latched']=bridge.stopped
+            return value
         host.poll=poll
     original=host.snapshot
     def snapshot():
@@ -196,7 +236,8 @@ def greeting_factory(*,config,simulate):
     else:cache=GreetingCache(cache_path,GreetingSpec.from_config(config))
     if scenario=='greeting_corrupt':
         target=cache_path/'greeting.cache';raw=target.read_bytes();target.write_bytes(raw[:-1]+bytes([raw[-1]^1]))
-    player=GreetingPlayer(config,cache,simulate=True)
+    player=GreetingPlayer(config,cache,simulate=True,
+        startup_chime=scenario=='release',chime_home=root if scenario=='release' else None)
     original=player.play
     def play(*,emit,cancel_check):
         counts['greeting_calls']+=1

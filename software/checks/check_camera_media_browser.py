@@ -24,7 +24,8 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
     if profile!='ci-synthetic':assert before==SCREEN_PROFILES[profile]['sha256']
     checks=[]
     with tempfile.TemporaryDirectory(prefix='bmo-camera-media-browser-') as directory:
-        root=Path(directory);fixture=DesktopFixture(root,profile=profile,face=face,scenario='media')
+        root=Path(directory);fixture=DesktopFixture(root,profile=profile,face=face,scenario='media',
+                                                   extra_args=('--usb-gamepad',))
         try:
             with sync_playwright() as pw:
                 browser=pw.chromium.launch(executable_path=chromium,headless=True,
@@ -36,7 +37,12 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     page.set_default_timeout(8000)
                     page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
                     page.add_init_script("""window.__audioCalls=0;HTMLMediaElement.prototype.play=function(){
-                        window.__audioCalls++;throw Error('Browser audio forbidden')};""")
+                        window.__audioCalls++;throw Error('Browser audio forbidden')};
+                        window.__padCalls=0;window.__padButtons=[];window.__padConnected=true;
+                        Object.defineProperty(navigator,'getGamepads',{value:()=>{
+                            window.__padCalls++;return window.__padConnected?[{index:0,connected:true,
+                            mapping:'standard',buttons:Array.from({length:16},(_,i)=>({pressed:window.__padButtons.includes(i)})),axes:[0,0]}]:[];
+                        }});""")
                     def wait_state(predicate,timeout=8):
                         deadline=time.monotonic()+timeout
                         while time.monotonic()<deadline:
@@ -57,6 +63,8 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     assert not page.locator('dialog[open]').count()
                     assert not page.locator('#video-indicator').is_visible()
                     assert fixture.features()['test_fixture']['forbidden']==0
+                    assert initial['usb_gamepad']['enabled'] and initial['usb_gamepad']['device_opens']==0
+                    assert page.evaluate('()=>window.__padCalls')==0
                     checks.append('default screen remains the unchanged face; opening app creates no video store/camera/PCM/brain turn')
 
                     panel('video-menu','video-dialog')
@@ -106,8 +114,78 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     wait_state(lambda s:s['mode']=='game_menu')
                     page.locator('#game-back').click()
                     wait_state(lambda s:s['mode']=='conversation')
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
                     assert fixture.features()['emotion']=='sad' and fixture.features()['audio_owner'] is None
                     checks.append('fixture game launches and returns through the existing InputRouter; Enter/B do not open PTT and emotion/history persist')
+
+                    # The real production Gamepad API reader is replaced only
+                    # at navigator.getGamepads. Server mode/action routing and
+                    # timing remain the application used on the Pi.
+                    calls=page.evaluate('()=>window.__padCalls')
+                    page.evaluate('()=>{window.__padButtons=[9];}')
+                    page.wait_for_timeout(300)
+                    assert page.evaluate('()=>window.__padCalls')==calls
+                    assert fixture.features()['test_fixture']['brain']==0
+                    panel('games','game-menu')
+                    page.wait_for_function('()=>window.__padCalls>0')
+                    page.wait_for_timeout(200)
+                    assert fixture.features()['mode']=='game_menu'  # held at activation is suppressed
+                    page.evaluate('()=>{window.__padButtons=[];}');page.wait_for_timeout(150)
+                    page.evaluate('()=>{window.__padButtons=[0];}')
+                    wait_state(lambda s:s['mode']=='game')
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='game'")
+                    page.evaluate('()=>{window.__padButtons=[];}');page.wait_for_timeout(150)
+                    page.evaluate('()=>{window.__padButtons=[1];}');page.wait_for_timeout(150)
+                    state=fixture.features()
+                    assert state['usb_gamepad']['accepted_edges']>=2
+                    assert state['mode']=='game' and state['test_fixture']['brain']==0
+                    checks.append('opt-in standard browser pad is unpolled in conversation, suppresses held activation, launches a fixture and forwards B through game-only production routing')
+
+                    page.evaluate('()=>{window.__padConnected=false;}')
+                    wait_state(lambda s:s['mode']=='game_menu' and s['audio_owner'] is None)
+                    assert fixture.features()['usb_gamepad']['held']==[]
+                    page.evaluate('()=>{window.__padConnected=true;window.__padButtons=[];}')
+                    page.wait_for_timeout(180)
+                    page.evaluate('()=>{window.__padButtons=[0];}')
+                    wait_state(lambda s:s['mode']=='game')
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='game'")
+                    page.evaluate('()=>{window.__padButtons=[];}');page.wait_for_timeout(150)
+                    page.evaluate('()=>{window.__padButtons=[8,9];}')
+                    wait_state(lambda s:s['mode']=='game_menu',timeout=4)
+                    assert fixture.features()['usb_gamepad']['held']==[]
+                    assert fixture.features()['test_fixture']['brain']==0
+                    checks.append('pad disconnect releases held edges and game audio; Start+Select hold uses existing game exit and cannot trigger GP8 conversation')
+
+                    page.evaluate('()=>{window.__padButtons=[];}');page.wait_for_timeout(180)
+                    page.evaluate('()=>{window.__padButtons=[0];}')
+                    wait_state(lambda s:s['mode']=='game')
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='game'")
+                    page.evaluate('()=>{window.__padButtons=[];}');page.wait_for_timeout(150)
+                    page.evaluate('()=>{window.__padButtons=[14];}')
+                    wait_state(lambda s:'LEFT' in s['usb_gamepad']['held'])
+                    page.evaluate("()=>window.dispatchEvent(new Event('blur'))")
+                    wait_state(lambda s:s['mode']=='game_menu')
+                    assert fixture.features()['usb_gamepad']['held']==[]
+                    page.evaluate('()=>{window.__padButtons=[];}')
+                    page.locator('#game-back').click()
+                    wait_state(lambda s:s['mode']=='conversation')
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
+                    calls=page.evaluate('()=>window.__padCalls')
+                    page.wait_for_timeout(200)
+                    assert page.evaluate('()=>window.__padCalls')==calls
+                    assert fixture.features()['test_fixture']['brain']==0
+                    floor=fixture.features()['usb_gamepad']['sequence_floor']
+                    assert floor>5
+                    page.reload(wait_until='domcontentloaded')
+                    page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'&&BMODesktop.features?.mode==='conversation'")
+                    panel('games','game-menu');page.wait_for_timeout(180)
+                    page.evaluate('()=>{window.__padButtons=[0];}')
+                    wait_state(lambda s:s['mode']=='game' and s['usb_gamepad']['sequence_floor']>floor)
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='game'")
+                    page.keyboard.press('Escape');wait_state(lambda s:s['mode']=='game_menu')
+                    page.locator('#game-back').click();wait_state(lambda s:s['mode']=='conversation')
+                    assert fixture.features()['test_fixture']['brain']==0
+                    checks.append('blur/mode return neutralize gamepad; browser reload resumes above server sequence floor without stale input or another greeting')
 
                     panel('music-menu','music-dialog')
                     page.locator('#music-list button').first.click()

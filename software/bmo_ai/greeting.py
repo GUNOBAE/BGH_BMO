@@ -12,10 +12,15 @@ from .integration_voice import IntegrationVoice
 
 
 class GreetingPlayer:
-    def __init__(self, config, cache, *, simulate=False, player=None):
-        if not isinstance(cache, GreetingCache) or type(simulate) is not bool:
+    def __init__(self, config, cache, *, simulate=False, player=None, startup_chime=False,
+                 chime_home=None):
+        if (not isinstance(cache, GreetingCache) or type(simulate) is not bool
+                or type(startup_chime) is not bool):
             raise GreetingError('greeting_corrupt')
         self.cache, self.simulate = cache, simulate
+        self.startup_chime = startup_chime
+        self._chime_home = chime_home
+        self._chime_attempted = False
         self._cancelled, self._closed = Event(), Event()
         self.voice = IntegrationVoice(config, None, emit=lambda *a, **k: None,
                                       simulate=simulate, player=player)
@@ -42,6 +47,16 @@ class GreetingPlayer:
             self.voice._check(cancel_check)
         try:
             check()
+            if self.startup_chime and not self._chime_attempted:
+                # One boot sound per app owner, not on cached-greeting retry.
+                # Same player/focus lease; no browser audio or voice API route.
+                self._chime_attempted = True
+                from .startup_sound import startup_chime_asset
+                with startup_chime_asset(home=self._chime_home) as (path, info):
+                    self.voice._play(path, 'local_startup_chime', info, (), check,
+                        lambda *_a, **_kw: None, None,
+                        dict(emotion='neutral', emotion_validation='none', notice=False))
+                check()
             with self.cache.load(simulate=self.simulate, require_approved=not allow_unapproved,
                                  cancel_check=check) as asset:
                 expression = dict(emotion='happy', emotion_validation='validated', notice=False)

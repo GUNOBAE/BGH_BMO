@@ -109,7 +109,10 @@ class B1DispatchRegressionTests(unittest.TestCase):
             self.motion.set_context("session", "newturn", 2)
             return True
         self.link.motor_permission = permission
-        self.assertEqual(self.motion.poll(), ())
+        event, = self.motion.poll()
+        self.assertEqual((event.request_id, event.data["status"]), ("gesture", "cancelled"))
+        self.assertEqual(event.data["completion"], "not_started")
+        self.assertFalse(event.data["executed"])
         self.assertIsNone(self.motion.fault)
         self.assertFalse(any(packet.startswith(b"B1 DO ") for packet in self.port.sent))
 
@@ -128,6 +131,9 @@ class B1DispatchRegressionTests(unittest.TestCase):
         result = self.motion.submit("wave", request_id="gesture", session_id="session",
             turn_id="turn", mode_generation=1, started_at=0)
         self.assertEqual(result.status, "rejected")
+        event, = self.motion.poll()
+        self.assertEqual((event.code, event.data["status"]), ("gesture_cancelled", "cancelled"))
+        self.assertFalse(event.data["executed"])
         self.assertEqual(self.motion.poll(), ())
         self.assertEqual(self.port.sent, [])
 
