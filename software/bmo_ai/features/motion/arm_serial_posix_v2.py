@@ -32,11 +32,24 @@ def validate_reviewed_install(source_core, reviewed_sha):
     if (type(reviewed_sha) is not str or len(reviewed_sha) != 64
             or any(c not in "0123456789abcdef" for c in reviewed_sha)):
         raise ArmPortUnavailable("arm_reviewed_hash_required")
-    expected = TRIAL.read_bytes()
-    actual = (MOUNT / "code.py").read_bytes()
-    if (hashlib.sha256(expected).hexdigest() != reviewed_sha
-            or expected != actual):
+    from .gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
+    source = (Path(__file__).resolve().parents[4]
+              / "firmware/staging/bmo_arm_supervised_v1/code.py").read_text(encoding="utf-8")
+    if (source.count("ARM_OUTPUT_BUILD_ENABLED = False") != 1
+            or source.count("REVIEWED_CALIBRATION = None") != 1
+            or "controller.manual_toggle()" not in source):
+        raise ArmPortUnavailable("arm_firmware_template_unreviewed")
+    exact_source = source.replace("ARM_OUTPUT_BUILD_ENABLED = False",
+                                  "ARM_OUTPUT_BUILD_ENABLED = True", 1)
+    exact_source = exact_source.replace("REVIEWED_CALIBRATION = None",
+                      "REVIEWED_CALIBRATION = " + repr(LEGACY_REVIEWED_LIMITS), 1)
+    expected = exact_source.encode("utf-8")
+    # Comparison covers the *full source bytes*, not just sentinel substrings.
+    if (expected != TRIAL.read_bytes()
+            or hashlib.sha256(expected).hexdigest() != reviewed_sha
+            or expected != (MOUNT / "code.py").read_bytes()):
         raise ArmPortUnavailable("arm_firmware_hash_mismatch")
+    actual = expected
     if source_core.read_bytes() != (MOUNT / "safe_arm_core.py").read_bytes():
         raise ArmPortUnavailable("arm_firmware_core_mismatch")
     boot = (MOUNT / "boot.py").read_text(encoding="utf-8")
