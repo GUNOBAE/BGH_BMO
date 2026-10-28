@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+from dataclasses import replace
 from pathlib import Path
 import struct
 import sys
@@ -86,6 +87,7 @@ class IntegrationVoice:
         self.expression_metadata = {"emotion": "neutral", "emotion_validation": "none"}
         self.expressive = bool(expressive)
         self.character_life = bool(character_life)
+        self.character_bank = None
         self.on_timing, self.timing_clock = on_timing, timing_clock
         self._expressive_policy = ExpressivePolicy()
 
@@ -195,6 +197,89 @@ class IntegrationVoice:
             fallback = text if english else OFFLINE_KOREAN_UNSUPPORTED_EN
             return self._synthesize(fallback, check, force_piper=True, notice=notice or not english)
 
+    def _cached_reaction(self, spoken, metadata, delivery, check):
+        """A verified local prefix candidate; selection never generates audio.
+
+        Keep the original live direction when selection/loading is unavailable.
+        A selected prefix removes its one-shot Fish cue, without a second API
+        call. If later PCM composition fails, speech keeps its emotion delivery
+        and reports no short reaction rather than claiming an unheard prefix.
+        """
+        if (not self.character_life or self.character_bank is None or delivery is None
+                or delivery.reaction == "none" or not delivery.mechanism.startswith("fish_character_")):
+            return None, None, delivery
+        from .character_director import CharacterPlan
+        from .voice_bank import VoiceBank, VoiceBankError, catalog
+        bank = self.character_bank
+        if (not isinstance(bank, VoiceBank) or any(
+                getattr(bank.config, key, None) != getattr(self.config, key, None)
+                for key in ("fish_voice_id", "fish_name_mode", "fish_gain", "fish_delivery"))):
+            return None, None, delivery
+        asset = None
+        try:
+            plan = CharacterPlan.from_public(metadata.get("character_plan"))
+            if (metadata.get("emotion_validation") != "validated" or plan.sensitive_context
+                    or plan.source not in ("dialogue", "acting") or plan.reaction_id != delivery.reaction
+                    or plan.face_emotion != delivery.emotion
+                    or delivery.reaction in ("sob", "playful_puff") and not plan.explicit_acting):
+                return None, None, delivery
+            clip = {"chuckle": "reaction_03", "gasp": "reaction_05",
+                    "playful_puff": "reaction_07", "sob": "reaction_11"}.get(delivery.reaction)
+            if clip is None:
+                return None, None, delivery
+            context = ("acting" if delivery.reaction in ("sob", "playful_puff") else
+                       "dialogue" if delivery.reaction == "gasp" else
+                       "celebration" if plan.delivery_id in ("excited", "proud") else "playful")
+            # select() remains the sole approval, context and cooldown gate.
+            other = tuple(c for c, row in catalog().items() if row["category"] == "reaction" and c != clip)
+            selected = bank.select("reaction", emotion=plan.face_emotion, context=context, recent=other)
+            check()
+            if selected != clip:
+                return None, None, delivery
+            asset = bank.load(clip, require_approved=True, simulate=self.simulate, cancel_check=check)
+            quiet_metadata = dict(metadata, character_plan=replace(plan, reaction_id="none").public())
+            plain = self._expressive_policy.plan(spoken, quiet_metadata, model=self.config.fish_model)
+            if plain.reaction != "none" or plain.mechanism != delivery.mechanism:
+                asset.close()
+                return None, None, delivery
+            return asset, clip, replace(delivery, text=plain.text)
+        except (VoiceBankError, audio.AudioError, ValueError, TypeError, OSError):
+            if asset is not None:
+                asset.close()
+            return None, None, delivery
+
+    def _compose_reaction(self, asset, speech, check):
+        """Join already gained PCM snapshots, with no resampling or extra gain."""
+        output = None
+        try:
+            check()
+            with wave.open(str(asset.path), "rb") as prefix, wave.open(str(speech), "rb") as answer:
+                formats = lambda value: (value.getnchannels(), value.getsampwidth(),
+                                          value.getframerate(), value.getcomptype())
+                if (formats(prefix) != formats(answer) or prefix.getcomptype() != "NONE"
+                        or prefix.getnframes()/prefix.getframerate() > 3.
+                        or (prefix.getnframes()+answer.getnframes())/answer.getframerate() > 300.):
+                    return None
+                output = audio._new_wav(audio.AudioPlaybackError)
+                with wave.open(str(output), "wb") as joined:
+                    joined.setnchannels(answer.getnchannels());joined.setsampwidth(answer.getsampwidth())
+                    joined.setframerate(answer.getframerate())
+                    for source in (prefix, answer):
+                        while True:
+                            check()
+                            block = source.readframes(4096)
+                            if not block:
+                                break
+                            joined.writeframesraw(block)
+            audio._wav_info(output)
+            result, output = output, None
+            return result
+        except (audio.AudioError, OSError, EOFError, wave.Error, ValueError, ZeroDivisionError):
+            return None
+        finally:
+            if output is not None:
+                audio._discard(output, suppress=True)
+
     def speak(self, text, *, on_playback_start=None, _force_piper=False, _notice=False):
         if not isinstance(text, str):
             raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
@@ -208,6 +293,8 @@ class IntegrationVoice:
         cancellation, emit = self.cancel_check, self.emit
         check = lambda: self._check(cancellation)
         raw = output = None
+        reaction_asset = reaction_clip = None
+        cached_reaction = False
         delivery = None
         metadata = dict(self.expression_metadata) if type(self.expression_metadata) is dict else {}
         source = "synthetic" if self.simulate else "piper" if _force_piper else "fish"
@@ -218,19 +305,32 @@ class IntegrationVoice:
                 delivery = self._expressive_policy.plan(
                     spoken_bmo_name(text, self.config.fish_name_mode),
                     metadata, model=self.config.fish_model)
+                reaction_asset, reaction_clip, delivery = self._cached_reaction(
+                    spoken_bmo_name(text, self.config.fish_name_mode), metadata, delivery, check)
             settings = {} if delivery is None else {"delivery": delivery}
             raw, source, notice = self._synthesize(text, check, force_piper=_force_piper,
                                                   notice=_notice, **settings)
+            # A synchronous provider may finish after cancellation. Discard its
+            # late result before any prepared/start event or process creation.
+            check()
+            output = attenuated_copy(raw, self.config.fish_gain)
+            if reaction_asset is not None:
+                joined = (self._compose_reaction(reaction_asset, output, check)
+                          if source in ("fish", "synthetic") and not notice else None)
+                if joined is not None:
+                    audio._discard(output, suppress=True)
+                    output, cached_reaction = joined, True
+                else:
+                    delivery = replace(delivery, reaction="none")
             expression = self._expression(notice=notice, metadata=metadata)
             if delivery is not None:
                 expression.update(
                     voice_emotion=delivery.emotion if source == "fish" else "neutral",
                     reaction=delivery.reaction if source == "fish" else "none",
                     voice_style=delivery.mechanism if source == "fish" else source)
-            # A synchronous provider may finish after cancellation. Discard its
-            # late result before any prepared/start event or process creation.
-            check()
-            output = attenuated_copy(raw, self.config.fish_gain)
+            if self.character_life and self.character_bank is not None:
+                expression.update(cached_reaction=cached_reaction,
+                                  cached_reaction_id=reaction_clip if cached_reaction else None)
             info = audio._wav_info(output)
             cues = tuple(dict(cue) for cue in wav_cues(output))
             if source == "fish":
@@ -239,6 +339,11 @@ class IntegrationVoice:
             check()
             if delivery is not None and source == "fish":
                 self._expressive_policy.completed(delivery)
+            if cached_reaction:
+                try:
+                    self.character_bank.completed(reaction_clip)
+                except Exception:
+                    pass  # Successful dialogue never fails on selection-history IO.
             # A failed/cancelled replacement keeps the previous successful WAV.
             # Promotion transfers the final gained file, without another copy.
             previous = None
@@ -257,6 +362,8 @@ class IntegrationVoice:
             emit("error", source=source)
             raise
         finally:
+            if reaction_asset is not None:
+                reaction_asset.close()
             for path in (output, raw):
                 if path is not None:
                     audio._discard(Path(path), suppress=True)

@@ -246,8 +246,9 @@ class FeatureResponses:
                 kind = content.get("type") if isinstance(content, dict) else getattr(content, "type", None)
                 if kind == "refusal":
                     raise ExpressionFormatError()
-        reply = _requested_reaction(
-            decode_feature_reply(getattr(response, "output_text", None)), request)
+        reply = decode_feature_reply(getattr(response, "output_text", None))
+        if not self.character_life:
+            reply = _requested_reaction(reply, request)
         if self.character_life:
             plan = self.director.resolve(reply.emotion, reply.reaction, reply.gesture,
                 metadata=reply.character_metadata, message=latest_user_text(request), has_intent=reply.intent is not None)

@@ -48,6 +48,38 @@ def _path(value):
         raise DesktopInstallError("desktop_invalid_config") from None
 
 
+def _character_arguments(options, *, simulate, ptt_microphone):
+    """Persist only explicit character opt-ins; never keys or arbitrary flags."""
+    if options is None:
+        return []
+    booleans = ("character_life", "ptt_trace", "plain_voice", "idle_voice", "wake_word")
+    choices = {"ptt_vad_profile": ("baseline", "balanced", "quick"),
+               "presence_mode": ("normal", "quiet", "sleep", "off")}
+    paths = ("voice_bank_directory", "wake_model_manifest")
+    if (type(options) is not dict
+            or set(options) - {*booleans, *choices, *paths}
+            or any(type(options[key]) is not bool for key in booleans if key in options)
+            or any(type(options[key]) is not str or options[key] not in values
+                   for key, values in choices.items() if key in options)
+            or options.keys() - {"character_life"} and options.get("character_life") is not True
+            or options.get("wake_word") is True and not (ptt_microphone or simulate)
+            or "wake_model_manifest" in options and (options.get("wake_word") is not True or simulate)):
+        raise DesktopInstallError("desktop_invalid_config")
+    normalized_paths = {key: _path(options[key]) for key in paths if key in options}
+    result = []
+    # This stable order is independent of dictionary insertion order.
+    for key in ("character_life", "ptt_trace", "ptt_vad_profile", "plain_voice",
+                "voice_bank_directory", "idle_voice", "presence_mode", "wake_word", "wake_model_manifest"):
+        if key not in options:
+            continue
+        flag = "--" + key.replace("_", "-")
+        if key in booleans:
+            if options[key]: result.append(flag)
+        else:
+            result.extend((flag, str(normalized_paths[key]) if key in paths else options[key]))
+    return result
+
+
 def _identity(info):
     return info.st_dev, info.st_ino
 
@@ -122,7 +154,8 @@ def _source(path, *, limit, executable=False):
 def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
                    frontend="auto", usb_gamepad=False, music_directory=None,
                    music_supervised=False, startup_chime=True, camera_supervised=False,
-                   photo_directory=None, camera_video_supervised=False, video_directory=None):
+                   photo_directory=None, camera_video_supervised=False, video_directory=None,
+                   character_options=None):
     if (any(type(value) is not bool for value in (simulate, ptt_microphone, usb_gamepad, music_supervised, startup_chime,
                                                        camera_supervised, camera_video_supervised))
             or type(frontend) is not str or frontend not in ("auto", "native", "chromium")
@@ -131,6 +164,7 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
             or photo_directory is not None and not camera_supervised
             or camera_video_supervised and (not camera_supervised or video_directory is None)):
         raise DesktopInstallError("desktop_invalid_config")
+    character_arguments = _character_arguments(character_options, simulate=simulate, ptt_microphone=ptt_microphone)
     source = os.environ if environ is None else environ
     project = _path(project_root if project_root is not None else Path(__file__).resolve().parents[2])
     home = _path(home if home is not None else source.get("HOME", Path.home()))
@@ -173,6 +207,7 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
         command.extend(("--video-directory", str(_path(video_directory))))
     if camera_video_supervised:
         command.append("--camera-video-supervised")
+    command.extend(character_arguments)
     template = ("[Desktop Entry]\nType=Application\nName=BMO\n"
                 "Comment=Start the BMO desktop app manually\n"
                 "Exec=" + " ".join('"' + value + '"' for value in command) + "\n"
@@ -216,10 +251,11 @@ def _existing(directory, name, raw, mode):
 def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate=False, ptt_microphone=False,
                          frontend="auto", usb_gamepad=False, music_directory=None,
                          music_supervised=False, startup_chime=True, camera_supervised=False,
-                   photo_directory=None, camera_video_supervised=False, video_directory=None):
+                   photo_directory=None, camera_video_supervised=False, video_directory=None,
+                   character_options=None):
     _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
-        camera_supervised, photo_directory, camera_video_supervised, video_directory)
+        camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options)
     rows = []
     for path, raw, mode in targets:
         directory = _directory(path.parent, home=user_home)
@@ -252,7 +288,8 @@ def _remove_owned(directory, name, identity):
 def install_desktop(*, project_root=None, home=None, environ=None, simulate=False, install=False, ptt_microphone=False,
                     frontend="auto", usb_gamepad=False, music_directory=None,
                     music_supervised=False, startup_chime=True, camera_supervised=False,
-                   photo_directory=None, camera_video_supervised=False, video_directory=None):
+                   photo_directory=None, camera_video_supervised=False, video_directory=None,
+                   character_options=None):
     if type(install) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     if not install:
@@ -261,10 +298,11 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                                     usb_gamepad=usb_gamepad, music_directory=music_directory,
                                     music_supervised=music_supervised, startup_chime=startup_chime,
                                     camera_supervised=camera_supervised, photo_directory=photo_directory,
-                                    camera_video_supervised=camera_video_supervised, video_directory=video_directory)
+                                    camera_video_supervised=camera_video_supervised, video_directory=video_directory,
+                                    character_options=character_options)
     _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
-        camera_supervised, photo_directory, camera_video_supervised, video_directory)
+        camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options)
     if not verified:
         raise DesktopInstallError("desktop_launcher_pending")
     created, descriptors, stages, published = [], [], [], []

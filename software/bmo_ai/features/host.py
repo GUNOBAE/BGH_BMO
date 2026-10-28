@@ -87,19 +87,28 @@ class FeatureHost:
                  ptt_trace=False, ptt_ambient_profile=None, expressive_voice=False,
                  camera_supervised=False, photo_directory=None, camera_video_supervised=False,
                  ptt_speech_safe=False, emotion_arms=False, music_supervised=False,
-                 usb_gamepad=False, character_life=False, ptt_vad_profile="baseline"):
+                 usb_gamepad=False, character_life=False, ptt_vad_profile="baseline",
+                 wake_word=False, wake_model_manifest=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
         from .motion import MotionFeature, IMUHealthMonitor
         self.runtime = runtime if runtime is not None else RuntimePolicy()
-        if type(character_life) is not bool or ptt_vad_profile not in ("baseline", "balanced", "quick"):
+        if (type(character_life) is not bool or type(wake_word) is not bool
+                or ptt_vad_profile not in ("baseline", "balanced", "quick")):
             raise FeatureError("invalid_character_configuration")
         self.character_life = character_life
         self.ptt_vad_profile = ptt_vad_profile
         self._last_character_plan = None
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
+        if (wake_word and (not character_life or not self.runtime.conversation_ptt_microphone)
+                or wake_model_manifest is not None and (not wake_word
+                    or not isinstance(wake_model_manifest, (str, Path))
+                    or not 0 < len(str(wake_model_manifest)) <= 4096)):
+            raise FeatureError("wake_word_requires_character_microphone")
+        self._wake_requested, self._wake_armed = wake_word, False
+        self._microphone_broker = None
         if any(type(value) is not bool for value in (music_supervised, usb_gamepad)):
             raise FeatureError("invalid_runtime")
         if music_supervised:
@@ -147,6 +156,8 @@ class FeatureHost:
         self.clock = clock
         self.modes, self.audio = ModeManager(), AudioFocus()
         self.gaze = GazeArbiter(clock=clock)
+        from ..character_presence import IdleGaze
+        self._idle_gaze = IdleGaze(clock=clock) if character_life else None
         self._temporary = TemporaryDirectory(prefix="bmo-feature-fixtures-")
         root = Path(self._temporary.name)
         content, photos = root / "media", root / "photos"
@@ -256,6 +267,7 @@ class FeatureHost:
         self._ptt_last_stage = "microphone"
         self._ptt_generation, self._ptt_lease, self._last_ptt_press = 0, None, None
         self._ptt_turn_active = False
+        self._ptt_handoff_pending = False
         self._ptt_cleanup_fault = False
         if self.runtime.conversation_ptt_microphone:
             from .input.microphone import MicPcmSource, SyntheticPcmSource, PttRecorder
@@ -265,6 +277,17 @@ class FeatureHost:
                 source = lambda: SyntheticPcmSource(clock=clock)
             else:
                 source = lambda: MicPcmSource(self.config.mic_device, live_opt_in=True, clock=clock)
+            if wake_word:
+                from .input.wake_word import LocalWakeDetector
+                from .input.microphone_owner import MicrophoneBroker
+                self.wake_word = LocalWakeDetector(wake_model_manifest)
+                self._microphone_broker = MicrophoneBroker(source, detector=self.wake_word,
+                    on_trigger=self._queue_wake, clock=clock,
+                    playback_active=lambda: self.session.snapshot()["playback"] == "started"
+                        or self.audio.owner is not None
+                        and not (self._ptt_turn_active and self.audio.lease is self._ptt_lease),
+                    allowed=self._broker_allowed)
+                source = self._microphone_broker.source_factory
             self._ptt_transcriber = ptt_transcriber or (
                 (lambda *_a, **_kw: "Synthetic button question.") if self.runtime.simulate else None)
             self.microphone = PttRecorder(self.audio, source, clock=clock,
@@ -277,6 +300,87 @@ class FeatureHost:
                 **self._ptt_settings(ptt_ambient_profile, ptt_speech_safe))
         self.motion.set_context(self.session.session_id, "idle", self.modes.generation)
         self._refresh()
+
+    def _broker_allowed(self):
+        if self._wake_allowed():
+            return True
+        # A worker may be scheduled after admission but before it has claimed
+        # its finite stream cursor. Retain the existing wake reader/preroll in
+        # that narrow handoff; trigger admission remains strictly idle-only.
+        if (not self._ptt_handoff_pending or not self._ptt_turn_active
+                or self._closed or not self._wake_requested or not self._wake_armed
+                or self._ptt_cleanup_fault or self.modes.mode != "conversation"
+                or self.modes.transitioning or self._transition_target is not None):
+            return False
+        try:
+            return (not self.video.snapshot()["recording"]
+                and self.session.snapshot()["playback"] != "started"
+                and (self.audio.owner is None or self._ptt_lease is not None
+                     and self.audio.lease is self._ptt_lease))
+        except Exception:
+            return False
+
+    def _wake_allowed(self):
+        """Fail closed while boot, foreground activity or any audio owns input."""
+        if (self._closed or not self._wake_requested or not self._wake_armed
+                or self._ptt_cleanup_fault or self._ptt_turn_active
+                or self.modes.mode != "conversation" or self.modes.transitioning
+                or self._transition_target is not None or self.session.busy
+                or self.audio.owner is not None):
+            return False
+        try:
+            return self.session.snapshot()["phase"] == "idle" and not self.video.snapshot()["recording"]
+        except Exception:
+            return False
+
+    def _queue_wake(self):
+        # Called by the broker reader. It cannot run a session or touch owner-
+        # thread state; poll() rechecks its receipt age and activity guards.
+        if (not self._wake_allowed() or self._microphone_broker is None
+                or not self._microphone_broker.snapshot()["wake_enabled"]
+                or not self.wake_word.snapshot().get("enabled", False)):
+            return False
+        try:
+            self.queue_command("wake_" + uuid4().hex, HostControl("ptt"), _wake=True)
+            return True
+        except FeatureError:
+            return False
+
+    def enable_wake_word(self):
+        """Explicit post-boot hook. Missing custom assets keep finite GP8 PTT."""
+        if (self._closed or self._ptt_cleanup_fault or not self._wake_requested
+                or self._microphone_broker is None):
+            return False
+        self._wake_armed = True
+        enabled = self._microphone_broker.start_wake(live_opt_in=True)
+        self._refresh()
+        return enabled
+
+    def disable_wake_word(self, *, refresh=True):
+        self._wake_armed = False
+        clean = self._microphone_broker.stop_wake() if self._microphone_broker is not None else True
+        if not clean:
+            self._ptt_cleanup_fault = True
+        if refresh and not self._closed:
+            self._refresh()
+        return clean
+
+    def _tick_idle_gaze(self):
+        if self._idle_gaze is None:
+            return
+        face = self.session.snapshot()
+        eligible = (not self._closed and not self._ptt_cleanup_fault
+            and self.modes.mode == "conversation" and not self.modes.transitioning
+            and not self.session.busy and self.audio.owner is None
+            and face["phase"] == "idle" and not self.video.snapshot()["recording"])
+        owner = self.gaze.resolve(phase=face["phase"], generation=self.modes.generation)["owner"]
+        higher = owner in ("manual", "camera", "reaction", "dialogue", "native")
+        proposal = self._idle_gaze.tick(eligible=eligible, higher_owner=higher)
+        if not eligible or higher:
+            self.gaze.clear("idle")
+        elif proposal is not None:
+            self.gaze.offer("idle", *proposal, generation=self.modes.generation,
+                            expires_at=self.clock() + 2.)
 
     def _ptt_settings(self, profile, speech_safe):
         if profile is None:
@@ -546,11 +650,14 @@ class FeatureHost:
             result = HostResult(request, "failed", "operation_failed")
         return self._finish_result(result)
 
-    def queue_command(self, nonce, intent):
+    def queue_command(self, nonce, intent, *, _wake=False):
         """Thread-safe HTTP admission; only poll() executes side effects."""
         if self._closed:
             raise FeatureError("feature_closed")
         if not request_id_ok(nonce) or not isinstance(intent, (HostIntent, HostControl)):
+            raise FeatureError("invalid_request")
+        if (type(_wake) is not bool or _wake and not
+                (isinstance(intent, HostControl) and intent.action == "ptt")):
             raise FeatureError("invalid_request")
         request = "web_" + uuid5(self._namespace, nonce).hex
         fingerprint = json.dumps(intent.public(), sort_keys=True)
@@ -590,7 +697,9 @@ class FeatureHost:
                 self._commands.put_nowait((1, self._command_sequence, request, intent, generation, self._command_epoch))
             except Full:
                 raise FeatureError("command_queue_full") from None
-            self._records[request] = {"fingerprint": fingerprint, "result": result}
+            self._records[request] = {"fingerprint": fingerprint, "result": result,
+                                      "received_at": self.clock(), "wake": _wake,
+                                      "input_turn": self.session.worker.turn}
             return dict(result)
 
     def _await_voice_cleanup(self, request, action):
@@ -612,7 +721,9 @@ class FeatureHost:
                 return self._remember(HostResult(request, "running", "question_started"))
             elif action == "ptt":
                 previous_turn = self.session.worker.turn
-                if not self.ptt_button():
+                with self._records_lock:
+                    received = self._records.get(request, {}).get("received_at")
+                if not self.ptt_button(received_at=received):
                     raise FeatureError("microphone_opt_in_required" if self.microphone is None else "ptt_unavailable")
                 if self.session.worker.turn != previous_turn:
                     self._voice_control_request = request
@@ -694,7 +805,12 @@ class FeatureHost:
                     return self._remember(HostResult(request, "succeeded", "ok", simulated=False,
                         executed=True, completed=True, completion="camera_request_applied"))
             elif action == "input":
-                outcome = self.inputs.route(value["key"], value["pressed"], now=self.clock())
+                if value == {"key": "TALK", "pressed": True} and self.microphone is not None:
+                    with self._records_lock:
+                        received = self._records.get(request, {}).get("received_at")
+                    outcome = self.ptt_button(received_at=received)
+                else:
+                    outcome = self.inputs.route(value["key"], value["pressed"], now=self.clock())
                 if outcome is False and value["pressed"] and value["key"] in ("STOP", "TALK"):
                     if value["key"] == "STOP" and self.session.busy and self.modes.mode == "conversation":
                         return self._await_voice_cleanup(request, "stop")
@@ -794,6 +910,7 @@ class FeatureHost:
             self.audio.release(self._voice_lease)
             self._voice_lease = self._ptt_lease = None
             self._ptt_turn_active = False
+            self._ptt_handoff_pending = False
             raise
         if not started:
             self.audio.release(self._voice_lease)
@@ -806,7 +923,7 @@ class FeatureHost:
             return False
         return self.ptt_button() if self.microphone is not None else self.start_question()
 
-    def ptt_button(self):
+    def ptt_button(self, *, received_at=None):
         """One edge starts input; another ends capture or cancels output.
 
         HID Enter identity is verified by the human later. No RP2040 pin or
@@ -828,17 +945,20 @@ class FeatureHost:
         if self.audio.owner is not None:
             return False
         if self.turn_diagnostics.enabled:
-            self.turn_diagnostics.mark_input(now)
+            # The HTTP/control queue's clock belongs to this host, unlike the
+            # unmeasured physical GP8 edge or a browser's separate clock.
+            self.turn_diagnostics.mark_input(now if received_at is None else received_at)
         self._ptt_generation += 1
         generation = self._ptt_generation
         capture_id = "ptt_" + uuid4().hex
+        self._ptt_handoff_pending = True
         self._ptt_turn_active = True
         def provider(check):
-            check()
             self._ptt_last_stage = "microphone"
-            self.turn_diagnostics.record("microphone", "started", outcome="started",
-                                         sample_rate=16000, channels=1)
             try:
+                check()
+                self.turn_diagnostics.record("microphone", "started", outcome="started",
+                                             sample_rate=16000, channels=1)
                 capture = self.microphone.capture(capture_id, generation=generation, cancel_check=check)
             except TurnCancelled:
                 self.turn_diagnostics.record("microphone", "cancelled", outcome="cancelled")
@@ -848,6 +968,10 @@ class FeatureHost:
                 stage = "capture_close" if code in ("pcm_cleanup_failed", "pcm_cleanup_pending", "audio_cleanup_failed") else "microphone"
                 self.turn_diagnostics.record(stage, code, outcome="error")
                 raise
+            finally:
+                # During STT/AI/TTS preparation there is no input handoff to
+                # protect. The broker must suppress its persistent microphone.
+                self._ptt_handoff_pending = False
             check()
             if capture.status != "ready":
                 return ""  # No speech means zero STT/brain/TTS calls.
@@ -871,6 +995,7 @@ class FeatureHost:
             result = False
         if not result:
             self._ptt_turn_active = False
+            self._ptt_handoff_pending = False
         return result
 
     def start_ptt(self, capture_id):
@@ -889,6 +1014,7 @@ class FeatureHost:
         return False
 
     def cancel_conversation(self):
+        self._ptt_handoff_pending = False
         with self._records_lock:
             self._command_epoch += 1
         self.pcm.cancel("cancelled")
@@ -906,7 +1032,7 @@ class FeatureHost:
 
     def stop(self):
         self.cancel_conversation()
-        success = True
+        success = self.disable_wake_word(refresh=False)
         try:
             self._cancel_video("video_cancelled")
             # A stop also retires commands admitted before it. A late queued
@@ -977,6 +1103,14 @@ class FeatureHost:
                 self._remember(HostResult(request, "rejected", "stale_mode"))
                 continue
             if isinstance(intent, HostControl):
+                with self._records_lock:
+                    receipt = self._records.get(request, {})
+                if receipt.get("wake"):
+                    age = self.clock() - receipt["received_at"]
+                    if (not 0 <= age <= .5 or not self._wake_allowed()
+                            or receipt.get("input_turn") != self.session.worker.turn):
+                        self._remember(HostResult(request, "rejected", "wake_stale_or_busy"))
+                        continue
                 if intent.action not in ("stop", "cancel") and generation != self.modes.generation:
                     self._remember(HostResult(request, "rejected", "stale_mode"))
                 else:
@@ -1076,6 +1210,7 @@ class FeatureHost:
                 self.audio.release(self._voice_lease)
                 self._voice_lease = self._ptt_lease = None
             self._ptt_turn_active = False
+            self._ptt_handoff_pending = False
             turn = f"{self.session.session_id}:{event.turn}"
             with self._playback_lock:
                 played = turn in self._voice_started_turns
@@ -1154,6 +1289,7 @@ class FeatureHost:
         if self._last_shell_seen is not None and self.clock() - self._last_shell_seen > 3.0:
             self.stop()
             self._last_shell_seen = None
+        self._tick_idle_gaze()
         self._refresh()
 
     def _refresh(self):
@@ -1191,7 +1327,9 @@ class FeatureHost:
                         source="synthetic_pcm" if self.runtime.simulate else "explicit_microphone",
                         hid_identity="keyboard_or_gp8_unverified", physical_verified=False)
                     if self.microphone is not None else ptt),
-            "wake_word": self.wake_word.snapshot(),
+            "wake_word": dict(self.wake_word.snapshot(), requested=self._wake_requested,
+                              armed=self._wake_armed),
+            "microphone_broker": self._microphone_broker.snapshot() if self._microphone_broker else None,
             "last_result": self._last_result, "requests": recent,
             "asset_status": {"real_game_pack": "ASSET_PENDING",
                 "user_songs": "AVAILABLE_FOR_REVIEW" if self._music_library_selected and self.media.catalog() else "ASSET_PENDING",
@@ -1256,6 +1394,14 @@ class FeatureHost:
             except Exception:
                 errors.append("pcm_cleanup_failed")
                 self._ptt_cleanup_fault = True
+        if self._microphone_broker is not None:
+            try:
+                if self._microphone_broker.close() is not True:
+                    errors.append("pcm_cleanup_failed")
+                    self._ptt_cleanup_fault = True
+            except Exception:
+                errors.append("pcm_cleanup_failed")
+                self._ptt_cleanup_fault = True
         try:
             self.session.close()
             if not self._ptt_cleanup_fault:
@@ -1294,6 +1440,7 @@ class FeatureHost:
     def cleanup_snapshot(self):
         session = self.session.cleanup_snapshot()
         microphone = self.microphone.snapshot() if self.microphone is not None else {}
+        broker = self._microphone_broker.snapshot() if self._microphone_broker else {}
         camera = self.camera.cleanup_snapshot()
         motion_cleanup = getattr(self.motion, "cleanup_snapshot", None)
         try:
@@ -1303,6 +1450,8 @@ class FeatureHost:
         clean = (self._closed and session["resources_cleaned"] and not self._ptt_cleanup_fault
                  and not microphone.get("cleanup_pending", False)
                  and not microphone.get("microphone_open", False)
+                 and not broker.get("microphone_open", False)
+                 and not broker.get("reader_alive", False) and broker.get("cleanup_verified", True)
                  and not self.video.snapshot()["recording"] and camera["resources_cleaned"]
                  and self.video.snapshot()["code"] != "video_close_failed"
                  and motion.get("resources_cleaned") is True and not self._cleanup_errors
@@ -1310,6 +1459,7 @@ class FeatureHost:
         return dict(resources_cleaned=clean, session=session, camera=camera,
                     motion=motion,
                     microphone_closed=not microphone.get("microphone_open", False),
+                    microphone_broker=broker or None,
                     microphone_cleanup_pending=microphone.get("cleanup_pending", False),
                     code="resources_cleaned" if clean else "owned_cleanup_pending",
                     scope="host_owned_software_only", physical_release_verified=False)

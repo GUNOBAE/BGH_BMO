@@ -138,6 +138,8 @@ def host_factory(**settings):
             counts['brain']+=1;time.sleep(.15)
             return super().create(**request)
     replies=[dict(version=1,speech='A synthetic desktop response.',emotion='crying',gesture='none',intent=None)]*3
+    if scenario=='character':
+        replies=[dict(version=1,speech='A synthetic character response.',emotion='neutral',gesture='none',intent=None)]*12
     if scenario=='release':
         replies=[dict(version=1,speech='A synthetic cheerful reply.',emotion='happy',gesture='wave',intent=None),
                  dict(version=1,speech='A synthetic surprised reply.',emotion='surprised',gesture='shrug',intent=None),
@@ -229,6 +231,17 @@ def host_factory(**settings):
 
 def greeting_factory(*,config,simulate):
     assert simulate
+    if scenario=='character':
+        from bmo_ai.voice_bank import VoiceBank
+        from bmo_ai.integration_voice import synthetic_wav
+        from bmo_ai import audio
+        bank=VoiceBank(root/'character-bank',config,simulate=True)
+        raw=synthetic_wav()
+        try:
+            for clip in ('boot_01','idle_01'):
+                record=bank.publish(clip,raw,simulated=True)
+                bank.approve(clip,record['sha256'],listening_approved=True)
+        finally:audio._discard(raw,suppress=True)
     cache_path=root/'greeting'
     if scenario=='greeting_missing':cache=GreetingCache(cache_path,GreetingSpec.from_config(config))
     elif not (cache_path/'greeting.cache').exists():
@@ -256,6 +269,12 @@ def greeting_factory(*,config,simulate):
 
 def on_started(app):
     apps.append(app)
+    if scenario=='character':
+        def presence_clock():
+            try:offset=float((root/'presence-clock.txt').read_text())
+            except FileNotFoundError:offset=0.
+            return time.monotonic()+offset
+        app._presence.clock=presence_clock
     print('DESKTOP_TEST_READY '+json.dumps({'url':app.server.url}),flush=True)
 
 with ExitStack() as guards:

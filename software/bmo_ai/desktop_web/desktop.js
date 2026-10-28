@@ -12,6 +12,22 @@ const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(
 function error(message){$('notice').hidden=false;$('notice-message').textContent=message;}
 function menu(){cancelPTT();if(!$('menu').open)$('menu').showModal();}
 function refreshAdapter(){if(window.BMOIntegration?.closed){window.BMOIntegration=new window.BMOFaceAdapter(frame);}handshakeFrame=null;}
+function canTalk(){return state?.phase==='ready'||state?.character_life?.enabled===true&&state?.phase==='greeting';}
+function presentFace(run){
+ const acknowledge=()=>{if(!closed&&!document.hidden&&state?.run_id===run&&$('splash').hidden)
+   desktop('face_presented',{run_id:run}).catch(()=>{presentedRun=null;});else presentedRun=null;};
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{
+  let shown=false;try{shown=sessionStorage.getItem('bmo-face-entrance')===run;}catch(_){}
+  if(state?.character_life?.enabled&&!shown){
+   try{sessionStorage.setItem('bmo-face-entrance',run);}catch(_){}
+   const wrapper=document.querySelector('main');wrapper.classList.add('character-entrance');
+   const done=()=>{wrapper.classList.remove('character-entrance');acknowledge();};
+   if(matchMedia('(prefers-reduced-motion: reduce)').matches){done();return;}
+   const animation=wrapper.animate([{transform:'translateY(100%)'},{transform:'translateY(0)'}],
+     {duration:550,easing:'cubic-bezier(.2,.7,.2,1)',fill:'none'});
+   animation.finished.then(done,done);
+  }else acknowledge();
+ }));}
 frame.addEventListener('load',refreshAdapter);
 async function ready(){if(!state||handshakeFrame===frame.contentDocument)return;
  let face;try{face=frame.contentWindow.BMOFace;}catch(_){return;}
@@ -23,23 +39,24 @@ function render(next){state=next;window.BMODesktop.state=next;
  const loading=next.phase==='loading'&&next.progress_percent!==100;$('splash').hidden=!loading;
  // Acknowledge only after the verified face has had two render opportunities.
  if(next.progress_percent===100&&next.face_ready&&!document.hidden&&presentedRun!==next.run_id){
-  const run=next.run_id;presentedRun=run;requestAnimationFrame(()=>requestAnimationFrame(()=>{
-   if(!closed&&!document.hidden&&state?.run_id===run&&$('splash').hidden)
-    desktop('face_presented',{run_id:run}).catch(()=>{presentedRun=null;});
-   else presentedRun=null;
-  }));}
+  const run=next.run_id;presentedRun=run;presentFace(run);}
  // Values are achieved backend checkpoints, not an elapsed-time progress guess.
  const progress=Number.isInteger(next.progress_percent)?Math.max(0,Math.min(100,next.progress_percent)):0;
  $('progress-percent').textContent=progress+'%';
  $('progress-track').setAttribute('aria-valuenow',String(progress));
  $('progress-fill').style.width=progress+'%';
  const stages={lock_acquired:'BMO 실행을 시작했어요.',server_ready:'얼굴 서버 준비 완료',browser_registered:'화면 창을 준비하고 있어요.',browser_spawned:'화면 창 실행 완료',engine_ready:'대화 엔진 준비 완료',face_handshake_verified:'BMO 얼굴 연결 확인',local_app_ready:'시작 준비 완료'};
- $('loading-stage').textContent=stages[next.progress_stage]||'실행 상태를 확인하고 있어요.';
- const problem=next.phase==='error'||next.phase==='ready'&&next.code!=='greeting_completed';
+ if(next.character_life?.enabled){$('splash').querySelector('h1').textContent='Starting BMO…';
+  $('progress-track').setAttribute('aria-label','Getting BMO ready');
+  $('loading-stage').textContent=next.progress_percent===100?'Ready!':'Getting ready…';
+ }else $('loading-stage').textContent=stages[next.progress_stage]||'실행 상태를 확인하고 있어요.';
+ const problem=next.phase==='error'||next.phase==='ready'&&next.code!=='greeting_completed'&&!(next.character_life?.enabled&&next.code==='greeting_cancelled');
  $('notice').hidden=!problem;if(problem)$('notice-message').textContent=messages[next.code]||'준비 상태를 확인해 주세요. 메뉴에서 재시도하거나 종료할 수 있어요.';
- $('diagnostic').textContent=next.code;$('talk').disabled=next.phase!=='ready';$('repeat').disabled=next.phase!=='ready';
+ $('diagnostic').textContent=next.code;$('talk').disabled=!canTalk();$('repeat').disabled=next.phase!=='ready';
+ $('presence-controls').hidden=!next.character_life?.enabled;
+ if(next.character_life?.enabled)$('presence-mode').value=next.character_life.presence.mode;
  $('greeting-retry').disabled=next.phase!=='ready'||next.code==='greeting_completed';}
-async function modes(){if(state?.phase!=='ready')return;const r=await fetch('/api/features',{cache:'no-store'});if(!r.ok)return;const next=await r.json();currentMode=next.mode;
+async function modes(){if(!canTalk())return;const r=await fetch('/api/features',{cache:'no-store'});if(!r.ok)return;const next=await r.json();currentMode=next.mode;
  window.BMODesktop.features=next;
  featureState=next;renderFeatures(next);
  syncGamepad(next);
@@ -116,6 +133,8 @@ function ptt(){if(!pttEnabled){error('버튼 녹음은 사용자 검수용 마�
 function cancelPTT(){enterDown=false;if(pttPending){pttEpoch++;pttPending=false;pttRequest=null;control('cancel').catch(()=>{});}}
 $('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));$('menu').close();};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
+$('presence-mode').onchange=()=>desktop('presence_mode',$('presence-mode').value).catch(()=>error('대기 음성 설정을 확인해 주세요.'));
+$('wake-off').onclick=()=>desktop('wake_off').catch(()=>error('호출어 종료 상태를 확인해 주세요.'));
 $('games').onclick=()=>{intent('open_game_menu').catch(()=>error('게임 목록을 열지 못했어요.'));$('menu').close();};$('greeting-retry').onclick=()=>desktop('retry_greeting').catch(()=>error('인사 캐시를 확인해 주세요.'));
 function openPanel(id){cancelPTT();$('menu').close();$(id).showModal();if(featureState)renderFeatures(featureState);}
 for(const [id,panel] of [['camera-menu','camera-dialog'],['video-menu','video-dialog'],['music-menu','music-dialog'],['system-menu','system-dialog']])$(id).onclick=()=>openPanel(panel);
@@ -140,7 +159,7 @@ function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){
   if(['game','game_menu'].includes(currentMode)){control('input',{key:'ESC',pressed}).catch(()=>error('게임 종료 상태를 확인해 주세요.'));return;}
   if(pressed){cancelPTT();for(const d of document.querySelectorAll('dialog[open]'))d.close();menu();}return;}
  if(['BUTTON','INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;
- if(event.key==='Enter'&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&state?.phase==='ready'){
+ if(event.key==='Enter'&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&canTalk()){
   event.preventDefault();event.stopPropagation();if(!pressed){enterDown=false;return;}if(enterDown)return;enterDown=true;ptt();return;}
  if(['game','game_menu'].includes(currentMode)&&keys[event.key]){if(event.key==='Enter'&&pressed)bump('blocked_mode');event.preventDefault();event.stopPropagation();control('input',{key:keys[event.key],pressed}).catch(()=>error('게임 입력 상태를 확인해 주세요.'));return;}}
 window.addEventListener('keydown',event=>key(event,true));window.addEventListener('keyup',event=>key(event,false));

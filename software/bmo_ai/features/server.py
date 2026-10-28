@@ -39,8 +39,12 @@ class FeatureServer:
             "/feature.css": ("text/css; charset=utf-8", root.joinpath("feature.css").read_bytes())})
         if desktop is not None:
             product = root.parent.parent / "desktop_web"
-            self._resources["/"] = ("text/html; charset=utf-8",
-                product.joinpath("index.html").read_text().replace("__COMMAND_TOKEN__", self._token).encode())
+            product_page = product.joinpath("index.html").read_text().replace("__COMMAND_TOKEN__", self._token)
+            if getattr(desktop, "character_life", False):
+                product_page = (product_page.replace("<h1>BMO Loading...</h1>", "<h1>Starting BMO…</h1>")
+                    .replace('id="loading-stage">시작 준비 중...', 'id="loading-stage">Getting ready…')
+                    .replace('aria-label="BMO 시작 준비"', 'aria-label="Getting BMO ready"'))
+            self._resources["/"] = ("text/html; charset=utf-8", product_page.encode())
             for name, mime in (("desktop.js", "text/javascript; charset=utf-8"),
                                ("desktop.css", "text/css; charset=utf-8")):
                 self._resources["/" + name] = (mime, product.joinpath(name).read_bytes())

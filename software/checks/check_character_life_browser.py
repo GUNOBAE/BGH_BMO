@@ -22,8 +22,12 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
     checks = []
     with tempfile.TemporaryDirectory(prefix="bmo-character-browser-") as directory:
         fixture = DesktopFixture(directory, profile=profile, face=face, scenario="character",
-                                 extra_args=("--character-life", "--ptt-trace"))
+            extra_args=("--character-life", "--ptt-trace", "--idle-voice", "--wake-word",
+                        "--voice-bank-directory", str(Path(directory)/"character-bank")))
         try:
+            status, initial_html = fixture.request("/")
+            assert status == 200 and "<h1>Starting BMO…</h1>".encode() in initial_html
+            assert 'id="loading-stage">Getting ready…'.encode() in initial_html
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(executable_path=chromium, headless=True,
                     env={"PATH": os.defpath, "HOME": directory, "LC_ALL": "C.UTF-8"},
@@ -33,8 +37,11 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page = browser.new_page(viewport={"width": 800, "height": 480})
                     page.set_default_timeout(8000)
                     page.route("**/*", lambda r: r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
-                    page.add_init_script("""window.__audioCalls=0;HTMLMediaElement.prototype.play=function(){
-                        window.__audioCalls++;throw Error('Browser audio forbidden')};""")
+                    page.add_init_script("""window.__audioCalls=0;window.__entrances=0;
+                        const originalAnimate=Element.prototype.animate;
+                        Element.prototype.animate=function(...args){if(this.tagName==='MAIN')window.__entrances++;
+                          return originalAnimate.apply(this,args);};
+                        HTMLMediaElement.prototype.play=function(){window.__audioCalls++;throw Error('Browser audio forbidden')};""")
                     def wait(predicate):
                         deadline = time.monotonic() + 8
                         while time.monotonic() < deadline:
@@ -44,10 +51,47 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                         raise AssertionError("Character production pipeline did not reach boundary: " + json.dumps(
                             {"phase": value.get("phase"), "ptt": value.get("ptt"),
                              "input": page.evaluate("()=>BMODesktop.inputEvidence")}))
+                    held=[]
+                    page.route("**/face.html?kiosk=1", lambda route: held.append(route))
                     page.goto(fixture.url, wait_until="domcontentloaded")
-                    page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'")
+                    page.wait_for_function("()=>BMODesktop.state?.phase==='loading'")
+                    assert page.locator("#splash h1").inner_text() == "Starting BMO…"
+                    assert page.locator("#loading-stage").inner_text() == "Getting ready…"
+                    assert 10 <= fixture.state()["progress_percent"] < 100
+                    page.unroute("**/face.html?kiosk=1"); held.pop().continue_()
+                    page.wait_for_function("()=>BMOIntegration.state?.source==='cached_greeting'&&BMOIntegration.state.playback==='started'")
+                    assert page.evaluate("()=>window.__entrances") == 1
+                    assert fixture.state()["face_presented"] and fixture.state()["progress_percent"] == 100
                     assert fixture.features()["test_fixture"]["brain"] == 0
-                    checks.append("cache-only boot starts no dialogue engine or real input")
+                    checks.append("English achieved-checkpoint boot and once-only 550ms wrapper entrance precede cache-only greeting; original face untouched")
+                    page.locator("#face").click(position={"x": 400, "y": 230})
+                    page.keyboard.down("Enter"); page.keyboard.down("Enter"); page.keyboard.up("Enter")
+                    wait(lambda s:s["ptt"]["microphone_open"])
+                    first=wait(lambda s:not s["conversation_busy"] and s["ptt"]["reason_code"]=="transcribed")
+                    assert first["test_fixture"]["brain"] == first["test_fixture"]["mic_sources"] == 1
+                    assert first["test_fixture"]["max_players"] == 1
+                    assert first["wake_word"]["status"] == "MODEL_MISSING"
+                    checks.append("GP8 preempts boot for exactly one synthetic PTT turn; missing real wake model opens no persistent microphone")
+                    page.reload(); page.wait_for_function("()=>BMODesktop.state?.phase==='ready'&&BMOIntegration.state?.phase==='idle'")
+                    assert page.evaluate("()=>window.__entrances") == 0
+                    assert fixture.state()["greeting_attempts"] == 1
+                    checks.append("reload restores the same face/session without another entrance or greeting")
+                    before_idle=fixture.features()["test_fixture"]
+                    (Path(directory)/"presence-clock.txt").write_text("500")
+                    page.wait_for_function("()=>BMOIntegration.state?.source==='cached_idle'&&BMOIntegration.state.playback==='started'")
+                    page.locator("#face").click(position={"x": 400, "y": 230}); page.keyboard.press("Enter")
+                    wait(lambda s:s["ptt"]["microphone_open"])
+                    after_idle=wait(lambda s:not s["conversation_busy"] and s["test_fixture"]["brain"]==2)
+                    assert after_idle["test_fixture"]["max_players"] == after_idle["test_fixture"]["max_mics"] == 1
+                    assert after_idle["test_fixture"]["initial_history"] == 0
+                    assert before_idle["history_messages"] <= after_idle["test_fixture"]["history_messages"]
+                    assert fixture.state()["character_life"]["presence"]["heard_in_15_minutes"] == 0
+                    checks.append("idle cached clip uses a separate voice/cache; GP8 cancels it before a single existing PTT turn, without charging heard quota")
+                    page.evaluate("()=>BMODesktop.desktop('presence_mode','quiet')")
+                    (Path(directory)/"presence-clock.txt").write_text("1200")
+                    page.wait_for_function("()=>BMODesktop.state?.character_life?.presence?.mode==='quiet'")
+                    assert fixture.state()["character_life"]["presence"]["enabled"] is False
+                    checks.append("explicit quiet mode suppresses idle speech without changing conversation or OS sleep")
                     for question, emotion, delivery in (("우는 연기를 해봐", "crying", "theatrical_crying"),
                                                         ("장난스럽게 화내 봐", "angry", "theatrical_angry")):
                         page.evaluate("q=>BMODesktop.control('question',q)", question)

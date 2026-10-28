@@ -47,6 +47,12 @@ def parser():
     p.add_argument("--ptt-ambient-profile", type=Path, help="explicit supervised calibration profile; no automatic calibration or idle listening")
     p.add_argument("--plain-voice", action="store_true", help="use plain Aaron voice instead of supported, allowlisted emotional direction")
     p.add_argument("--character-life", action="store_true", help="opt in to the compatible Character Life director and detailed safe timing")
+    p.add_argument("--voice-bank-directory", type=Path, help="explicit private approved character clip library; never generates audio")
+    p.add_argument("--idle-voice", action="store_true", help="opt in to rare approved local idle clips; no automatic provider calls")
+    p.add_argument("--presence-mode", choices=("normal", "quiet", "sleep", "off"), default=None,
+                   help="local character speech policy; quiet/sleep/off suppress idle clips")
+    p.add_argument("--wake-word", action="store_true", help="explicit optional local microphone listening after startup; missing custom model keeps PTT only")
+    p.add_argument("--wake-model-manifest", type=Path, help="reviewed local Hey BMO ONNX manifest; no automatic download")
     p.add_argument("--ptt-vad-profile", choices=("baseline", "balanced", "quick"), default="baseline",
                    help="explicit VAD comparison profile: baseline .9s, balanced .6s, quick .45s; no measured latency claim")
     p.add_argument("--arms-supervised", action="store_true",
@@ -99,7 +105,12 @@ def public_plan(args):
         "voice_direction": {"requested": not args.plain_voice, "speaker_changed": False,
                             "listening_approval": "NOT_RUN"},
         "character_life": {"enabled": args.character_life, "ptt_vad_profile": args.ptt_vad_profile,
-                           "actual_latency": "UNMEASURED", "audio_generated": False},
+                           "actual_latency": "UNMEASURED", "audio_generated": False,
+                           "presence_mode": args.presence_mode or ("normal" if args.idle_voice else "off"),
+                           "voice_bank_selected": args.voice_bank_directory is not None,
+                           "wake_requested": args.wake_word,
+                           "wake_model": "NOT_CHECKED" if args.wake_model_manifest else "MODEL_MISSING",
+                           "acoustic_wake_acceptance": "NOT_RUN"},
         "arm_legacy_bridge": {"requested": args.arm_legacy_bridge,
                               "default_disabled": not args.arms_supervised,
                               "physical_verified": False},
@@ -133,6 +144,15 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--music-supervised requires --live and --music-directory")
     if args.ptt_ambient_profile is not None and not args.ptt_microphone:
         p.error("--ptt-ambient-profile requires --ptt-microphone")
+    if (args.voice_bank_directory is not None or args.idle_voice or args.presence_mode is not None
+            or args.wake_word or args.wake_model_manifest is not None) and not args.character_life:
+        p.error("character bank, presence and wake options require --character-life")
+    if args.wake_word and not (args.simulate or args.ptt_microphone):
+        p.error("--wake-word requires --ptt-microphone (or isolated --simulate)")
+    if args.wake_model_manifest is not None and not args.wake_word:
+        p.error("--wake-model-manifest requires --wake-word")
+    if args.simulate and args.wake_model_manifest is not None:
+        p.error("real wake models are separate from synthetic desktop simulation")
     if args.arm_legacy_bridge and not args.arms_supervised:
         p.error("--arm-legacy-bridge requires an independently supervised physical arm session")
     if args.emotion_arms and not (args.simulate or args.arms_supervised):
@@ -165,6 +185,15 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         from .desktop_install import install_desktop
         try:
             install_settings = {"install": not args.dry_run, "simulate": args.simulate}
+            if args.character_life:
+                character_options = {"character_life": True, "ptt_trace": args.ptt_trace,
+                    "ptt_vad_profile": args.ptt_vad_profile, "plain_voice": args.plain_voice,
+                    "idle_voice": args.idle_voice, "wake_word": args.wake_word}
+                for key in ("voice_bank_directory", "presence_mode", "wake_model_manifest"):
+                    value = getattr(args, key)
+                    if value is not None:
+                        character_options[key] = value
+                install_settings["character_options"] = character_options
             install_settings["frontend"] = args.frontend
             if args.ptt_microphone:
                 install_settings["ptt_microphone"] = True
@@ -235,7 +264,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             return 0
         app = DesktopRuntime(clock=clock, simulate=args.simulate, developer=args.developer,
                              startup_timeout=args.startup_timeout, greeting_timeout=args.greeting_timeout,
-                             require_face_presented=True)
+                             require_face_presented=True, character_life=args.character_life,
+                             presence_mode=args.presence_mode or ("normal" if args.idle_voice else "off"))
         for number in (signal.SIGTERM, signal.SIGINT):
             try:
                 previous_handlers[number] = signal.signal(number, lambda *_: app._exit.set())
@@ -275,6 +305,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "emotion_arms": args.emotion_arms}
             if args.character_life:
                 settings["character_life"] = True
+            if args.wake_word:
+                settings.update(wake_word=True, wake_model_manifest=args.wake_model_manifest)
             if args.ptt_vad_profile != "baseline":
                 settings["ptt_vad_profile"] = args.ptt_vad_profile
             if args.music_supervised:
@@ -336,6 +368,16 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             else:
                 cache = GreetingCache(default_greeting_directory(), GreetingSpec.from_config(config))
                 greeting = GreetingPlayer(config, cache, startup_chime=not args.no_startup_chime)
+            if args.character_life:
+                from .voice_bank import VoiceBank, BankPlayer, default_voice_bank_directory
+                from .character_presence import CachedPresence
+                if args.simulate and temporary is None:
+                    temporary = TemporaryDirectory(prefix="bmo-character-synthetic-")
+                bank_directory = (args.voice_bank_directory if args.voice_bank_directory is not None else
+                    Path(temporary.name)/"voice-bank" if args.simulate else default_voice_bank_directory())
+                bank = VoiceBank(bank_directory, config, simulate=args.simulate)
+                greeting = CachedPresence(bank, BankPlayer(config, bank, simulate=args.simulate), greeting)
+                host.session.voice.character_bank = bank
             app.greeting = greeting
         except Exception as error:
             code = getattr(error, "code", "engine_startup_failed")

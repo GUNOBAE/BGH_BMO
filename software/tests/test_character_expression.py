@@ -119,6 +119,25 @@ class CharacterExpressionTests(unittest.TestCase):
         self.assertEqual(view.last_reply.emotion, "neutral")
         self.assertEqual(len(provider.requests), 2)
 
+    def test_explicit_joy_has_a_happy_face_without_forced_body_motion(self):
+        for message in ("기뻐해 봐", "Please pretend to be happy."):
+            with self.subTest(message=message):
+                reply = self.request(message, payload(gesture="celebrate"))
+                self.assertEqual((reply.emotion, reply.character_plan.delivery_id), ("happy", "excited"))
+                self.assertEqual((reply.gesture, reply.reaction), ("none", "none"))
+                self.assertTrue(reply.character_plan.explicit_acting)
+
+    def test_action_scoped_negation_keeps_unrelated_not_sad_from_blocking_requested_crying(self):
+        reply = self.request("I'm not sad; please pretend to cry.",
+            payload(emotion="crying", delivery="theatrical_crying", source="acting", reaction="sob"))
+        self.assertEqual((reply.emotion, reply.reaction), ("crying", "sob"))
+        for message in ("I'm not sad; do not pretend to cry.", "Please stop crying.",
+                        "Please don't act angry.", "Do not pretend to be happy.", "우는 연기를 하지 마",
+                        "울어 보지 마", "기뻐해 보지 마", "Never imitate a crying baby."):
+            with self.subTest(message=message):
+                reply = self.request(message, payload(emotion="crying", delivery="theatrical_crying", source="acting", reaction="sob"))
+                self.assertEqual((reply.emotion, reply.reaction), ("neutral", "none"))
+
     def metadata(self, plan):
         return dict(emotion=plan.face_emotion, emotion_validation="validated", reaction=plan.reaction_id,
                     character_plan=plan.public())
