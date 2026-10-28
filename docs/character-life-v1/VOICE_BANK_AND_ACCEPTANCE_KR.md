@@ -2,7 +2,7 @@
 
 연결 작업서: Issue #39. 개발 기준: PR #36 `0933d9f75b533f3c0c4d285de7b942c201ea3cba`.
 
-**현재 상태: 대본/연출 후보만 작성. 실제 WAV 생성·Fish 호출·청취 승인·새 기능 구현·Pi 배포는 아직 하지 않았다.** 기존 Aaron Soft/Beemo/gain0.25, 승인 R10, RP2040 보정과 동작 성공 기준을 바꾸지 않는다. 원작 녹음이나 대사를 가져온 것이 아니라 이 프로젝트를 위해 새로 작성한 짧은 문구다.
+**초기 인계 상태: 대본/연출 후보만 작성한 문서였다. 현재 코드·검증 상태는 [구현 기록](IMPLEMENTATION_REPORT_KR.md)과 PR #40의 단계별 결과를 따른다. 실제 WAV 생성·Fish 호출·청취 승인·Pi 배포는 수행하지 않았다.** 기존 Aaron Soft/Beemo/gain0.25, 승인 R10, RP2040 보정과 동작 성공 기준을 바꾸지 않는다. 원작 녹음이나 대사를 가져온 것이 아니라 이 프로젝트를 위해 새로 작성한 짧은 문구다.
 
 ## 음성팩 계약
 
@@ -25,7 +25,7 @@
 | boot_07 | Welcome back. Let's make something nice. | Warm and relaxed; no exaggerated cheer | happy |
 | boot_08 | Hi, friend. We can take it easy today. | Especially gentle; suitable for quiet mode | neutral |
 
-Bootは `Starting BMO…` → `Getting ready…` → `Ready!`의 실제 로딩 단계, 승인 얼굴 wrapper의 아래→위 이동(후보 0.45–0.65초), 실제 greeting playback clock으로 연결한다. 원본 얼굴 HTML/SVG 자체는 수정하지 않는다. 최근 3개 greeting 재선택 회피, reload에 재인사 금지. 후보 중 하나가 없으면 기존 승인 greeting 또는 침묵으로 정상 시작한다.
+부팅은 `Starting BMO…` → `Getting ready…` → `Ready!`의 실제 로딩 단계, 승인 얼굴 wrapper의 아래→위 이동(후보 0.45–0.65초), 실제 greeting playback clock으로 연결한다. 원본 얼굴 HTML/SVG 자체는 수정하지 않는다. 최근 3개 greeting 재선택 회피, reload에 재인사 금지. 후보 중 하나가 없으면 기존 승인 greeting 또는 침묵으로 정상 시작한다.
 
 ## Idle — 12개
 

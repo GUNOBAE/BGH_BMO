@@ -70,7 +70,7 @@ class FeatureSimulatedClient:
             "version": 1, "speech": "We can try a little simulated adventure.",
             "emotion": "happy", "gesture": "none", "intent": None}
         structured = request.get("text", {}).get("format", {}).get("name") in (
-            "bmo_feature_reply_v1", "bmo_feature_reply_v2")
+            "bmo_feature_reply_v1", "bmo_feature_reply_v2", "bmo_feature_reply_v3")
         text = json.dumps(reply) if structured else reply["speech"]
         return SimpleNamespace(status="completed", incomplete_details=None, error=None, output_text=text)
 
@@ -87,12 +87,17 @@ class FeatureHost:
                  ptt_trace=False, ptt_ambient_profile=None, expressive_voice=False,
                  camera_supervised=False, photo_directory=None, camera_video_supervised=False,
                  ptt_speech_safe=False, emotion_arms=False, music_supervised=False,
-                 usb_gamepad=False):
+                 usb_gamepad=False, character_life=False, ptt_vad_profile="baseline"):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
         from .motion import MotionFeature, IMUHealthMonitor
         self.runtime = runtime if runtime is not None else RuntimePolicy()
+        if type(character_life) is not bool or ptt_vad_profile not in ("baseline", "balanced", "quick"):
+            raise FeatureError("invalid_character_configuration")
+        self.character_life = character_life
+        self.ptt_vad_profile = ptt_vad_profile
+        self._last_character_plan = None
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
         if any(type(value) is not bool for value in (music_supervised, usb_gamepad)):
@@ -220,13 +225,15 @@ class FeatureHost:
         self._media_cue = None
         self.client = client or FeatureSimulatedClient()
         from ..turn_diagnostics import TurnDiagnostics
-        self.turn_diagnostics = TurnDiagnostics(enabled=ptt_trace, clock=clock)
+        self.turn_diagnostics = TurnDiagnostics(enabled=ptt_trace or character_life, clock=clock)
         self.session = IntegrationSession(self.config, self.client, simulate=self.runtime.simulate,
             brain=brain, fish_api_key=fish_api_key,
             voice=voice, clock=clock, emotion_mode="auto",
-            reply_client=FeatureClient(self.client, **({"expressive": True} if expressive_voice else {})),
+            reply_client=FeatureClient(self.client, **({"expressive": True} if expressive_voice else {}),
+                                       **({"character_life": True} if character_life else {})),
             on_reply=self._reply, on_playback_event=self._playback,
-            diagnostics=self.turn_diagnostics, expressive_voice=expressive_voice)
+            diagnostics=self.turn_diagnostics, expressive_voice=expressive_voice,
+            **({"character_life": True} if character_life else {}))
         self.modes.register("conversation", enter=self._enter_conversation, leave=self._leave_conversation)
         self.modes.register("game_menu", enter=lambda _: None, leave=lambda: None)
         self.modes.register("game", enter=self._enter_game, leave=self._leave_game)
@@ -264,6 +271,9 @@ class FeatureHost:
                 allowed_focus=lambda: self._ptt_lease is not None and self.audio.lease is self._ptt_lease,
                 playback_active=lambda: self.session.snapshot()["playback"] == "started",
                 on_state=self._ptt_state,
+                **({"on_timing": self.turn_diagnostics.record} if ptt_trace or character_life else {}),
+                **({"silence_timeout": {"balanced": .6, "quick": .45}[ptt_vad_profile]}
+                   if ptt_vad_profile != "baseline" else {}),
                 **self._ptt_settings(ptt_ambient_profile, ptt_speech_safe))
         self.motion.set_context(self.session.session_id, "idle", self.modes.generation)
         self._refresh()
@@ -301,7 +311,8 @@ class FeatureHost:
             pass  # Drop decoration/intent, never hold up the voice owner.
 
     def _reply(self, reply, turn_id, utterance_id):
-        self._put_voice(("reply", turn_id, (reply.gesture, reply.intent), self.clock()))
+        self._put_voice(("reply", turn_id, (reply.gesture, reply.intent,
+            getattr(reply, "character_plan", None)), self.clock()))
 
     def _playback(self, kind, turn_id, at):
         if kind == "started":
@@ -816,6 +827,8 @@ class FeatureHost:
             return True
         if self.audio.owner is not None:
             return False
+        if self.turn_diagnostics.enabled:
+            self.turn_diagnostics.mark_input(now)
         self._ptt_generation += 1
         generation = self._ptt_generation
         capture_id = "ptt_" + uuid4().hex
@@ -999,12 +1012,26 @@ class FeatureHost:
             if generation != self.modes.generation:
                 continue
             if kind == "reply":
-                self._proposals[turn] = {"gesture": data[0], "intent": data[1], "ended": False}
+                self._proposals[turn] = {"gesture": data[0], "intent": data[1], "ended": False,
+                                         "character_plan": data[2] if len(data) > 2 else None}
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
+                fresh = 0 <= self.clock() - at <= .5
+                if self.character_life:
+                    plan = proposal.get("character_plan")
+                    proposal["gesture"] = "none"
+                    if (plan is not None and fresh and self.session.snapshot()["playback"] == "started"
+                            and plan.face_emotion == self.session.snapshot()["emotion"]):
+                        self._last_character_plan = plan.public()
+                        proposal["gesture"] = plan.gesture_id
+                        targets = {"attentive": (0., 0.), "curious": (.12, -.04),
+                                   "soft_down": (0., .08), "celebratory": (.08, -.05)}
+                        if plan.gaze_id in targets:
+                            x, y = targets[plan.gaze_id]
+                            self.gaze.offer("dialogue", x, y, generation=generation, expires_at=at + .8)
                 # Never command an arm on idle/listening/thinking or in replay:
                 # only use the emotion actually displayed at speech start.
-                if (self._emotion_arms and self.clock() - at <= .5
+                if (not self.character_life and self._emotion_arms and self.clock() - at <= .5
                         and self.session.snapshot()["playback"] == "started"):
                     from .motion.emotion_gestures import select_emotion_gesture
                     spoken_emotion = self.session.snapshot()["emotion"]
@@ -1016,7 +1043,7 @@ class FeatureHost:
                 # A single short, deterministic look at actual speech start.
                 # Native activity and tracking retain higher priority; no idle
                 # timer, random motion or emotion/mouth setter is introduced.
-                if self.clock() - at <= .5:
+                if not self.character_life and self.clock() - at <= .5:
                     self.gaze.offer("reaction", .12, -.04, generation=generation,
                                     expires_at=at + .65)
                 if ((self.runtime.simulate or self.runtime.arms_supervised) and proposal["gesture"] != "none" and self.clock() - at <= .5
@@ -1151,6 +1178,9 @@ class FeatureHost:
             "camera": camera, "camera_video": self.video.snapshot(), "photo": self._photo_result,
             "system_diagnostics": self._system_diagnostics,
             "turn_diagnostics": self.turn_diagnostics.snapshot(),
+            "character_life": {"enabled": self.character_life, "ptt_vad_profile": self.ptt_vad_profile,
+                               "last_played_plan": self._last_character_plan,
+                               "physical_latency": "UNMEASURED"},
             "photo_countdown": max(0, self._pending_photo["deadline"] - self.clock()) if self._pending_photo else None,
             "motion": self.motion.snapshot(), "imu": self.imu.snapshot(),
             "input": self.input_adapter.snapshot() if self.input_adapter else

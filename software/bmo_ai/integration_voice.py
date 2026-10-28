@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import struct
 import sys
+import time
 from threading import Event, Lock
 import wave
 
@@ -63,7 +64,8 @@ class IntegrationVoice:
 
     def __init__(self, config, client, *, emit, cancel_check=None, simulate=False,
                  fish_synthesizer=None, piper_synthesizer=None, player=None,
-                 fish_api_key=None, expressive=False):
+                 fish_api_key=None, expressive=False, character_life=False,
+                 on_timing=None, timing_clock=time.monotonic):
         self.config = config
         self.client = client
         self.emit = emit
@@ -83,17 +85,33 @@ class IntegrationVoice:
         self._cache_generation = 0
         self.expression_metadata = {"emotion": "neutral", "emotion_validation": "none"}
         self.expressive = bool(expressive)
+        self.character_life = bool(character_life)
+        self.on_timing, self.timing_clock = on_timing, timing_clock
         self._expressive_policy = ExpressivePolicy()
+
+    def _timing(self, stage, code, **metrics):
+        if self.on_timing is not None:
+            try:
+                self.on_timing(stage, code, at=self.timing_clock(), **metrics)
+            except Exception:
+                pass  # An observational sink cannot break owned playback.
 
     def _expression(self, *, notice=False, metadata=None):
         """Copy only safe expression metadata, never a reply or TTS direction."""
         value = self.expression_metadata if metadata is None else metadata
         emotion = value.get("emotion") if type(value) is dict else None
         validation = value.get("emotion_validation") if type(value) is dict else None
-        return dict(emotion="neutral" if notice or emotion not in FACE_EMOTIONS else emotion,
+        result = dict(emotion="neutral" if notice or emotion not in FACE_EMOTIONS else emotion,
                     emotion_validation="notice" if notice else validation if validation in
                     ("none", "manual", "validated", "degraded") else "none",
                     notice=bool(notice))
+        if self.character_life and not notice and type(value) is dict and "character_plan" in value:
+            from .character_director import CharacterPlan
+            try:
+                result["character_plan"] = CharacterPlan.from_public(value["character_plan"]).public()
+            except ValueError:
+                pass
+        return result
 
     @property
     def has_cache(self):
@@ -158,15 +176,17 @@ class IntegrationVoice:
         spoken = spoken_bmo_name(text, self.config.fish_name_mode)
         if delivery is not None:
             spoken = delivery.text
-        if self.config.fish_delivery == "soft":
+        if self.config.fish_delivery == "soft" and not (delivery is not None and delivery.override_soft):
             spoken = fish_tts.SOFT_AARON_DIRECTION + spoken
         synthesize = self._fish_synthesizer or fish_tts.synthesize_wav
         credentials = {} if self._fish_api_key is None else {"api_key": self._fish_api_key}
+        timing = ({"on_timing": self.on_timing, "clock": self.timing_clock}
+                  if self.on_timing is not None and self._fish_synthesizer is None else {})
         try:
             return Path(synthesize(spoken, model=self.config.fish_model,
                                    reference_id=self.config.fish_voice_id,
                                    timeout=self.config.timeout, cancel_check=check,
-                                   **credentials)), "fish", notice
+                                   **credentials, **timing)), "fish", notice
         except audio.AudioSynthesisError:
             check()
             if not self.config.offline_voice:
@@ -213,6 +233,8 @@ class IntegrationVoice:
             output = attenuated_copy(raw, self.config.fish_gain)
             info = audio._wav_info(output)
             cues = tuple(dict(cue) for cue in wav_cues(output))
+            if source == "fish":
+                self._timing("fish", "audio_ready")
             self._play(output, source, info, cues, check, emit, on_playback_start, expression)
             check()
             if delivery is not None and source == "fish":
@@ -250,6 +272,7 @@ class IntegrationVoice:
 
         def started():
             check()
+            self._timing("playback", "playback_started")
             if on_playback_start is not None:
                 on_playback_start()
             check()

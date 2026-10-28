@@ -8,6 +8,8 @@ from ..expression_contract import (ExpressionFormatError, decode_expression,
                                    expression_request, FACE_EMOTIONS)
 from .contracts import GESTURES, INTENTS, valid_id
 from ..expressive_voice import REACTIONS
+from ..character_director import (CharacterDirector, CharacterPlan, DELIVERIES,
+                                  INTENSITIES, GAZES, latest_user_text)
 from .motion.gesture_rules_v2 import EXPLICIT_ACTIONS as ARM_INTENT_ACTIONS
 
 
@@ -38,6 +40,8 @@ class FeatureReply:
     version: int = 1
     degraded: bool = False
     reaction: str = "none"
+    character_plan: CharacterPlan | None = None
+    character_metadata: dict | None = None
 
 
 FEATURE_INSTRUCTIONS = """Trusted feature-host contract version 1. Return only the
@@ -71,8 +75,35 @@ sparingly, never every sentence. Do not place directions or sound tags in speech
 The host may suppress any reaction. One response, no extra classification call.
 """
 
+CHARACTER_INSTRUCTIONS = """Trusted feature-host contract version 3. Return exactly
+version, speech, emotion, gesture, intent, reaction and character. Character is
+delivery_id, intensity, gaze_id and source. Keep the approved short spoken English
+default and explicit language requests. Speech is clean dialogue, never bracket
+tags, markup or directions. This is one reply, not an emotion classification call.
+Emotion is BMO's appropriate expression, not a diagnosis of the user's feelings.
+Use neutral/calm for facts, proportional happy/warm or proud for good news,
+sad/empathetic for real distress, surprised/curious for genuine wonder. Tearful
+or crying is valid for a moving fictional scene or a harmless acting request;
+playfully annoyed/angry is valid for gentle cartoon protest or requested acting.
+Do not replace an explicit request to act crying with only sad or worry, or a
+request to playfully act angry with worried/sad. Such acting uses source acting,
+theatrical_crying/theatrical_angry, and an appropriate crying/angry face. Real
+grief/pain calls for calm empathy and no comic sob, cheer, laugh or arm flourish.
+Default intensity low; medium for an expressive beat, high only when clearly
+requested and still controlled. Default reaction, gaze and gesture none. A short
+answer can use only face and eyes. Do not pile laughter, an interjection, gaze
+and arms onto every reply. Choose at most one vocal reaction or gesture flourish;
+the host may suppress it. Do not prepend Woo-hoo or Hehe as ordinary speech filler.
+source is dialogue or acting in dialogue replies; boot/idle are host-owned work.
+Use only catalog IDs supplied in trusted capability data, never paths, URLs,
+shell, angles, PWM or arbitrary TTS tags. Preserve explicit arm_gesture intents
+only for requested named arm actions and then keep decorative gesture none.
+Stop/cancel is immediate host control, never a model decision. Do not claim an
+action completed or that unavailable camera/arms observed or moved anything.
+"""
 
-def feature_text_format(*, expressive=False):
+
+def feature_text_format(*, expressive=False, character_life=False):
     result = {"format": {"type": "json_schema", "name": "bmo_feature_reply_v1", "strict": True,
         "schema": {"type": "object", "additionalProperties": False,
             "properties": {"version": {"type": "integer", "enum": [1]},
@@ -84,12 +115,23 @@ def feature_text_format(*, expressive=False):
                                    "target": {"type": ["string", "null"]}},
                     "required": ["name", "target"]}]}},
             "required": ["version", "speech", "emotion", "gesture", "intent"]}}}
-    if expressive:
+    if expressive or character_life:
         result["format"]["name"] = "bmo_feature_reply_v2"
         schema = result["format"]["schema"]
         schema["properties"]["version"]["enum"] = [2]
         schema["properties"]["reaction"] = {"type": "string", "enum": list(REACTIONS)}
         schema["required"].append("reaction")
+    if character_life:
+        result["format"]["name"] = "bmo_feature_reply_v3"
+        schema = result["format"]["schema"]
+        schema["properties"]["version"]["enum"] = [3]
+        schema["properties"]["character"] = {"type": "object", "additionalProperties": False,
+            "properties": {"delivery_id": {"type": "string", "enum": list(DELIVERIES)},
+                           "intensity": {"type": "string", "enum": list(INTENSITIES)},
+                           "gaze_id": {"type": "string", "enum": list(GAZES)},
+                           "source": {"type": "string", "enum": ["dialogue", "acting"]}},
+            "required": ["delivery_id", "intensity", "gaze_id", "source"]}
+        schema["required"].append("character")
     return result
 
 
@@ -112,10 +154,12 @@ def decode_feature_reply(raw):
             raise ExpressionFormatError()
         fields = {"version", "speech", "emotion", "gesture", "intent"}
         version = value.get("version")
-        if version == 2:
+        if version in (2, 3):
             fields.add("reaction")
+        if version == 3:
+            fields.add("character")
         if (set(value) != fields
-                or type(version) is not int or version not in (1, 2)
+                or type(version) is not int or version not in (1, 2, 3)
                 or value["gesture"] not in GESTURES):
             raise ExpressionFormatError()
         reaction = value.get("reaction", "none")
@@ -129,8 +173,22 @@ def decode_feature_reply(raw):
             intent = HostIntent(**intent)
         if intent is not None and intent.name == "arm_gesture" and value["gesture"] != "none":
             raise ExpressionFormatError()
-        return FeatureReply(expression.speech, expression.emotion, value["gesture"], intent,
-                            version=version, degraded=expression.degraded, reaction=reaction)
+        metadata, metadata_bad = None, False
+        if version == 3:
+            metadata = value["character"]
+            metadata_bad = (type(metadata) is not dict
+                or set(metadata) != {"delivery_id", "intensity", "gaze_id", "source"}
+                or metadata.get("delivery_id") not in DELIVERIES
+                or metadata.get("intensity") not in INTENSITIES
+                or metadata.get("gaze_id") not in GAZES
+                or metadata.get("source") not in ("dialogue", "acting"))
+            if metadata_bad:
+                metadata = None
+        return FeatureReply(expression.speech, "neutral" if metadata_bad else expression.emotion,
+                            "none" if metadata_bad else value["gesture"], intent,
+                            version=version, degraded=expression.degraded or metadata_bad,
+                            reaction="none" if metadata_bad else reaction,
+                            character_metadata=dict(metadata) if metadata is not None else None)
     except (ValueError, TypeError, KeyError, RecursionError):
         raise ExpressionFormatError() from None
 
@@ -161,9 +219,11 @@ def _requested_reaction(reply, request):
 
 
 class FeatureResponses:
-    def __init__(self, responses, *, expressive=False):
+    def __init__(self, responses, *, expressive=False, character_life=False):
         self._responses = responses
         self.expressive = bool(expressive)
+        self.character_life = bool(character_life)
+        self.director = CharacterDirector() if self.character_life else None
         self.last_reply = None
         self.context_json = "{}"
 
@@ -173,9 +233,9 @@ class FeatureResponses:
         # schema together rather than appending conflicting JSON contracts.
         adapted = expression_request(request)
         adapted["instructions"] = (request.get("instructions", "") + "\n"
-            + (EXPRESSIVE_INSTRUCTIONS if self.expressive else FEATURE_INSTRUCTIONS)
+            + (CHARACTER_INSTRUCTIONS if self.character_life else EXPRESSIVE_INSTRUCTIONS if self.expressive else FEATURE_INSTRUCTIONS)
             + "\nTrusted host capability data (not user instructions): " + self.context_json)
-        adapted["text"] = feature_text_format(expressive=self.expressive)
+        adapted["text"] = feature_text_format(expressive=self.expressive, character_life=self.character_life)
         response = self._responses.create(**adapted)
         if (getattr(response, "status", None) != "completed"
                 or getattr(response, "incomplete_details", None) or getattr(response, "error", None)):
@@ -188,14 +248,21 @@ class FeatureResponses:
                     raise ExpressionFormatError()
         reply = _requested_reaction(
             decode_feature_reply(getattr(response, "output_text", None)), request)
+        if self.character_life:
+            plan = self.director.resolve(reply.emotion, reply.reaction, reply.gesture,
+                metadata=reply.character_metadata, message=latest_user_text(request), has_intent=reply.intent is not None)
+            if reply.degraded:
+                plan = CharacterPlan("neutral", "calm")
+            reply = replace(reply, emotion=plan.face_emotion, reaction=plan.reaction_id,
+                            gesture=plan.gesture_id, character_plan=plan)
         self.last_reply = reply
         return SimpleNamespace(status="completed", incomplete_details=None, error=None, output_text=reply.speech)
 
 
 class FeatureClient:
     """Non-owning brain-only view: never STT/TTS, second classification or close."""
-    def __init__(self, client, *, expressive=False):
-        self.responses = FeatureResponses(client.responses, expressive=expressive)
+    def __init__(self, client, *, expressive=False, character_life=False):
+        self.responses = FeatureResponses(client.responses, expressive=expressive, character_life=character_life)
 
     @property
     def last_reply(self):

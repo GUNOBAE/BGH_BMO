@@ -45,6 +45,9 @@ jobs:
       - run: python -B software/checks/check_ptt_vad_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_character_life_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
       - run: python -B software/checks/check_camera_media_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'

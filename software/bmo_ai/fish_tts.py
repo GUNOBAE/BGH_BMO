@@ -86,6 +86,8 @@ def synthesize_wav(
     download_timeout: float = 60.0,
     cancel_check=None,
     api_key=None,
+    on_timing=None,
+    clock=time.monotonic,
 ):
     """Call Fish once and return a validated temporary WAV path.
 
@@ -121,6 +123,14 @@ def synthesize_wav(
     )
     path = audio._new_wav(audio.AudioSynthesisError)
     succeeded = False
+    def observed(code):
+        if on_timing is not None:
+            try:
+                stamp = clock()
+                if type(stamp) in (int, float) and math.isfinite(stamp) and stamp >= 0:
+                    on_timing("fish", code, at=stamp)
+            except Exception:
+                pass  # Observation cannot retry or break a paid request.
     try:
         deadline = time.monotonic() + download_timeout
         try:
@@ -134,18 +144,24 @@ def synthesize_wav(
                     while True:
                         if time.monotonic() >= deadline:
                             raise audio.AudioSynthesisError("Fish speech download timed out.", "audio_download_timeout")
-                        chunk = response.read(65536)
+                        # The first body-byte observation must not wait for a
+                        # 64KiB read to fill. Later reads retain the bounded WAV
+                        # download path; this is not an acoustic TTFA measure.
+                        chunk = response.read(1 if count == 0 else 65536)
                         if time.monotonic() >= deadline:
                             raise audio.AudioSynthesisError("Fish speech download timed out.", "audio_download_timeout")
                         if not chunk:
                             break
                         if not isinstance(chunk, bytes) or count + len(chunk) > audio.MAX_AUDIO_BYTES:
                             raise audio.AudioSynthesisError("Fish speech download is invalid or too large.", "speech_download_too_large")
+                        if count == 0:
+                            observed("audio_first_byte")
                         try:
                             out.write(chunk)
                         except OSError:
                             raise audio.AudioSynthesisError("Cannot save synthesized audio. Check storage.", "audio_storage_failed") from None
                         count += len(chunk)
+                observed("audio_downloaded")
         except HTTPError as error:
             raise _error_for_http_status(error.code) from None
         except URLError:
@@ -160,6 +176,7 @@ def synthesize_wav(
             raise audio.AudioValidationError("Synthesized speech exceeds five minutes.", "speech_audio_too_long")
         if cancel_check is not None:
             cancel_check()
+        observed("audio_validated")
         succeeded = True
         return path
     finally:

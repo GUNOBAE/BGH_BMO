@@ -143,7 +143,7 @@ def host_factory(**settings):
                  dict(version=1,speech='A synthetic surprised reply.',emotion='surprised',gesture='shrug',intent=None),
                  dict(version=1,speech='A synthetic happy reply.',emotion='happy',gesture='none',intent=None)]
     client=Client(replies)
-    if scenario.startswith('ptt') or scenario=='release':
+    if scenario.startswith('ptt') or scenario in ('release','character'):
         from bmo_ai.features.input.microphone import SyntheticPcmSource
         class Source(SyntheticPcmSource):
             def __init__(self):
@@ -158,7 +158,7 @@ def host_factory(**settings):
                     raise MicError('microphone_tool_unavailable')
                 for frame in super().frames(*args,**kwargs):
                     if scenario=='ptt_slow':time.sleep(.03)
-                    elif scenario in ('ptt','release'):time.sleep(.01)
+                    elif scenario in ('ptt','release','character'):time.sleep(.01)
                     yield frame
             def close(self):
                 if not self.closed_once:

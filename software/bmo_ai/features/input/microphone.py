@@ -50,6 +50,27 @@ def _clock_now(clock):
     return now
 
 
+def _timing(observer, stage, code, *, at, **metrics):
+    """Optional safe observations never control capture ownership."""
+    if observer is not None:
+        try:
+            observer(stage, code, at=at, **metrics)
+        except Exception:
+            pass
+
+
+VAD_PROFILES = {"baseline": {"silence_timeout": .9},
+                "balanced": {"silence_timeout": .6},
+                "quick": {"silence_timeout": .45}}
+
+
+def ptt_vad_settings(profile="baseline"):
+    """Explicit comparison candidates, never measured device calibration."""
+    if type(profile) is not str or profile not in VAD_PROFILES:
+        raise MicError("invalid_mic_configuration")
+    return dict(VAD_PROFILES[profile])
+
+
 def _microphone_environment():
     # Do not inherit API credentials, Python hooks, LD_PRELOAD or arbitrary PATH.
     permitted = {"LANG", "LC_ALL", "LC_CTYPE", "XDG_RUNTIME_DIR", "PULSE_SERVER"}
@@ -71,7 +92,7 @@ class MicPcmSource:
 
     def __init__(self, device="plughw:CARD=Device,DEV=0", *, live_opt_in=False,
                  frame_ms=40, max_duration=12., clock=time.monotonic,
-                 process_factory=None):
+                 process_factory=None, on_timing=None):
         if (type(live_opt_in) is not bool or type(frame_ms) is not int
                 or not 20 <= frame_ms <= 100 or not _positive(max_duration, 12)):
             raise MicError("invalid_mic_configuration")
@@ -89,6 +110,10 @@ class MicPcmSource:
         self._process, self._state, self._code = None, "idle", "disabled" if not live_opt_in else "ok"
         self._selector = None
         self._bytes = 0
+        self.on_timing = on_timing
+
+    def set_timing_observer(self, observer):
+        self.on_timing = observer
 
     def snapshot(self):
         with self._lock:
@@ -133,6 +158,7 @@ class MicPcmSource:
                 with self._lock:
                     self._selector = selector
                 selector.register(fd, selectors.EVENT_READ)
+                _timing(self.on_timing, "microphone", "capture_pipe_ready", at=_clock_now(self.clock))
             except FileNotFoundError:
                 raise MicError("microphone_tool_unavailable") from None
             except (OSError, AttributeError, ValueError):
@@ -304,11 +330,13 @@ class PttRecorder:
                  playback_active=None, allowed_focus=None, on_state=None,
                  threshold=.02, min_speech=.24, silence_timeout=.9,
                  no_speech_timeout=3., max_duration=12., calibration=.4,
-                 noise_multiplier=2.5, max_noise=.12, speech_safe=False, ambient_rms=None):
+                 noise_multiplier=2.5, max_noise=.12, speech_safe=False, ambient_rms=None,
+                 on_timing=None, preroll_seconds=.4):
         if (not callable(source_factory) or not _positive(calibration, .5) or calibration < .3
                 or not _positive(noise_multiplier, 10) or noise_multiplier < 1
                 or not _positive(max_noise, .5) or not _positive(max_duration, 12)
                 or type(speech_safe) is not bool
+                or not _positive(preroll_seconds, .5) or preroll_seconds < .3
                 or ambient_rms is not None and (type(ambient_rms) not in (int, float)
                     or not math.isfinite(ambient_rms) or not 0 <= ambient_rms <= max_noise)):
             raise MicError("invalid_mic_configuration")
@@ -321,6 +349,7 @@ class PttRecorder:
                      no_speech_timeout=no_speech_timeout, max_duration=max_duration)
         validation.close()
         self.source_factory, self.clock, self.on_state = source_factory, clock, on_state
+        self.on_timing, self.preroll_seconds = on_timing, float(preroll_seconds)
         self.settings = dict(threshold=threshold, min_speech=min_speech, silence_timeout=silence_timeout,
                              no_speech_timeout=no_speech_timeout, max_duration=max_duration)
         self.calibration, self.noise_multiplier, self.max_noise = calibration, noise_multiplier, max_noise
@@ -348,7 +377,8 @@ class PttRecorder:
                          first_frame_received=self._first_frame_received, voice_detected=self._state in ("speech", "ready", "transcribing"),
                          rms_min=self._rms_min or 0., rms_max=self._rms_max, threshold=self._threshold,
                          frames=self._frames, ambient_verified=self.ambient_rms is not None,
-                         speech_safe=self.speech_safe)
+                         speech_safe=self.speech_safe, preroll_seconds=self.preroll_seconds,
+                         effective_calibration_seconds=0. if self.speech_safe else self.calibration)
             return value
 
     def _publish(self, state, code="ok", *, microphone_open=None):
@@ -399,6 +429,14 @@ class PttRecorder:
             gate = PcmTurnGate(self.focus, enabled=True, clock=self.clock,
                                playback_active=self.playback_active, **self.settings)
             gate_started = False
+            first_voiced_sample = earliest_voiced_sample = voiced_candidate_sample = voiced_candidate_at = None
+            fed_samples, vad_closed = 0, False
+            def observed(stage, code, at=None, **metrics):
+                try:
+                    stamp = _clock_now(self.clock) if at is None else at
+                except Exception:
+                    return
+                _timing(self.on_timing, stage, code, at=stamp, **metrics)
             def check():
                 if cancel_check is not None:
                     cancel_check()
@@ -427,9 +465,21 @@ class PttRecorder:
                 raise MicError("pcm_audio_format_failed")
             with self._lock:
                 self._source, self._microphone_open = source, True
+            if callable(getattr(source, "set_timing_observer", None)):
+                source.set_timing_observer(self.on_timing)
+            if self.speech_safe:
+                # Admit the fixed/profile gate BEFORE the source stamps its
+                # first frame. Starting it afterwards rejects that real frame
+                # as older than the gate by a few monotonic-clock microseconds.
+                gate.threshold = max(self.settings["threshold"],
+                    (self.ambient_rms or 0.) * self.noise_multiplier)
+                self._threshold = gate.threshold
+                if not gate.start_ptt(capture_id, generation=generation):
+                    raise MicError(gate.snapshot()["reason_code"])
+                gate_started = True
+                observed("calibration", "calibration_skipped")
             frames = iter(source.frames(capture_id, generation=generation, cancel_check=check))
             noise_squares, noise_count = 0, 0
-            preroll = []
             calibration_samples = round(16000 * self.calibration)
             previous_sequence, previous_time = -1, began
             for frame in frames:
@@ -443,11 +493,16 @@ class PttRecorder:
                         or self.clock() - frame.timestamp > .25):
                     raise MicError("invalid_pcm_frame")
                 previous_sequence, previous_time = frame.sequence, frame.timestamp
+                first_frame = not self._first_frame_received
                 with self._lock:
                     self._captured_bytes += len(frame.pcm)
                     self._microphone_open = True
                     self._first_frame_received = True
                     self._frames += 1
+                if first_frame:
+                    observed("microphone", "first_frame", frame.timestamp, first_frame_received=True)
+                    if self.speech_safe:
+                        self._publish("listening", microphone_open=True)
                 frame_samples = tuple(v[0] for v in struct.iter_unpack("<h", frame.pcm))
                 frame_rms = math.sqrt(sum(s * s for s in frame_samples) / len(frame_samples)) / 32768
                 self._rms_min = frame_rms if self._rms_min is None else min(self._rms_min, frame_rms)
@@ -457,37 +512,41 @@ class PttRecorder:
                 if not gate_started:
                     noise_squares += sum(sample * sample for sample in frame_samples)
                     noise_count += len(frame_samples)
-                    if self.speech_safe:
-                        preroll.append(frame)
                     if noise_count >= calibration_samples:
                         noise = math.sqrt(noise_squares / noise_count) / 32768
-                        if not self.speech_safe and noise > self.max_noise:
+                        if noise > self.max_noise:
                             raise MicError("calibration_noisy")
-                        # Never learn initial human speech as ambient noise. Only a
-                        # separately measured explicit quiet profile can raise the
-                        # product threshold; legacy injected callers retain v1.
-                        baseline = self.ambient_rms if self.speech_safe else noise
-                        gate.threshold = max(self.settings["threshold"],
-                                             (baseline or 0.) * self.noise_multiplier)
+                        gate.threshold = max(self.settings["threshold"], noise * self.noise_multiplier)
                         self._threshold = gate.threshold
                         if not gate.start_ptt(capture_id, generation=generation):
                             raise MicError(gate.snapshot()["reason_code"])
                         gate_started = True
                         self._publish("listening", microphone_open=True)
-                        for initial in preroll:
-                            # These frames already passed source freshness checks.
-                            # Buffer replay retains samples; its receipt time is now.
-                            gate.feed(initial.pcm, sequence=initial.sequence,
-                                      timestamp=self.clock(), generation=generation)
-                        if gate.snapshot()["speech_detected"]:
-                            self._publish("speech", microphone_open=True)
-                        preroll.clear()
                     continue
+                speech_before = gate.snapshot()["speech_detected"]
+                voiced_frame = frame_rms >= gate.threshold
+                if voiced_frame and earliest_voiced_sample is None:
+                    earliest_voiced_sample = fed_samples
+                if voiced_frame and voiced_candidate_sample is None:
+                    voiced_candidate_sample, voiced_candidate_at = fed_samples, frame.timestamp
+                elif not voiced_frame and not speech_before:
+                    voiced_candidate_sample = voiced_candidate_at = None
                 accepted = gate.feed(frame.pcm, sequence=frame.sequence,
                                      timestamp=frame.timestamp, generation=generation)
+                fed_samples += len(frame_samples)
+                speech_after = gate.snapshot()["speech_detected"]
+                if not speech_before and speech_after:
+                    # An initial short word followed by hesitation may not yet
+                    # satisfy min_speech. Never trim that earlier voiced onset.
+                    first_voiced_sample = earliest_voiced_sample
+                    observed("vad", "speech_start", voiced_candidate_at)
+                if speech_after and voiced_frame:
+                    observed("vad", "last_voiced", frame.timestamp)
                 pending = gate.poll()
                 if pending:
                     result, = pending
+                    observed("vad", "vad_closed")
+                    vad_closed = True
                     break
                 if not accepted:
                     raise MicError("invalid_pcm_frame")
@@ -537,6 +596,9 @@ class PttRecorder:
             self._publish("failed", "microphone_capture_failed")
             raise MicError("microphone_capture_failed") from None
         finally:
+            if source is not None and result is not None and not vad_closed:
+                observed("vad", "vad_closed")
+                vad_closed = True
             cleaned = True
             try:
                 if frames is not None and hasattr(frames, "close"):
@@ -557,13 +619,25 @@ class PttRecorder:
             if not cleaned:
                 self._publish("failed", "pcm_cleanup_failed")
                 raise MicError("pcm_cleanup_failed") from None
+            if source is not None:
+                observed("capture_close", "capture_closed", close_verified=True)
         if result is None:
             raise MicError("invalid_pcm_result")
         with self._lock:
             if self._cancel.is_set() or self._closed.is_set():
                 result = replace(result, status="cancelled", code="user_cancelled", pcm=b"")
+            trim_samples = 0
             if result.status == "ready":
+                if self.speech_safe and first_voiced_sample is not None:
+                    # Keep a .3-.5s configured lead-in, the entire qualified
+                    # phrase and its full VAD tail. Drop only older silence.
+                    trim_samples = max(0, first_voiced_sample - round(16000 * self.preroll_seconds))
+                    if trim_samples:
+                        result = replace(result, pcm=result.pcm[trim_samples * 2:])
                 self._ready = result
+        observed("capture_close", "capture_ready", captured_bytes=len(result.pcm),
+                 preroll_ms=self.preroll_seconds * 1000,
+                 trimmed_leading_bytes=trim_samples * 2)
         self._publish("ready" if result.status == "ready" else "idle", result.code, microphone_open=False)
         return result
 
@@ -608,10 +682,14 @@ class PttRecorder:
             if info.get("sample_rate") != 16000 or info.get("channels") != 1:
                 raise MicError("invalid_pcm_result")
             check()
+            _timing(self.on_timing, "stt", "wav_ready", at=_clock_now(self.clock),
+                    captured_bytes=len(capture.pcm))
+            _timing(self.on_timing, "stt", "request_started", at=_clock_now(self.clock))
             result = (transcriber or audio.transcribe)(client, Path(path), model=model, language=language)
             check()
             if type(result) is not str or len(result) > 16384:
                 raise MicError("invalid_transcript")
+            _timing(self.on_timing, "stt", "ok", at=_clock_now(self.clock))
             self._publish("idle", "transcribed" if result.strip() else "stt_empty")
             return result
         except (TurnCancelled, KeyboardInterrupt):

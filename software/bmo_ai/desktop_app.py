@@ -46,6 +46,9 @@ def parser():
     p.add_argument("--ptt-trace", action="store_true", help="opt-in bounded stage/timing/RMS diagnostics; never PCM, transcript, keys or provider messages")
     p.add_argument("--ptt-ambient-profile", type=Path, help="explicit supervised calibration profile; no automatic calibration or idle listening")
     p.add_argument("--plain-voice", action="store_true", help="use plain Aaron voice instead of supported, allowlisted emotional direction")
+    p.add_argument("--character-life", action="store_true", help="opt in to the compatible Character Life director and detailed safe timing")
+    p.add_argument("--ptt-vad-profile", choices=("baseline", "balanced", "quick"), default="baseline",
+                   help="explicit VAD comparison profile: baseline .9s, balanced .6s, quick .45s; no measured latency claim")
     p.add_argument("--arms-supervised", action="store_true",
                    help="EXPLICIT live opt-in, only after physical GP7/full-swing acceptance")
     p.add_argument("--emotion-arms", action="store_true",
@@ -95,6 +98,8 @@ def public_plan(args):
                             "raw_audio_logged": False, "transcripts_logged": False},
         "voice_direction": {"requested": not args.plain_voice, "speaker_changed": False,
                             "listening_approval": "NOT_RUN"},
+        "character_life": {"enabled": args.character_life, "ptt_vad_profile": args.ptt_vad_profile,
+                           "actual_latency": "UNMEASURED", "audio_generated": False},
         "arm_legacy_bridge": {"requested": args.arm_legacy_bridge,
                               "default_disabled": not args.arms_supervised,
                               "physical_verified": False},
@@ -268,6 +273,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "ptt_speech_safe": True,
                         "expressive_voice": not args.plain_voice,
                         "emotion_arms": args.emotion_arms}
+            if args.character_life:
+                settings["character_life"] = True
+            if args.ptt_vad_profile != "baseline":
+                settings["ptt_vad_profile"] = args.ptt_vad_profile
             if args.music_supervised:
                 settings["music_supervised"] = True
             if args.usb_gamepad:

@@ -140,10 +140,11 @@ class IntegrationSession:
                  clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0,
                  emotion_mode="manual", fish_api_key=None, reply_client=None,
                  on_reply=None, on_playback_event=None, diagnostics=None,
-                 expressive_voice=False):
+                 expressive_voice=False, character_life=False):
         if emotion_mode not in ("auto", "manual"):
             raise ValueError("unknown emotion mode")
         self.config, self.client, self.simulate = config, client, simulate
+        self.character_life = bool(character_life)
         self.expression_client = ExpressionClient(client) if reply_client is None else reply_client
         self._on_reply, self._on_playback_event = on_reply, on_playback_event
         self.diagnostics = diagnostics
@@ -167,12 +168,17 @@ class IntegrationSession:
                           emotion="neutral", emotion_mode=emotion_mode,
                           emotion_validation="none", playback="idle", position=0.0,
                           cues=[], source=None)
+        if self.character_life:
+            self._data["character"] = None
         self.events = deque(maxlen=128)
         voice_credentials = {} if fish_api_key is None else {"fish_api_key": fish_api_key}
         self.voice = voice if voice is not None else IntegrationVoice(
             config, client, simulate=simulate, emit=lambda *a, **kw: None,
             cancel_check=lambda: None, **voice_credentials,
-            **({"expressive": True} if expressive_voice else {}))
+            **({"expressive": True} if expressive_voice else {}),
+            **({"character_life": True} if self.character_life else {}))
+        if isinstance(self.voice, IntegrationVoice) and self.character_life:
+            self.voice.character_life = True
         self.worker = ConversationWorker(self._factory, timeout=timeout,
                                          queue_size=32, clock=clock, synthetic=simulate)
 
@@ -193,6 +199,8 @@ class IntegrationSession:
         self._staged_expression = self._notice_restore = None
         if neutral:
             self._data.update(emotion="neutral", emotion_validation="none")
+            if self.character_life:
+                self._data["character"] = None
 
     def _restore_notice_expression(self):
         """A fixed notice is neutral only while playing, including repeats.
@@ -205,6 +213,8 @@ class IntegrationSession:
         if (restore is not None and self._current_expression_turn()
                 and restore[0] == self._emotion_generation and restore[1] == self._turn):
             self._data.update(emotion=restore[2], emotion_validation=restore[3])
+            if self.character_life:
+                self._data["character"] = dict(restore[4]) if restore[4] is not None else None
 
     def _current_expression_turn(self):
         return (self._data["emotion_mode"] == "auto" and self._turn_mode == "auto"
@@ -227,6 +237,8 @@ class IntegrationSession:
         with self._lock:
             value = dict(self._data)
             value["cues"] = [dict(cue) for cue in self._data["cues"]]
+            if self.character_life and value.get("character") is not None:
+                value["character"] = dict(value["character"])
             if self._started is not None and self._data["playback"] == "started":
                 value["position"] = max(0.0, self.clock() - self._started)
             return value
@@ -247,6 +259,8 @@ class IntegrationSession:
                 self._data["emotion"] = emotion
             if self._data["emotion_mode"] == "manual":
                 self._data["emotion_validation"] = "manual"
+                if self.character_life:
+                    self._data["character"] = None
             self._record("emotion")
         # A busy turn keeps its original brain-only view. Generation checks
         # discard its provisional metadata; the next turn chooses a new view.
@@ -280,6 +294,8 @@ class IntegrationSession:
                              emotion_validation="degraded" if reply.degraded else "validated")
                 if hasattr(reply, "reaction"):
                     value["reaction"] = reply.reaction
+                if self.character_life and getattr(reply, "character_plan", None) is not None:
+                    value["character_plan"] = reply.character_plan.public()
                 self._staged_expression = dict(turn=turn, generation=generation, **value)
                 self.voice.expression_metadata = value
                 if self._on_reply is not None:
@@ -338,6 +354,9 @@ class IntegrationSession:
                         self._notice_restore = (
                             self._emotion_generation, turn, self._data["emotion"],
                             self._data["emotion_validation"]) if notice else None
+                        if notice and self.character_life:
+                            prior = self._data.get("character")
+                            self._notice_restore += (dict(prior) if prior is not None else None,)
                         emotion = "neutral" if notice else fields.get("emotion", "neutral")
                         validation = "notice" if notice else fields.get("emotion_validation", "none")
                         if emotion not in EMOTIONS:
@@ -345,6 +364,13 @@ class IntegrationSession:
                         if validation not in ("none", "manual", "validated", "degraded", "notice"):
                             emotion, validation = "neutral", "none"
                         self._data.update(emotion=emotion, emotion_validation=validation)
+                        if self.character_life:
+                            from .character_director import CharacterPlan
+                            try:
+                                plan = CharacterPlan.from_public(fields.get("character_plan"))
+                                self._data["character"] = plan.public() if plan.face_emotion == emotion and not notice else None
+                            except ValueError:
+                                self._data["character"] = None
                 elif kind in ("ended", "cancelled", "error"):
                     if kind == "ended":
                         self._staged_expression = None
@@ -354,6 +380,13 @@ class IntegrationSession:
                     self._on_playback_event(kind, self._data["turn_id"], self.clock())
 
         self.voice.cancel_check, self.voice.emit = check, emit
+        if (isinstance(self.voice, IntegrationVoice) and self.diagnostics is not None
+                and (self.character_life or self.diagnostics.enabled)):
+            def timing(stage, code, *, at=None, **metrics):
+                if cancellation.is_set() or self._closed:
+                    return
+                self.diagnostics.record(stage, code, turn=turn, at=at, **metrics)
+            self.voice.on_timing, self.voice.timing_clock = timing, self.clock
         with self._lock:
             self.voice.expression_metadata = dict(
                 emotion=self._data["emotion"] if mode == "manual" else "neutral",

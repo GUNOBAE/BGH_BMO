@@ -179,7 +179,7 @@ class GazeArbiter:
         self._offers = {}
 
     def offer(self, owner, x, y, *, generation, expires_at):
-        if (owner not in ("manual", "camera", "reaction")
+        if (owner not in ("manual", "camera", "reaction", "dialogue", "idle")
                 or type(generation) is not int or generation < 0
                 or any(type(v) not in (int, float) or not math.isfinite(v) for v in (x, y, expires_at))):
             raise FeatureError("invalid_gaze")
@@ -199,6 +199,7 @@ class GazeArbiter:
         if selected is None and phase in ("listening", "thinking"):
             return {"owner": "native", "apply": False, "x": 0., "y": 0.}
         if selected is None:
-            selected = valid.get("camera") or valid.get("reaction")
+            selected = ((valid.get("dialogue") if phase == "speaking" else None)
+                        or valid.get("camera") or valid.get("reaction") or valid.get("idle"))
         return ({"owner": selected.owner, "apply": True, "x": selected.x, "y": selected.y}
                 if selected else {"owner": "idle", "apply": True, "x": 0., "y": 0.})
