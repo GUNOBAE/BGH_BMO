@@ -1,5 +1,7 @@
 # Character Life 로컬 음성팩 도구
 
+**2026-10-29 후속:** 아래는 최초 도구 작성 당시 기록이다. 현재는 [실제 무료 Aaron 준비](FREE_AARON_PREPARATION_KR.md)에서 6개 WAV를 생성했고 26개는 미생성, 승인된 새 음성은 0개다. 전체 인증 요청 8/8을 소진했으므로 이번 승인으로 추가 생성·조회하지 않는다. 유료 A/B 예시는 별도 지출 승인을 대신하지 않는다. [최신 인계·수동 검수](REMAINING_CORE_20261029_KR.md)
+
 32개 후보는 `software/bmo_ai/policies/voice-bank-v1.json`에 들어 있다. 실제 음성은 저장소에 넣지 않는다. 현재 후보는 모두 `AUDIO_NOT_GENERATED`이며 실제 Aaron 음성 생성, 청취 승인, Pi 스피커 재생은 수행하지 않았다. 임시 합성 PCM 회귀 검사와 실제 목소리 청취는 구분한다.
 
 `VoiceBank`는 기존 `GreetingCache`의 비공개 원자적 번들을 재사용한다. 모델별/문구별 WAV SHA-256, 연출 사양 fingerprint, 실제 길이, lip cue SHA와 승인 상태를 검증한 임시 스냅샷만 재생한다. Aaron ID, Beemo 발음, gain 0.25를 고정하며 gain은 게시 시 한 번 적용한다. 동일 모델/문구의 기존 번들은 덮어쓰지 않는다. 일반 부팅·idle에서 키를 읽거나 API를 호출하지 않는다.

@@ -1,5 +1,7 @@
 # Character Life v1 — 24개 인수 시나리오 검증 대응표
 
+**최신 핵심 후속:** [저장 WAV VAD·실제 무료 WAV 6개·실제 ONNX 후보와 수동 검수](REMAINING_CORE_20261029_KR.md)를 추가했다. 아래 표의 실제 Fish 미생성/호출어 MODEL_MISSING은 초기 검사 시점의 기록이며, 현재 자산 준비와 사람의 청취·발화 정확도 미승인을 구분한다.
+
 **2026-10-29 후속 실제 검수:** [실제 장치 보고서](DEVICE_ACCEPTANCE_20261029_KR.md)에 마이크 PCM·취소/재열기, 사진 3장·영상 1개, 로컬 시험음/루프백, DISABLED B1 HELLO 결과를 추가했다. 아래 표는 최초 장치 없는 인수 검사의 대응표로 보존한다. 새 실기가 사람 발화·Aaron 청취·실제 얼굴 추적·팔 이동 승인을 뜻하지 않는다.
 
 기준은 [VOICE_BANK_AND_ACCEPTANCE_KR.md](VOICE_BANK_AND_ACCEPTANCE_KR.md)의 **최소 인수 시나리오 24개**다. 아래 상태는 실제 작성된 assertion과 실행된 장치 없는 검사 범위에 한정한다. 이 문서는 최종 HEAD의 전체 회귀·CI 성공을 대신하지 않는다. 최종 커밋 SHA, 최종 회귀 수와 CI 링크는 작업 최종 보고서에서 확인한다.

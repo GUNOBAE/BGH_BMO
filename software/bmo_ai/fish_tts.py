@@ -13,7 +13,7 @@ import re
 import struct
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from . import audio
 
@@ -24,6 +24,10 @@ AARON_BMO_VOICE_ID = "106f41ea392c4cc48c6eee76f69ff17e"
 SOFT_AARON_DIRECTION = "[gentle, warm, slightly lower pitch, still lightly playful] "
 DELIVERY_MODES = frozenset(("soft", "plain"))
 
+
+class _NoFreeRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        raise audio.AudioSynthesisError("Free-only speech refuses HTTP redirects.", "fish_redirect")
 
 
 # The Fish WAV transport may use placeholder sizes instead of actual bytes.
@@ -88,6 +92,7 @@ def synthesize_wav(
     api_key=None,
     on_timing=None,
     clock=time.monotonic,
+    free_only=False,
 ):
     """Call Fish once and return a validated temporary WAV path.
 
@@ -95,6 +100,8 @@ def synthesize_wav(
     retry or switch providers. The explicit model header prevents accidental
     use of Fish's paid default when requesting the free model.
     """
+    if type(free_only) is not bool or free_only and model != "s2.1-pro-free":
+        raise audio.AudioValidationError("Free-only speech requires the exact free model.", "invalid_fish_model")
     if not isinstance(text, str):
         raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
     if not text.strip():
@@ -134,7 +141,8 @@ def synthesize_wav(
     try:
         deadline = time.monotonic() + download_timeout
         try:
-            with urlopen(request, timeout=timeout) as response:
+            opener = build_opener(_NoFreeRedirect()).open if free_only else urlopen
+            with opener(request, timeout=timeout) as response:
                 try:
                     out = path.open("wb")
                 except OSError:

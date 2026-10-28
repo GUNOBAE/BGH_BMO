@@ -1,5 +1,7 @@
 # Character Life v1 — 실제 장치 검수 결과 (2026-10-29 KST)
 
+**후속 분석:** 아래 실물 검수 결과와 당시 비용/요청 수는 보존한다. 이후 새 장치 검사 없이 저장 WAV를 분석해 [PTT VAD 후보·실제 무료 Aaron 6개·공개 ONNX 준비](REMAINING_CORE_20261029_KR.md)를 진행했다. 뒤 단계의 무료 8요청과 이전 장치 검수의 API 0회는 시점이 다르다.
+
 ## 범위와 근거
 
 [사용자 권한 갱신](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6473188150)에 따라 `/home/bgh/BMO_CHARACTER_LIFE`에서 기존 구현을 이어서 검사했다. 기반 HEAD는 `492472af425083ba7337abf3b577b092f051a5e5`이며, 실기 중 발견한 오류를 이 worktree에서 수정했다. 최종 제출 SHA와 해당 CI는 PR #40의 완료 댓글에 기록한다. 과거 `NOT_RUN` 기록은 당시 상태이며 이번 결과와 구분한다.

@@ -52,13 +52,22 @@ class LocalWakeDetector:
         self._loader = loader
         self._lock = RLock()
         self._model = self._numpy = self._manifest = None
+        self._providers = {}
         self._pending, self._hits = bytearray(), 0
+        self._last_score = None
         self._state, self._code = "DISABLED", "disabled"
 
     def snapshot(self):
         with self._lock:
+            supported = list(self._manifest.get('supported_phrases', self._manifest['phrases'])) if self._manifest else []
             return dict(enabled=self._state == "READY", status=self._state,
                         reason_code=self._code, phrases=list(PHRASES),
+                        requested_phrases=list(PHRASES), supported_phrases=supported,
+                        unverified_phrases=[phrase for phrase in PHRASES if phrase not in supported],
+                        phrase_acceptance={phrase: 'NOT_RUN' for phrase in PHRASES},
+                        last_score=self._last_score,
+                        model_sha256=self._manifest['artifacts']['classifier']['sha256'] if self._manifest else None,
+                        execution_providers={name: list(value) for name, value in self._providers.items()},
                         backend="openwakeword_onnx", local_only=True,
                         acoustic_acceptance="NOT_RUN", real_wake_word="NOT_RUN",
                         model_installed=self._model is not None,
@@ -77,12 +86,18 @@ class LocalWakeDetector:
             raise WakeModelError("wake_model_missing") from None
         except (OSError, ValueError, UnicodeError):
             raise WakeModelError("wake_model_invalid") from None
+        phrases = data.get('phrases') if type(data) is dict else None
+        supported = data.get('supported_phrases', phrases) if type(data) is dict else None
+        phrase_valid = lambda value: (type(value) is list and 1 <= len(value) <= len(PHRASES)
+            and all(type(phrase) is str and phrase in PHRASES for phrase in value)
+            and len(set(value)) == len(value))
         if (type(data) is not dict or data.get("schema") != 1
                 or data.get("backend") != "openwakeword_onnx"
                 or data.get("custom_model") is not True
                 or data.get("sample_rate") != 16000 or data.get("frame_samples") != 1280
                 or data.get("frontend") != "openwakeword_melspectrogram_embedding_v1"
-                or type(data.get("phrases")) is not list or set(data["phrases"]) != set(PHRASES)
+                or not phrase_valid(phrases) or not phrase_valid(supported)
+                or set(supported) != set(phrases)
                 or type(data.get("license")) is not str or not 1 <= len(data["license"]) <= 200
                 or type(data.get("artifacts")) is not dict):
             raise WakeModelError("wake_model_invalid")
@@ -150,6 +165,9 @@ class LocalWakeDetector:
                             or not _matches(session.get_outputs()[0].shape, shape["output_shape"])):
                         raise WakeModelError("wake_model_shape_mismatch")
                 self._model, self._numpy, self._manifest = model, numpy, manifest
+                self._providers = {name: list(session.get_providers())
+                    if callable(getattr(session, 'get_providers', None)) else []
+                    for name, session in sessions.items()}
                 self._key = key
                 self._state, self._code = "READY", "ok"
                 return True
@@ -163,8 +181,10 @@ class LocalWakeDetector:
 
     def _drop(self):
         self._model = self._numpy = self._manifest = None
+        self._providers = {}
         self._pending.clear()
         self._hits = 0
+        self._last_score = None
 
     def feed(self, pcm):
         with self._lock:
@@ -182,6 +202,7 @@ class LocalWakeDetector:
                     score = float(prediction[self._key])
                     if not math.isfinite(score) or not 0 <= score <= 1:
                         raise ValueError()
+                    self._last_score = score
                     self._hits = self._hits + 1 if score >= self._manifest.get("threshold", .5) else 0
                     if self._hits >= self._manifest.get("consecutive_frames", 2):
                         activated = True
@@ -196,6 +217,7 @@ class LocalWakeDetector:
         with self._lock:
             self._pending.clear()
             self._hits = 0
+            self._last_score = None
             if self._model is not None:
                 try:
                     self._model.reset()

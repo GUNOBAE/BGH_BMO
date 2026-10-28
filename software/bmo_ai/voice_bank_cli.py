@@ -7,6 +7,7 @@ checks a user spend ceiling, generates each sample once, and never approves it.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING
 import hashlib
@@ -32,6 +33,7 @@ PREVIEW_RATES = {"s2.1-pro-free": Decimal("0"), "s2.1-pro": Decimal("15"), "dram
 DEFAULT_CLIPS = ("boot_01", "boot_05", "reaction_07", "reaction_11")
 DEFAULT_MODELS = ("s2.1-pro-free", "drama-3")
 MAX_SAMPLES = 8
+FREE_CLIPS = ("boot_01", "boot_05", "reaction_03", "reaction_07", "reaction_08", "reaction_11")
 
 
 def pricing_from_official_text(text):
@@ -114,14 +116,21 @@ def preview(bank, *, clip_ids=DEFAULT_CLIPS, models=DEFAULT_MODELS, rates=None, 
 
 def generate(bank, *, clip_ids=DEFAULT_CLIPS, models=DEFAULT_MODELS, spend_cap_usd,
              explicit_generate=False, credential_resolver=None, synthesizer=None,
-             pricing_verifier=None, cancel_check=None):
+             pricing_verifier=None, cancel_check=None, free_only=False,
+             free_contract_verifier=None, account_verifier=None, budget_directory=None,
+             on_free_account_ready=None):
     """Finite explicit generation. All metadata/budget checks precede keys/API."""
     if explicit_generate is not True:
         raise VoiceBankError("voice_bank_generation_not_authorized")
     try: cap = Decimal(str(spend_cap_usd))
     except Exception: raise VoiceBankError("voice_bank_spend_cap_invalid") from None
-    if not cap.is_finite() or cap <= 0:
+    if (type(free_only) is not bool or not cap.is_finite()
+            or (cap != 0 if free_only else cap <= 0)):
         raise VoiceBankError("voice_bank_spend_cap_invalid")
+    if free_only and tuple(models) != ("s2.1-pro-free",):
+        raise VoiceBankError("voice_bank_free_model_required")
+    if free_only and len(clip_ids)+2 > MAX_SAMPLES:
+        raise VoiceBankError("voice_bank_free_budget_exhausted")
     # Validate the complete small batch without creating any private directory.
     preview(bank, clip_ids=clip_ids, models=models)
     rates, receipt = (pricing_verifier or verify_current_pricing)()
@@ -135,6 +144,23 @@ def generate(bank, *, clip_ids=DEFAULT_CLIPS, models=DEFAULT_MODELS, spend_cap_u
             raise ValueError()
     except (KeyError, TypeError, ValueError):
         raise VoiceBankError("voice_bank_pricing_unverified") from None
+    contract = None
+    if free_only:
+        from .voice_bank_free import verify_free_contract, FreeRequestBudget, OPENAPI_URL
+        if rates["s2.1-pro-free"] != 0 or checked.date() != datetime.now(timezone.utc).date():
+            raise VoiceBankError("voice_bank_free_price_unverified")
+        contract = (free_contract_verifier or verify_free_contract)()
+        try:
+            verified = datetime.fromisoformat(contract["checked_utc"])
+            if (contract["source"] != OPENAPI_URL or contract["exact_model"] != "s2.1-pro-free"
+                    or contract["paid_default"] != "s2.1-pro"
+                    or contract["metadata_gets_documented"] is not True
+                    or not re.fullmatch("[a-f0-9]{64}",contract["sha256"])
+                    or verified.tzinfo is None or verified.date() != datetime.now(timezone.utc).date()
+                    or not 0 <= (datetime.now(timezone.utc)-verified).total_seconds() <= 3600):
+                raise ValueError()
+        except (KeyError,TypeError,ValueError):
+            raise VoiceBankError("voice_bank_free_contract_unverified") from None
     planned = preview(bank, clip_ids=clip_ids, models=models, rates=rates, pricing=receipt)
     if Decimal(planned["estimated_usd"]) > cap:
         raise VoiceBankError("voice_bank_spend_cap_exceeded")
@@ -144,7 +170,9 @@ def generate(bank, *, clip_ids=DEFAULT_CLIPS, models=DEFAULT_MODELS, spend_cap_u
     def check():
         if cancel_check is not None: cancel_check()
     results = []
-    with bank.generation_lock():
+    budget = FreeRequestBudget(budget_directory) if free_only else None
+    account = None
+    with (budget.session(2+len(planned["samples"])) if budget is not None else nullcontext()), bank.generation_lock():
         # Another explicit process may have published while pricing was read.
         for row in planned["samples"]:
             if bank.exists(row["clip_id"], row["model"]):
@@ -156,24 +184,49 @@ def generate(bank, *, clip_ids=DEFAULT_CLIPS, models=DEFAULT_MODELS, spend_cap_u
         else:
             credentials = credential_resolver()
         api_key = credentials.fish_api_key
+        if free_only:
+            from .voice_bank_free import verify_free_account
+            try:
+                account = (account_verifier or verify_free_account)(api_key,budget=budget)
+                if type(account) is not dict or account.get("status") != "AUTHENTICATED_AARON_VISIBLE":
+                    raise VoiceBankError("voice_bank_account_unverified")
+                if on_free_account_ready is not None:
+                    on_free_account_ready(account,budget.snapshot())
+            except BaseException:
+                budget.value["blocked"] = True
+                budget._write()
+                raise
         for row in planned["samples"]:
             check(); raw = None
+            if budget is not None: budget.reserve(row["clip_id"])
             try:
                 raw = Path((synthesizer or fish_tts.synthesize_wav)(row["spoken"], model=row["model"],
-                    reference_id=fish_tts.AARON_BMO_VOICE_ID, api_key=api_key, cancel_check=check))
+                    reference_id=fish_tts.AARON_BMO_VOICE_ID, api_key=api_key, cancel_check=check,
+                    **({"free_only":True} if free_only else {})))
                 check()
                 results.append(bank.publish(row["clip_id"], raw, model=row["model"]))
+                if budget is not None: budget.finish(success=True)
             except (TurnCancelled, KeyboardInterrupt):
+                if budget is not None: budget.finish(success=False,code="cancelled")
                 raise
-            except Exception:
+            except Exception as error:
                 # Stop at the first failure; never retry paid synthesis. Already
                 # completed candidates remain available for separate listening.
+                if budget is not None:
+                    budget.finish(success=False,code=getattr(error,"code","voice_bank_generation_failed"))
+                    raise VoiceBankError(budget.value["attempts"][-1]["code"]) from None
                 raise VoiceBankError("voice_bank_generation_failed") from None
             finally:
                 if raw is not None: audio._discard(raw, suppress=True)
-    return dict(status="GENERATED_UNAPPROVED", results=results, sample_count=len(results),
+    report = dict(status="GENERATED_UNAPPROVED", results=results, sample_count=len(results),
                 estimated_max_usd=planned["estimated_usd"], spend_cap_usd=str(cap),
                 pricing=receipt, api_calls=len(results), retries=0, listening_approved=False)
+    if free_only:
+        report.update(free_only=True, contract=contract,
+                      account=dict(account,free_inference_permission="FREE_TTS_REQUEST_SUCCEEDED",synthesis_requests=len(results)),
+                      request_budget=budget.snapshot(),
+                      free_inference_permission="FREE_TTS_REQUEST_SUCCEEDED", audio_played=False)
+    return report
 
 
 def main(argv=None):
@@ -183,6 +236,7 @@ def main(argv=None):
     parser.add_argument("--model", action="append", choices=MODELS, dest="models")
     parser.add_argument("--inventory", action="store_true")
     parser.add_argument("--generate", action="store_true")
+    parser.add_argument("--free-only", action="store_true", help="explicit USD-zero, exact free model, persistent eight-request ceiling")
     parser.add_argument("--spend-cap-usd")
     parser.add_argument("--approve", metavar="CLIP_ID")
     parser.add_argument("--sha256")
@@ -193,6 +247,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if sum(bool(v) for v in (args.inventory, args.generate, args.approve, args.audition)) > 1:
         parser.error("select one operation")
+    if args.free_only and (args.inventory or args.approve or args.audition):
+        parser.error("free-only applies to preview or explicit generation only")
+    if args.free_only and args.models and tuple(args.models) != ("s2.1-pro-free",):
+        parser.error("free-only requires exactly s2.1-pro-free")
     config = integration_config(speaker_device=args.speaker_device)
     bank = VoiceBank(args.directory or default_voice_bank_directory(), config)
     try:
@@ -211,11 +269,15 @@ def main(argv=None):
                     model=args.models[0] if args.models else None, allow_unapproved=True)
             finally: player.close()
         elif args.generate:
-            report = generate(bank, clip_ids=tuple(args.clips or DEFAULT_CLIPS),
-                models=tuple(args.models or DEFAULT_MODELS), spend_cap_usd=args.spend_cap_usd,
-                explicit_generate=True)
+            report = generate(bank, clip_ids=tuple(args.clips or (FREE_CLIPS if args.free_only else DEFAULT_CLIPS)),
+                models=tuple(args.models or (("s2.1-pro-free",) if args.free_only else DEFAULT_MODELS)), spend_cap_usd=args.spend_cap_usd,
+                explicit_generate=True, free_only=args.free_only)
         else:
-            report = preview(bank, clip_ids=tuple(args.clips or DEFAULT_CLIPS), models=tuple(args.models or DEFAULT_MODELS))
+            report = preview(bank, clip_ids=tuple(args.clips or (FREE_CLIPS if args.free_only else DEFAULT_CLIPS)),
+                models=tuple(args.models or (("s2.1-pro-free",) if args.free_only else DEFAULT_MODELS)))
+            if args.free_only:
+                report.update(free_only=True,max_tts_samples=6,authenticated_request_limit=8,
+                              metadata_gets_reserved_in_limit=2,usd_cap="0")
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     except VoiceBankError as error:
