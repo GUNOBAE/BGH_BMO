@@ -88,17 +88,19 @@ class FeatureHost:
                  camera_supervised=False, photo_directory=None, camera_video_supervised=False,
                  ptt_speech_safe=False, emotion_arms=False, music_supervised=False,
                  usb_gamepad=False, character_life=False, ptt_vad_profile="baseline",
-                 wake_word=False, wake_model_manifest=None):
+                 wake_word=False, wake_model_manifest=None, ptt_vad_mode="rms"):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
         from .motion import MotionFeature, IMUHealthMonitor
         self.runtime = runtime if runtime is not None else RuntimePolicy()
         if (type(character_life) is not bool or type(wake_word) is not bool
-                or ptt_vad_profile not in ("baseline", "balanced", "quick")):
+                or ptt_vad_profile not in ("baseline", "balanced", "quick")
+                or ptt_vad_mode not in ("rms", "webrtc")):
             raise FeatureError("invalid_character_configuration")
         self.character_life = character_life
         self.ptt_vad_profile = ptt_vad_profile
+        self.ptt_vad_mode = ptt_vad_mode
         self._last_character_plan = None
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
@@ -291,6 +293,7 @@ class FeatureHost:
             self._ptt_transcriber = ptt_transcriber or (
                 (lambda *_a, **_kw: "Synthetic button question.") if self.runtime.simulate else None)
             self.microphone = PttRecorder(self.audio, source, clock=clock,
+                **({"vad_mode": ptt_vad_mode} if ptt_vad_mode != "rms" else {}),
                 allowed_focus=lambda: self._ptt_lease is not None and self.audio.lease is self._ptt_lease,
                 playback_active=lambda: self.session.snapshot()["playback"] == "started",
                 on_state=self._ptt_state,
@@ -1315,6 +1318,7 @@ class FeatureHost:
             "system_diagnostics": self._system_diagnostics,
             "turn_diagnostics": self.turn_diagnostics.snapshot(),
             "character_life": {"enabled": self.character_life, "ptt_vad_profile": self.ptt_vad_profile,
+                               "ptt_vad_mode": self.ptt_vad_mode,
                                "last_played_plan": self._last_character_plan,
                                "physical_latency": "UNMEASURED"},
             "photo_countdown": max(0, self._pending_photo["deadline"] - self.clock()) if self._pending_photo else None,

@@ -16,15 +16,21 @@ from checks.check_desktop_app_browser import DesktopFixture, FIXTURE
 from bmo_ai.screen_profiles import SCREEN_PROFILES
 
 
-def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
+def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
     from playwright.sync_api import sync_playwright
     path = FIXTURE if profile == "ci-synthetic" else Path(SCREEN_PROFILES[profile]["default_path"])
     before = hashlib.sha256(path.read_bytes()).hexdigest()
     if profile != "ci-synthetic": assert before == SCREEN_PROFILES[profile]["sha256"]
     checks = []
     with tempfile.TemporaryDirectory(prefix="bmo-ptt-browser-") as directory:
-        fixture = DesktopFixture(directory, profile=profile, face=path, scenario="ptt_slow",
-                                 extra_args=("--ptt-trace",))
+        assert vad_mode in ("rms", "webrtc")
+        args = ("--ptt-trace",)
+        if vad_mode == "webrtc":
+            args += ("--character-life", "--ptt-vad-mode", "webrtc",
+                     "--voice-bank-directory", str(Path(directory)/"character-bank"))
+        fixture = DesktopFixture(directory, profile=profile, face=path,
+                                 scenario="ptt_webrtc" if vad_mode == "webrtc" else "ptt_slow",
+                                 extra_args=args)
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(executable_path=chromium, headless=True,
@@ -51,7 +57,8 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'")
                     audit = fixture.features()["test_fixture"]
                     assert audit["mic_sources"] == audit["stt"] == audit["brain"] == 0
-                    assert audit["greeting_calls"] == 1
+                    assert fixture.state()["greeting_attempts"] == 1
+                    assert audit["greeting_calls"] == (0 if vad_mode == "webrtc" else 1)
                     checks.append("startup greeting is cache-only; idle opens zero PCM sources/STT/brain")
 
                     # Focus the unchanged face iframe; all input belongs to the parent adapter.
@@ -177,7 +184,8 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page.wait_for_function("()=>BMODesktop.state?.phase==='ready'")
                     page.wait_for_timeout(200)
                     audit = fixture.features()["test_fixture"]
-                    assert audit["greeting_calls"] == 1 and audit["mic_sources"] == 3
+                    assert fixture.state()["greeting_attempts"] == 1 and audit["mic_sources"] == 3
+                    assert audit["greeting_calls"] == (0 if vad_mode == "webrtc" else 1)
                     assert fixture.features()["wake_word"]["enabled"] is False
                     assert fixture.features()["ptt"]["physical_verified"] is False
                     assert page.evaluate("()=>window.__audioCalls") == 0
@@ -193,7 +201,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                 finally: browser.close()
         finally: fixture.close()
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
-    return dict(status="PASS",screen_profile=profile,checks=checks,counts=counts,
+    return dict(status="PASS",screen_profile=profile,vad_mode=vad_mode,checks=checks,counts=counts,
         sha256_before=before,sha256_after=before,
         not_run=["USB GP8 identity/firmware", "actual microphone/VAD tuning", "paid STT/GPT/Fish", "physical devices"])
 
@@ -202,5 +210,6 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--screen-profile",choices=("ci-synthetic","r10","v13.2"),default="ci-synthetic")
     p.add_argument("--chromium",nargs="?",const=None,default="/usr/bin/chromium")
+    p.add_argument("--vad-mode",choices=("rms","webrtc"),default="rms")
     args=p.parse_args()
-    print(json.dumps(run(args.screen_profile,args.chromium),ensure_ascii=False,indent=2))
+    print(json.dumps(run(args.screen_profile,args.chromium,args.vad_mode),ensure_ascii=False,indent=2))

@@ -158,6 +158,19 @@ def host_factory(**settings):
                 if (root/'fail-mic').exists():
                     from bmo_ai.features.input.microphone import MicError
                     raise MicError('microphone_tool_unavailable')
+                if scenario=='ptt_webrtc':
+                    from bmo_ai.features.input.microphone import PcmFrame
+                    from bmo_ai.conversation import TurnCancelled
+                    from bmo_ai.ptt_replay import load_public_reference_pcm16k
+                    # Licensed public PCM only: actual C WebRTC VAD, never
+                    # room audio. All STT/provider/player boundaries stay fake.
+                    pcm=load_public_reference_pcm16k(target_rms=.02)+bytes(32000*2)
+                    for sequence,offset in enumerate(range(0,len(pcm)-1279,1280)):
+                        if self._closed:raise TurnCancelled()
+                        if kwargs.get('cancel_check'):kwargs['cancel_check']()
+                        time.sleep(.04)
+                        yield PcmFrame(pcm[offset:offset+1280],sequence,clock(),kwargs['generation'])
+                    return
                 for frame in super().frames(*args,**kwargs):
                     if scenario=='ptt_slow':time.sleep(.03)
                     elif scenario in ('ptt','release','character'):time.sleep(.01)
@@ -231,7 +244,7 @@ def host_factory(**settings):
 
 def greeting_factory(*,config,simulate):
     assert simulate
-    if scenario=='character':
+    if scenario in ('character','ptt_webrtc'):
         from bmo_ai.voice_bank import VoiceBank
         from bmo_ai.integration_voice import synthetic_wav
         from bmo_ai import audio

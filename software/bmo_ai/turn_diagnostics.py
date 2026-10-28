@@ -8,6 +8,7 @@ import time
 STAGES = frozenset({"input", "admission", "microphone", "calibration", "vad",
                     "capture_close", "stt", "ai", "fish", "playback", "cleanup", "turn"})
 CODES = frozenset({
+    "vad_backend_missing", "vad_backend_failed", "invalid_vad_configuration", "invalid_vad_frame",
     "started", "ok", "waiting_speech", "speech_detected", "no_speech", "stt_empty",
     "calibration_unverified", "ambient_verified", "capture_ready", "cancelled", "finished",
     "disabled", "audio_focus_busy", "microphone_busy", "capture_busy", "duplicate_capture",

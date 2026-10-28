@@ -55,6 +55,8 @@ def parser():
     p.add_argument("--wake-model-manifest", type=Path, help="reviewed local Hey BMO ONNX manifest; no automatic download")
     p.add_argument("--ptt-vad-profile", choices=("baseline", "balanced", "quick"), default="baseline",
                    help="explicit VAD comparison profile: baseline .9s, balanced .6s, quick .45s; no measured latency claim")
+    p.add_argument("--ptt-vad-mode", choices=("rms", "webrtc"), default="rms",
+                   help="explicit local speech classifier; rms preserves baseline, webrtc keeps silence .9s and raw PCM")
     p.add_argument("--arms-supervised", action="store_true",
                    help="EXPLICIT live opt-in, only after physical GP7/full-swing acceptance")
     p.add_argument("--emotion-arms", action="store_true",
@@ -105,6 +107,7 @@ def public_plan(args):
         "voice_direction": {"requested": not args.plain_voice, "speaker_changed": False,
                             "listening_approval": "NOT_RUN"},
         "character_life": {"enabled": args.character_life, "ptt_vad_profile": args.ptt_vad_profile,
+                           "ptt_vad_mode": args.ptt_vad_mode,
                            "actual_latency": "UNMEASURED", "audio_generated": False,
                            "presence_mode": args.presence_mode or ("normal" if args.idle_voice else "off"),
                            "voice_bank_selected": args.voice_bank_directory is not None,
@@ -144,6 +147,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--music-supervised requires --live and --music-directory")
     if args.ptt_ambient_profile is not None and not args.ptt_microphone:
         p.error("--ptt-ambient-profile requires --ptt-microphone")
+    if args.ptt_vad_mode != "rms" and (not args.character_life or not (args.simulate or args.ptt_microphone)):
+        p.error("--ptt-vad-mode webrtc requires --character-life and --ptt-microphone (or --simulate)")
     if (args.voice_bank_directory is not None or args.idle_voice or args.presence_mode is not None
             or args.wake_word or args.wake_model_manifest is not None) and not args.character_life:
         p.error("character bank, presence and wake options require --character-life")
@@ -189,6 +194,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 character_options = {"character_life": True, "ptt_trace": args.ptt_trace,
                     "ptt_vad_profile": args.ptt_vad_profile, "plain_voice": args.plain_voice,
                     "idle_voice": args.idle_voice, "wake_word": args.wake_word}
+                if args.ptt_vad_mode != "rms":
+                    character_options["ptt_vad_mode"] = args.ptt_vad_mode
                 for key in ("voice_bank_directory", "presence_mode", "wake_model_manifest"):
                     value = getattr(args, key)
                     if value is not None:
@@ -309,6 +316,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 settings.update(wake_word=True, wake_model_manifest=args.wake_model_manifest)
             if args.ptt_vad_profile != "baseline":
                 settings["ptt_vad_profile"] = args.ptt_vad_profile
+            if args.ptt_vad_mode != "rms":
+                settings["ptt_vad_mode"] = args.ptt_vad_mode
             if args.music_supervised:
                 settings["music_supervised"] = True
             if args.usb_gamepad:

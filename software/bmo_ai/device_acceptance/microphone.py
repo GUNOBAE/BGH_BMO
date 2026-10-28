@@ -33,12 +33,14 @@ def _bounded(value, low, high):
     return type(value) in (int, float) and math.isfinite(value) and low <= value <= high
 
 
-def acceptance_plan(*, trial="normal", max_seconds=10., cancel_after=1.):
+def acceptance_plan(*, trial="normal", max_seconds=10., cancel_after=1., vad_mode="rms"):
     if trial not in ("normal", "cancel", "reopen") or not _bounded(max_seconds, .2, 10.):
         raise AcceptanceError("invalid_acceptance_bounds")
     if not _bounded(cancel_after, .1, max_seconds if trial == "cancel" else 10.):
         raise AcceptanceError("invalid_acceptance_bounds")
-    return dict(trial=trial, maximum_capture_seconds=float(max_seconds),
+    if vad_mode not in ("rms", "webrtc"):
+        raise AcceptanceError("invalid_vad_configuration")
+    return dict(trial=trial, maximum_capture_seconds=float(max_seconds), vad_mode=vad_mode,
                 cancel_after_seconds=float(cancel_after) if trial == "cancel" else None,
                 maximum_source_opens=1, requested_stream_rate=16000, channels=1,
                 sample_width=2, paid_api_policy="DENIED", speaker_policy="EXTERNAL_OPERATOR_ONLY",
@@ -227,7 +229,8 @@ class _DeniedClient:
 
 def run_microphone_acceptance(output_directory=None, *, live_acceptance=False,
         trial="normal", max_seconds=10., cancel_after=1., mic_device="plughw:CARD=Device,DEV=0",
-        stop_requested=None, ready_file=None, _source_factory=None, _clock=time.monotonic, _sleep=time.sleep):
+        stop_requested=None, ready_file=None, _source_factory=None, _clock=time.monotonic, _sleep=time.sleep,
+        vad_mode="rms"):
     """One bounded production Host/PTT trial; default is a pure dry-run plan.
 
     The private WAV includes all raw source frames, even discarded no-speech or
@@ -235,7 +238,7 @@ def run_microphone_acceptance(output_directory=None, *, live_acceptance=False,
     ``reopen`` labels a separately coordinated trial; it does not manufacture
     evidence that a previous owner was closed or a speaker loopback was heard.
     """
-    plan = acceptance_plan(trial=trial, max_seconds=max_seconds, cancel_after=cancel_after)
+    plan = acceptance_plan(trial=trial, max_seconds=max_seconds, cancel_after=cancel_after, vad_mode=vad_mode)
     if type(live_acceptance) is not bool:
         raise AcceptanceError("live_acceptance_must_be_explicit")
     if not live_acceptance:
@@ -286,7 +289,8 @@ def run_microphone_acceptance(output_directory=None, *, live_acceptance=False,
         host = FeatureHost(config=config, client=client, voice=voice, clock=_clock,
             runtime=RuntimePolicy(simulate=False, conversation_ptt_microphone=True),
             ptt_source_factory=source_factory, ptt_transcriber=blocked_stt,
-            character_life=True, ptt_speech_safe=True, wake_word=True)
+            character_life=True, ptt_speech_safe=True, wake_word=True,
+            **({"ptt_vad_mode": vad_mode} if vad_mode != "rms" else {}))
         # This intentionally verifies the actual Host broker's model-missing
         # PTT fallback. No manifest is supplied; persistent listening is denied.
         if host.enable_wake_word() is not False:
@@ -424,6 +428,7 @@ def main(argv=None):
     parser.add_argument("--max-seconds", type=float, default=10.)
     parser.add_argument("--cancel-after", type=float, default=1.)
     parser.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
+    parser.add_argument("--vad-mode", choices=("rms", "webrtc"), default="rms")
     parser.add_argument("--ready-file", type=Path, help="private first-PCM metadata IPC; must be inside output directory")
     args = parser.parse_args(argv)
     stopped = Event()
@@ -434,7 +439,8 @@ def main(argv=None):
     try:
         result = run_microphone_acceptance(args.output_directory, live_acceptance=args.live_acceptance,
             trial=args.trial, max_seconds=args.max_seconds, cancel_after=args.cancel_after,
-            mic_device=args.mic_device, stop_requested=stopped, ready_file=args.ready_file)
+            mic_device=args.mic_device, stop_requested=stopped, ready_file=args.ready_file,
+            vad_mode=args.vad_mode)
         if not args.live_acceptance:
             print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         else:

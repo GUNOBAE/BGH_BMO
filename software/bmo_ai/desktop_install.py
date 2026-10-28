@@ -54,6 +54,7 @@ def _character_arguments(options, *, simulate, ptt_microphone):
         return []
     booleans = ("character_life", "ptt_trace", "plain_voice", "idle_voice", "wake_word")
     choices = {"ptt_vad_profile": ("baseline", "balanced", "quick"),
+               "ptt_vad_mode": ("rms", "webrtc"),
                "presence_mode": ("normal", "quiet", "sleep", "off")}
     paths = ("voice_bank_directory", "wake_model_manifest")
     if (type(options) is not dict
@@ -68,7 +69,7 @@ def _character_arguments(options, *, simulate, ptt_microphone):
     normalized_paths = {key: _path(options[key]) for key in paths if key in options}
     result = []
     # This stable order is independent of dictionary insertion order.
-    for key in ("character_life", "ptt_trace", "ptt_vad_profile", "plain_voice",
+    for key in ("character_life", "ptt_trace", "ptt_vad_profile", "ptt_vad_mode", "plain_voice",
                 "voice_bank_directory", "idle_voice", "presence_mode", "wake_word", "wake_model_manifest"):
         if key not in options:
             continue

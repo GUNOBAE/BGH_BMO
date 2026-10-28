@@ -340,11 +340,12 @@ class PttRecorder:
                  threshold=.02, min_speech=.24, silence_timeout=.9,
                  no_speech_timeout=3., max_duration=12., calibration=.4,
                  noise_multiplier=2.5, max_noise=.12, speech_safe=False, ambient_rms=None,
-                 on_timing=None, preroll_seconds=.4):
+                 on_timing=None, preroll_seconds=.4, vad_mode="rms"):
         if (not callable(source_factory) or not _positive(calibration, .5) or calibration < .3
                 or not _positive(noise_multiplier, 10) or noise_multiplier < 1
                 or not _positive(max_noise, .5) or not _positive(max_duration, 12)
                 or type(speech_safe) is not bool
+                or vad_mode not in ("rms", "webrtc")
                 or not _positive(preroll_seconds, .5) or preroll_seconds < .3
                 or ambient_rms is not None and (type(ambient_rms) not in (int, float)
                     or not math.isfinite(ambient_rms) or not 0 <= ambient_rms <= max_noise)):
@@ -362,7 +363,9 @@ class PttRecorder:
         self.settings = dict(threshold=threshold, min_speech=min_speech, silence_timeout=silence_timeout,
                              no_speech_timeout=no_speech_timeout, max_duration=max_duration)
         self.calibration, self.noise_multiplier, self.max_noise = calibration, noise_multiplier, max_noise
-        self.speech_safe, self.ambient_rms = speech_safe, ambient_rms
+        self.vad_mode = vad_mode
+        self.speech_safe, self.ambient_rms = speech_safe or vad_mode == "webrtc", ambient_rms
+        self._vad_evidence = None
         self._rms_min, self._rms_max, self._threshold, self._frames = None, 0., threshold, 0
         self._first_frame_received = False
         self._lock, self._operation = RLock(), Lock()
@@ -381,7 +384,12 @@ class PttRecorder:
                          speech_detected=self._state in ("speech", "ready", "transcribing"),
                          automatic_capture=False, wake_word_enabled=False,
                          cleanup_pending=self._cleanup_failed or self._pending_wav is not None,
-                         vad="rms_energy", calibration_seconds=self.calibration,
+                         vad="webrtc_mode1" if self.vad_mode == "webrtc" else "rms_energy",
+                         vad_mode=self.vad_mode, rms_threshold_active=self.vad_mode == "rms",
+                         speech_entry_window=.6 if self.vad_mode == "webrtc" else None,
+                         ambient_profile_applied=self.ambient_rms is not None and self.vad_mode == "rms",
+                         vad_evidence=self._vad_evidence.snapshot() if self._vad_evidence else None,
+                         calibration_seconds=self.calibration,
                          silence_seconds=self.settings["silence_timeout"], max_seconds=self.settings["max_duration"],
                          first_frame_received=self._first_frame_received, voice_detected=self._state in ("speech", "ready", "transcribing"),
                          rms_min=self._rms_min or 0., rms_max=self._rms_max, threshold=self._threshold,
@@ -418,7 +426,7 @@ class PttRecorder:
     def _capture_turn(self, capture_id, *, generation, cancel_check=None):
         if not request_id_ok(capture_id) or type(generation) is not int or generation < 0:
             raise MicError("invalid_capture")
-        source = frames = gate = None
+        source = frames = gate = voice_evidence = None
         result = None
         try:
             with self._lock:
@@ -435,8 +443,20 @@ class PttRecorder:
                 self._finish.clear()
             self._idle.clear()
             began = _clock_now(self.clock)
+            self._vad_evidence = None
+            if self.vad_mode == "webrtc":
+                from .ambient_vad import WebRtcVoiceEvidence, VadError
+                # Resolve the explicitly selected backend before any source is
+                # constructed. Missing/error never falls back to the noisy RMS
+                # gate or silently discards the user's speech.
+                try:
+                    voice_evidence = WebRtcVoiceEvidence()
+                except VadError as error:
+                    raise MicError(error.code) from None
+            self._vad_evidence = voice_evidence
             gate = PcmTurnGate(self.focus, enabled=True, clock=self.clock,
-                               playback_active=self.playback_active, **self.settings)
+                               playback_active=self.playback_active,
+                               speech_window=.6 if self.vad_mode == "webrtc" else None, **self.settings)
             gate_started = False
             first_voiced_sample = earliest_voiced_sample = voiced_candidate_sample = voiced_candidate_at = None
             fed_samples, vad_closed = 0, False
@@ -533,7 +553,14 @@ class PttRecorder:
                         self._publish("listening", microphone_open=True)
                     continue
                 speech_before = gate.snapshot()["speech_detected"]
-                voiced_frame = frame_rms >= gate.threshold
+                if voice_evidence is not None:
+                    try:
+                        evidence = voice_evidence.classify(frame.pcm)
+                        voiced_frame = evidence.voiced
+                    except VadError as error:
+                        raise MicError(error.code) from None
+                else:
+                    voiced_frame = frame_rms >= gate.threshold
                 if voiced_frame and earliest_voiced_sample is None:
                     earliest_voiced_sample = fed_samples
                 if voiced_frame and voiced_candidate_sample is None:
@@ -541,14 +568,19 @@ class PttRecorder:
                 elif not voiced_frame and not speech_before:
                     voiced_candidate_sample = voiced_candidate_at = None
                 accepted = gate.feed(frame.pcm, sequence=frame.sequence,
-                                     timestamp=frame.timestamp, generation=generation)
+                                     timestamp=frame.timestamp, generation=generation,
+                                     **({"voiced": voiced_frame, "voiced_seconds": evidence.positive_seconds}
+                                        if voice_evidence is not None else {}))
                 fed_samples += len(frame_samples)
                 speech_after = gate.snapshot()["speech_detected"]
                 if not speech_before and speech_after:
                     # An initial short word followed by hesitation may not yet
                     # satisfy min_speech. Never trim that earlier voiced onset.
-                    first_voiced_sample = earliest_voiced_sample
-                    observed("vad", "speech_start", voiced_candidate_at)
+                    entry = gate.snapshot()
+                    first_voiced_sample = (entry["entry_start_sample"] if voice_evidence is not None
+                                           else earliest_voiced_sample)
+                    observed("vad", "speech_start", entry["entry_start_timestamp"]
+                             if voice_evidence is not None else voiced_candidate_at)
                 if speech_after and voiced_frame:
                     observed("vad", "last_voiced", frame.timestamp)
                 pending = gate.poll()
@@ -621,6 +653,8 @@ class PttRecorder:
                 cleaned = False
             if gate is not None:
                 gate.close()
+            if voice_evidence is not None:
+                voice_evidence.close()
             with self._lock:
                 if source is not None:
                     self._source, self._microphone_open = (None, False) if cleaned else (source, True)
