@@ -122,9 +122,9 @@ def _source(path, *, limit, executable=False):
 def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
                    frontend="auto", usb_gamepad=False, music_directory=None,
                    music_supervised=False, startup_chime=True, camera_supervised=False,
-                   photo_directory=None, camera_video_supervised=False, video_directory=None):
+                   photo_directory=None, camera_video_supervised=False, video_directory=None, playable_games=False):
     if (any(type(value) is not bool for value in (simulate, ptt_microphone, usb_gamepad, music_supervised, startup_chime,
-                                                       camera_supervised, camera_video_supervised))
+                                                       camera_supervised, camera_video_supervised, playable_games))
             or type(frontend) is not str or frontend not in ("auto", "native", "chromium")
             or music_supervised and (simulate or music_directory is None)
             or camera_supervised and (simulate or photo_directory is None)
@@ -161,6 +161,8 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
         command.append("--ptt-microphone")
     if usb_gamepad:
         command.append("--usb-gamepad")
+    if playable_games:
+        command.append("--playable-games")
     if music_directory is not None:
         command.extend(("--music-directory", str(_path(music_directory))))
     if music_supervised:
@@ -216,10 +218,10 @@ def _existing(directory, name, raw, mode):
 def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate=False, ptt_microphone=False,
                          frontend="auto", usb_gamepad=False, music_directory=None,
                          music_supervised=False, startup_chime=True, camera_supervised=False,
-                   photo_directory=None, camera_video_supervised=False, video_directory=None):
+                   photo_directory=None, camera_video_supervised=False, video_directory=None, playable_games=False):
     _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
-        camera_supervised, photo_directory, camera_video_supervised, video_directory)
+        camera_supervised, photo_directory, camera_video_supervised, video_directory, playable_games)
     rows = []
     for path, raw, mode in targets:
         directory = _directory(path.parent, home=user_home)
@@ -233,7 +235,7 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
             "template": template, "targets": rows, "icon_sha256": ICON_SHA256,
             "files_written": 0, "autostart": False, "services_changed": False,
             "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
-            "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
+            "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad, "playable_games_opt_in": playable_games,
             "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
             "camera_opt_in": camera_supervised, "camera_video_opt_in": camera_video_supervised,
             "activation": "NOT_RUN", "desktop_trust": "NOT_RUN"}
@@ -252,7 +254,7 @@ def _remove_owned(directory, name, identity):
 def install_desktop(*, project_root=None, home=None, environ=None, simulate=False, install=False, ptt_microphone=False,
                     frontend="auto", usb_gamepad=False, music_directory=None,
                     music_supervised=False, startup_chime=True, camera_supervised=False,
-                   photo_directory=None, camera_video_supervised=False, video_directory=None):
+                   photo_directory=None, camera_video_supervised=False, video_directory=None, playable_games=False):
     if type(install) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     if not install:
@@ -261,10 +263,11 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                                     usb_gamepad=usb_gamepad, music_directory=music_directory,
                                     music_supervised=music_supervised, startup_chime=startup_chime,
                                     camera_supervised=camera_supervised, photo_directory=photo_directory,
-                                    camera_video_supervised=camera_video_supervised, video_directory=video_directory)
+                                    camera_video_supervised=camera_video_supervised, video_directory=video_directory,
+                                    playable_games=playable_games)
     _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
-        camera_supervised, photo_directory, camera_video_supervised, video_directory)
+        camera_supervised, photo_directory, camera_video_supervised, video_directory, playable_games)
     if not verified:
         raise DesktopInstallError("desktop_launcher_pending")
     created, descriptors, stages, published = [], [], [], []
@@ -315,7 +318,7 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                 "files_written": len(published), "icon_sha256": ICON_SHA256,
                 "autostart": False, "services_changed": False,
                 "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
-            "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
+            "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad, "playable_games_opt_in": playable_games,
             "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
             "camera_opt_in": camera_supervised, "camera_video_opt_in": camera_video_supervised,
                 "activation": "NOT_RUN", "desktop_trust": "NOT_RUN"}
@@ -359,6 +362,7 @@ def main(argv=None):
     parser.add_argument("--ptt-microphone", action="store_true", help="explicitly persist button-only finite microphone admission in the new icon")
     parser.add_argument("--frontend", choices=("auto", "native", "chromium"), default="auto")
     parser.add_argument("--usb-gamepad", action="store_true")
+    parser.add_argument("--playable-games", action="store_true")
     parser.add_argument("--music-directory", type=Path)
     parser.add_argument("--music-supervised", action="store_true")
     parser.add_argument("--no-startup-chime", action="store_true")
@@ -371,7 +375,7 @@ def main(argv=None):
     try:
         report = install_desktop(project_root=args.project_root, simulate=args.simulate,
                                  install=args.install_desktop, ptt_microphone=args.ptt_microphone,
-                                 frontend=args.frontend, usb_gamepad=args.usb_gamepad,
+                                 frontend=args.frontend, usb_gamepad=args.usb_gamepad, playable_games=args.playable_games,
                                  music_directory=args.music_directory, music_supervised=args.music_supervised,
                                  startup_chime=not args.no_startup_chime,
                                  camera_supervised=args.camera_supervised, photo_directory=args.photo_directory,

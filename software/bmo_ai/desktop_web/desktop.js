@@ -3,14 +3,14 @@
 const $=id=>document.getElementById(id),frame=$('face'),token=document.querySelector('meta[name="bmo-command-token"]').content;
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null;
 let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0;
-let featureState=null,musicCatalogKey=null,lastFeatureMode=null;
+let featureState=null,musicCatalogKey=null,gameCatalogKey=null,lastFeatureMode=null;
 const inputEvidence={enter_presses:0,keyups:0,repeats_ignored:0,blocked_mode:0,request_sent:0,request_accepted:0,request_rejected:0,cancelled_blur:0,physical_identity:'UNVERIFIED'};
 function bump(name){inputEvidence[name]=Math.min(999999,inputEvidence[name]+1);}
 const messages={credentials_missing:'최초 키 설정이 필요해요. 실행 가이드를 확인해 주세요.',greeting_missing:'시작 인사 캐시가 아직 준비되지 않았어요.',greeting_unapproved:'시작 인사의 청취 승인이 필요해요.',greeting_corrupt:'시작 인사 캐시를 확인해 주세요.',face_ready_timeout:'얼굴 준비 시간이 초과됐어요.',host_startup_timeout:'대화 엔진 준비 시간이 초과됐어요.',greeting_timeout:'시작 인사 재생 정리를 기다리고 있어요.',browser_disconnected:'연결을 다시 확인하고 있어요.'};
 async function post(path,payload){const response=await fetch(path,{method:'POST',keepalive:payload.action==='cancel',headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce:crypto.randomUUID(),payload})});if(!response.ok)throw Error('요청을 완료하지 못했어요.');return response.json();}
 const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(action,value=null)=>post('/api/control',{action,value}),intent=(name,target=null)=>post('/api/intent',{name,target});
 function error(message){$('notice').hidden=false;$('notice-message').textContent=message;}
-function menu(){cancelPTT();if(!$('menu').open)$('menu').showModal();}
+function menu(){cancelPTT();window.BMOPlayableGames?.suspend('menu');if(!$('menu').open)$('menu').showModal();}
 function refreshAdapter(){if(window.BMOIntegration?.closed){window.BMOIntegration=new window.BMOFaceAdapter(frame);}handshakeFrame=null;}
 frame.addEventListener('load',refreshAdapter);
 async function ready(){if(!state||handshakeFrame===frame.contentDocument)return;
@@ -55,9 +55,14 @@ async function modes(){if(state?.phase!=='ready')return;const r=await fetch('/ap
  const failures={no_speech:'말소리를 감지하지 못했어요. 버튼을 누르고 다시 말해 주세요.',stt_empty:'말을 알아듣지 못했어요. 다시 말해 주세요.'};
  $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':failures[failure?.code]||(capture==='failed'&&failure?.stage!=='stt'?'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.':'대화를 완료하지 못했어요. 준비 상태에서 실패 단계를 확인해 주세요.')):
   ({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
- if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){if(!$('game-menu').open)$('game-menu').showModal();$('game-list').replaceChildren();if(!next.games.catalog.length)$('game-list').textContent='게임 자료가 아직 준비되지 않았어요.';for(const item of next.games.catalog){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY';b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}}
+ if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){if(!$('game-menu').open)$('game-menu').showModal();
+  const catalog=JSON.stringify(next.games.catalog);if(catalog!==gameCatalogKey){gameCatalogKey=catalog;$('game-list').replaceChildren();if(!next.games.catalog.length)$('game-list').textContent='게임 자료가 아직 준비되지 않았어요.';for(const item of next.games.catalog){const b=document.createElement('button');b.textContent=item.title;b.dataset.gameId=item.id;b.disabled=item.readiness!=='READY';b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}}
+  for(const b of $('game-list').querySelectorAll('button'))b.setAttribute('aria-current',String(b.dataset.gameId===next.games.selected_id));
+  $('game-pack-status').textContent=next.games.catalog.some(item=>item.capabilities?.includes('packaged_web'))?'자체 제작 오프라인 게임 · 방향키 / Z(A) / B · Enter 일시 정지 · Esc 게임 목록':next.games.catalog.length?'합성 테스트 게임 목록이에요. 실제 게임팩은 별도로 선택해 주세요.':'실행 옵션 --playable-games로 자체 제작 게임팩을 선택할 수 있어요.';}
  else if($('game-menu').open)$('game-menu').close();
- $('foreground').hidden=!['game','photo'].includes(next.mode);$('foreground-status').textContent=next.mode==='game'?'게임 실행 중':next.photo_countdown!==null?'사진을 준비하고 있어요.':'사진 처리 결과를 확인해 주세요.';
+ const webGame=next.mode==='game'&&next.games.web?.active===true;
+ $('foreground').hidden=webGame||!['game','photo'].includes(next.mode);$('foreground-status').textContent=next.mode==='game'?'게임 실행 중':next.photo_countdown!==null?'사진을 준비하고 있어요.':'사진 처리 결과를 확인해 주세요.';
+ window.BMOPlayableGames?.sync(next);
  const face=frame.contentWindow?.BMOFace,gaze=next.gaze,phase=window.BMOIntegration?.state?.phase;
  if(face&&gaze){const native=[phase,face.getState().activity].some(p=>['listening','thinking'].includes(p));if(native&&gaze.owner!=='manual')lastGaze=null;
  else if(gaze.apply){const id=JSON.stringify([gaze.owner,gaze.x,gaze.y,next.mode_generation]);if(id!==lastGaze){face.look(gaze.x,gaze.y);face.lookEyes(gaze.x*.15,gaze.y*.15);if(gaze.owner==='reaction')face.blink();lastGaze=id;}}}
@@ -139,7 +144,10 @@ function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){
   if(covering){if(pressed){cancelPTT();covering.close();}return;}
   if(['game','game_menu'].includes(currentMode)){control('input',{key:'ESC',pressed}).catch(()=>error('게임 종료 상태를 확인해 주세요.'));return;}
   if(pressed){cancelPTT();for(const d of document.querySelectorAll('dialog[open]'))d.close();menu();}return;}
- if(['BUTTON','INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;
+ if(currentMode==='game'&&featureState?.games?.web?.active===true){
+  const mapped=event.code==='Space'?'B':event.key==='p'?'START':keys[event.key];
+  if(mapped){event.preventDefault();event.stopPropagation();window.BMOPlayableGames?.input(mapped,pressed);return;}}
+ if(['BUTTON','INPUT','SELECT','TEXTAREA'].includes(event.target.tagName)&&currentMode!=='game_menu')return;
  if(event.key==='Enter'&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&state?.phase==='ready'){
   event.preventDefault();event.stopPropagation();if(!pressed){enterDown=false;return;}if(enterDown)return;enterDown=true;ptt();return;}
  if(['game','game_menu'].includes(currentMode)&&keys[event.key]){if(event.key==='Enter'&&pressed)bump('blocked_mode');event.preventDefault();event.stopPropagation();control('input',{key:keys[event.key],pressed}).catch(()=>error('게임 입력 상태를 확인해 주세요.'));return;}}
@@ -186,7 +194,7 @@ function pollPad(){
 function syncGamepad(next){padSequence=Math.max(padSequence,next?.usb_gamepad?.sequence_floor||0);if(!gamepadAllowed(next)){releasePad(false);return;}if(padTimer===null)padTimer=setTimeout(pollPad,0);}
 window.addEventListener('blur',event=>{setTimeout(()=>{if(event.isTrusted&&document.hasFocus()&&document.activeElement===frame)return;releasePad();},0);});
 window.addEventListener('gamepaddisconnected',()=>releasePad());
-window.addEventListener('pagehide',()=>{releasePad();cancelPTT();closed=true;epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
+window.addEventListener('pagehide',()=>{window.BMOPlayableGames?.close();releasePad();cancelPTT();closed=true;epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
 document.addEventListener('visibilitychange',()=>{epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){releasePad();cancelPTT();}else{refreshAdapter();poll();}});
-window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence};poll();
+window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence};window.BMOPlayableGames?.configure({control,intent});poll();
 })();

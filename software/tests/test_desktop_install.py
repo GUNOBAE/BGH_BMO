@@ -63,6 +63,16 @@ class DesktopInstallTests(unittest.TestCase):
         report = installer.desktop_install_plan(**self.options(simulate=True))
         self.assertEqual(report["command"][-1], "--simulate")
         self.assertIn('"--simulate"', report["template"])
+
+    def test_playable_pack_optin_survives_icon_command_without_granting_devices(self):
+        from bmo_ai.desktop_app import parser
+        report = installer.desktop_install_plan(**self.options(simulate=True,
+            playable_games=True, usb_gamepad=True))
+        args = parser().parse_args(report["command"][1:])
+        self.assertTrue(args.playable_games and args.usb_gamepad and args.simulate)
+        self.assertFalse(args.live or args.arms_supervised or args.camera_supervised)
+        self.assertTrue(report["playable_games_opt_in"])
+        self.assertEqual(report["files_written"], 0)
         self.assertFalse(self.desktop.parent.exists())
 
     def test_explicit_install_creates_only_owned_entries_and_hash_pinned_generic_icon(self):

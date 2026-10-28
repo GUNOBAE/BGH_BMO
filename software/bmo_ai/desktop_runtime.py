@@ -237,6 +237,11 @@ class DesktopRuntime:
             return self.host.snapshot()
         return {"version": 1, "simulation": self.simulate, "engine_ready": False}
 
+    def game_resources(self):
+        """Expose only the host's verified packaged bytes after engine setup."""
+        resources = getattr(self.host, "game_resources", None)
+        return resources() if callable(resources) else {}
+
     def preview_bytes(self):
         return self.host.preview_bytes() if self.host is not None else None
 

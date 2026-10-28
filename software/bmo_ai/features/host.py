@@ -38,6 +38,13 @@ class HostControl:
         elif self.action == "gamepad":
             from .input.gamepad import validate_gamepad
             valid = validate_gamepad(self.value)
+        elif self.action == "game_key":
+            from .input.gamepad import validate_gamepad
+            valid = validate_gamepad(self.value)
+        elif self.action == "game_ready":
+            valid = (type(self.value) is dict and set(self.value) == {"launch_id", "generation"}
+                     and request_id_ok(self.value["launch_id"])
+                     and type(self.value["generation"]) is int and self.value["generation"] >= 0)
         elif self.action == "question":
             valid = type(self.value) is str and 0 < len(self.value) <= 512
         elif self.action == "emotion":
@@ -87,7 +94,7 @@ class FeatureHost:
                  ptt_trace=False, ptt_ambient_profile=None, expressive_voice=False,
                  camera_supervised=False, photo_directory=None, camera_video_supervised=False,
                  ptt_speech_safe=False, emotion_arms=False, music_supervised=False,
-                 usb_gamepad=False):
+                 usb_gamepad=False, playable_games=False):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -95,8 +102,14 @@ class FeatureHost:
         self.runtime = runtime if runtime is not None else RuntimePolicy()
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
-        if any(type(value) is not bool for value in (music_supervised, usb_gamepad)):
+        if any(type(value) is not bool for value in (music_supervised, usb_gamepad, playable_games)):
             raise FeatureError("invalid_runtime")
+        if playable_games and games is not None:
+            raise FeatureError("packaged_game_configuration_conflict")
+        self._packaged_games = None
+        if playable_games:
+            from .games.packaged import PackagedGamesFeature
+            self._packaged_games = PackagedGamesFeature(clock=clock)
         if music_supervised:
             if self.runtime.simulate or music_directory is None or media is not None:
                 raise FeatureError("music_supervision_requires_library")
@@ -147,7 +160,7 @@ class FeatureHost:
         content, photos = root / "media", root / "photos"
         content.mkdir(mode=0o700)
         photos.mkdir(mode=0o700)
-        self.games = games or GamesFeature(fixture=demo_assets, clock=clock)
+        self.games = self._packaged_games or games or GamesFeature(fixture=demo_assets, clock=clock)
         if music_directory is not None:
             content = Path(music_directory)
             media_items = selected_music
@@ -237,6 +250,7 @@ class FeatureHost:
         self.inputs.bind("game", self._game_input)
         from .input.gamepad import BrowserGamepadGate
         self.gamepad = BrowserGamepadGate(self.inputs, enabled=usb_gamepad, clock=clock)
+        self.game_keyboard = BrowserGamepadGate(self.inputs, enabled=playable_games, clock=clock)
         from .input import InputAdapter, PcmTurnGate, WakeWordGate
         self.input_adapter = (InputAdapter(self.inputs, input_source, mapping=input_mapping, clock=clock)
                               if input_source is not None else None)
@@ -321,6 +335,7 @@ class FeatureHost:
     def _transition(self, mode, context=None, *, force=False):
         if mode != self.modes.mode or force:
             self.gamepad.release()
+            self.game_keyboard.release()
             self._cancel_video("video_mode_changed")
             if self.microphone is not None:
                 self.microphone.cancel()
@@ -361,7 +376,19 @@ class FeatureHost:
         self._active_game_request = context["request_id"]
 
     def _stop_game_audio(self):
-        return self.games.stop("mode_change").status != "unknown"
+        result = self.games.stop("mode_change")
+        if self._packaged_games is not None:
+            self._finish_game_terminal(result.request_id, result.status != "unknown")
+        return result.status != "unknown"
+
+    def _finish_game_terminal(self, request, released, *, failed=False):
+        previous = self._result_history.get(request)
+        if previous is None or previous.simulated or previous.status not in ("running", "accepted"):
+            return
+        self._finish_result(HostResult(request, "unknown" if not released else "failed" if failed else "cancelled",
+            "cleanup_failed" if not released else "game_failed" if failed else "game_stopped",
+            simulated=False, executed=previous.executed, completed=released and not failed,
+            completion="stopped" if released and not failed else "unknown"))
 
     def _leave_game(self):
         if not self._stop_game_audio():
@@ -466,6 +493,10 @@ class FeatureHost:
             media_was_active = self.media.snapshot()["active_id"] is not None
             capability = {"launch_game": "external_games", "play_song": "music",
                 "take_photo": "camera", "start_face_tracking": "camera", "arm_gesture": "arms"}.get(name)
+            packaged_launch = (name == "launch_game" and self._packaged_games is not None
+                               and self._packaged_games.is_packaged(intent.target))
+            if packaged_launch:
+                capability = None  # Reviewed local browser code, not an arbitrary external process.
             if capability is not None:
                 self.runtime.require(capability)
                 if capability == "camera" and not self.runtime.simulate and request.startswith("model_"):
@@ -476,7 +507,7 @@ class FeatureHost:
                 if item is None or item.readiness != "READY":
                     raise FeatureError("unknown_game" if item is None and name == "launch_game" else
                                        "unknown_media" if item is None else item.reason_code)
-                if item.simulated is not True and not (name == "play_song" and self.runtime.music_supervised):
+                if item.simulated is not True and not packaged_launch and not (name == "play_song" and self.runtime.music_supervised):
                     raise FeatureError("real_disabled")
             if name == "open_game_menu":
                 self._transition("game_menu")
@@ -527,6 +558,8 @@ class FeatureHost:
             elif name == "stop_media" and self.runtime.music_supervised:
                 result = HostResult(request, "succeeded", "media_stopped", simulated=False,
                                     executed=media_was_active, completed=True, completion="stopped")
+            elif packaged_launch:
+                result = HostResult(request, "accepted", "web_game_loading", simulated=False)
             else:
                 result = HostResult(request, "simulated", "ok", completed=True, completion="simulated")
         except FeatureError as error:
@@ -544,8 +577,9 @@ class FeatureHost:
         request = "web_" + uuid5(self._namespace, nonce).hex
         fingerprint = json.dumps(intent.public(), sort_keys=True)
         with self._records_lock:
-            if isinstance(intent, HostControl) and intent.action == "gamepad":
-                if not self.gamepad.enabled:
+            if isinstance(intent, HostControl) and intent.action in ("gamepad", "game_key"):
+                gate = self.game_keyboard if intent.action == "game_key" else self.gamepad
+                if not gate.enabled:
                     raise FeatureError("gamepad_disabled")
                 if len(self._gamepad_commands) >= self._gamepad_commands.maxlen:
                     raise FeatureError("gamepad_queue_full")
@@ -636,6 +670,8 @@ class FeatureHost:
             elif action == "cancel":
                 self.cancel_conversation()
                 self._cancel_video("video_cancelled")
+                if self._packaged_games is not None and self.modes.mode == "game":
+                    self._transition("game_menu")
                 if self.modes.mode == "photo":
                     self._transition("conversation")
                 if self.session.busy:
@@ -696,6 +732,28 @@ class FeatureHost:
                 if isinstance(outcome, HostResult):
                     return self._remember(HostResult(request, outcome.status, outcome.code,
                         outcome.simulated, outcome.executed, outcome.completed, outcome.completion))
+            elif action == "game_key":
+                if self._packaged_games is None or self.modes.mode != "game":
+                    raise FeatureError("packaged_game_inactive")
+                outcome = self.game_keyboard.feed(value)
+                if isinstance(outcome, HostResult):
+                    return self._remember(HostResult(request, outcome.status, outcome.code,
+                        outcome.simulated, outcome.executed, outcome.completed, outcome.completion))
+                return self._remember(HostResult(request, "succeeded", "web_input_applied", simulated=False,
+                    executed=True, completed=True, completion="input_applied"))
+            elif action == "game_ready":
+                if self._packaged_games is None or self.modes.mode != "game" or value["generation"] != self.modes.generation:
+                    raise FeatureError("stale_game_launch")
+                web = self.games.snapshot()["web"]
+                if web is None or web["launch_id"] != value["launch_id"]:
+                    raise FeatureError("stale_game_launch")
+                # A same-launch page reload must neutralize stale held inputs
+                # before the new browser owner starts its fresh game engine.
+                self.gamepad.release()
+                self.game_keyboard.release()
+                self._packaged_games.browser_ready(value["launch_id"], value["generation"])
+                return self._remember(HostResult(request, "succeeded", "web_game_ready", simulated=False,
+                    executed=True, completed=True, completion="browser_ready"))
             elif action in ("pause", "resume"):
                 if self.modes.mode != "music":
                     raise FeatureError("media_inactive")
@@ -737,6 +795,13 @@ class FeatureHost:
         return outcome
 
     def _game_input(self, key, pressed, now):
+        if (self._packaged_games is not None and not pressed
+                and (key in self.gamepad.snapshot()["held"]
+                     or key in self.game_keyboard.snapshot()["held"])):
+            # Each source gate removes its own ownership before routing a
+            # release. Keep the merged game key down while the other source
+            # still holds it; its final release will reach the same runner.
+            return {"consumed": True, "action": "held_by_other_source"}
         return self.games.game_input("PAD_DISCONNECTED" if key == "PAD_LOST" else key, pressed, now)
 
     @staticmethod
@@ -951,10 +1016,11 @@ class FeatureHost:
             age = self.clock() - received
             if (epoch != self._command_epoch or generation != self.modes.generation
                     or not 0 <= age <= .5):
-                self.gamepad.release(disconnected=True)
+                (self.game_keyboard if control.action == "game_key" else self.gamepad).release(disconnected=True)
                 continue
             self.control(control, request)
         self.gamepad.poll()
+        self.game_keyboard.poll()
         for _ in range(32):
             try:
                 _, _, request, intent, generation, epoch = self._commands.get_nowait()
@@ -1076,6 +1142,13 @@ class FeatureHost:
                 self.execute(proposal["intent"], request_id="model_" + uuid5(self._namespace, turn).hex,
                              expected_generation=generation)
         for event in self.games.poll():
+            if self._packaged_games is not None and event.request_id == self._active_game_request:
+                if event.kind == "game_started" and event.code == "web_game_ready":
+                    self._finish_result(HostResult(event.request_id, "running", "web_game_ready", simulated=False,
+                        executed=True, completion="browser_running"))
+                elif event.kind in ("game_ended", "game_failed"):
+                    self._finish_game_terminal(event.request_id, event.data.get("resource_released") is True,
+                                               failed=event.kind == "game_failed")
             if (event.mode_generation == self.modes.generation and self.modes.mode == "game"
                     and event.request_id == self._active_game_request
                     and event.kind in ("game_ended", "game_failed", "game_exit_requested")):
@@ -1146,7 +1219,7 @@ class FeatureHost:
             "mode_error": self.modes.last_error, "audio_owner": self.audio.owner,
             "conversation_busy": self.session.busy, "emotion": face["emotion"],
             "phase": face["phase"], "gaze": self.gaze.resolve(phase=face["phase"], generation=self.modes.generation),
-            "games": {"catalog": [item.public() for item in self.games.catalog()], **self.games.snapshot()},
+            "games": self._games_snapshot(),
             "media": {"catalog": [item.public() for item in self.media.catalog()], **self.media.snapshot()},
             "camera": camera, "camera_video": self.video.snapshot(), "photo": self._photo_result,
             "system_diagnostics": self._system_diagnostics,
@@ -1163,18 +1236,28 @@ class FeatureHost:
                     if self.microphone is not None else ptt),
             "wake_word": self.wake_word.snapshot(),
             "last_result": self._last_result, "requests": recent,
-            "asset_status": {"real_game_pack": "ASSET_PENDING",
+            "asset_status": {"real_game_pack": "VERIFIED_LOCAL_PACK" if self._packaged_games is not None else "ASSET_PENDING",
                 "user_songs": "AVAILABLE_FOR_REVIEW" if self._music_library_selected and self.media.catalog() else "ASSET_PENDING",
                 "music_playback": "SILENT_MOCK" if self.runtime.simulate else "SUPERVISED_NOT_VERIFIED" if self.runtime.music_supervised else "DENIED",
                 "extensions": {"games": "bmo_ai.features.games.GamesFeature",
                     "game_asset_review": "python -m bmo_ai.game_assets --dry-run",
                     "music_import": "python -m bmo_ai.media_assets --help",
-                    "media_types": ["audio/wav"], "external_game_runtime": "NOT_CONFIGURED"},
+                    "media_types": ["audio/wav"], "external_game_runtime": "PACKAGED_WEB" if self._packaged_games is not None else "NOT_CONFIGURED"},
                 "real_camera_video": "NOT_RUN"}}
         with self._snapshot_lock:
             self._public = state
             self._preview = self.camera.preview_bytes()
             self._media_cue = self.media.cue_snapshot() if self.modes.mode == "music" else None
+
+    def _games_snapshot(self):
+        state = {"catalog": [item.public() for item in self.games.catalog()], **self.games.snapshot()}
+        if self._packaged_games is not None and state.get("web") is not None:
+            state["web"]["keyboard_sequence_floor"] = self.game_keyboard.snapshot()["sequence_floor"]
+        return state
+
+    def game_resources(self):
+        """Immutable allowlisted bytes; no filesystem path accepted from HTTP."""
+        return self._packaged_games.resources() if self._packaged_games is not None else {}
 
     def snapshot(self):
         with self._snapshot_lock:
@@ -1210,6 +1293,7 @@ class FeatureHost:
         errors = []
         try:
             self.gamepad.close()
+            self.game_keyboard.close()
         except Exception:
             errors.append("cleanup_failed")
         try:

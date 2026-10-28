@@ -1,0 +1,139 @@
+{
+  "status": "PASS",
+  "actual_browser_gameplay": true,
+  "checks": 20,
+  "manifest_sha256": "13b307af9d5938bc5d07faf8d211ba95677d82f90eb08d6db068e8174bda68e6",
+  "asset_sha256": {
+    "engines.js": "be9992efb49c481b5d90d1995fcd5188fc9e974d45f75055940b520921fea9f9",
+    "LICENSE.txt": "a5df5b082a788557022bec667851877919c06524ab3103969eb0e566259173be"
+  },
+  "results": [
+    {
+      "status": "PASS",
+      "screen_profile": "ci-synthetic",
+      "checks": [
+        "actual hash-verified bundled catalog contains three nonsimulated original web games; idle preserves the unchanged face with zero gamepad polling",
+        "real 800x480 blocks receives keyboard movement/rotation and keyboard/gamepad hard-drop score, pauses its RAF, restarts and returns to the original face",
+        "real maze moves and consumes pellets for score from keyboard and gamepad, pauses/restarts and returns to the same face/audio owner",
+        "standard gamepad boundary drives real Snake food/growth/score and wall gameover; disconnect releases input and game/audio ownership",
+        "actual falling-block engine moves, rotates, stacks, clears a genuine row for score, pauses, collides and restarts from controls",
+        "actual snake engine eats food, grows, scores, pauses, rejects reverse, collides and restarts",
+        "actual maze engine blocks walls, consumes pellets, scores, freezes on pause, loses lives to ghosts and restarts",
+        "blur releases inputs and stops the actual game RAF; explicit restart and exit leave no stale game state",
+        "reload/repeated launches preserve one greeting and return ownership; game Enter/keys never call PTT/brain/Fish/camera/arms or browser audio",
+        "normal Desktop exit reaps the owned browser/greeting child and closes the actual packaged-game owner"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 0,
+        "synthesis": 0,
+        "players": 1,
+        "reaped": 1,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 0,
+        "mic_closed": 0,
+        "stt": 0,
+        "active_mics": 0,
+        "max_mics": 0,
+        "b1_commands": 0,
+        "b1_pings": 0,
+        "b1_holds": 0,
+        "b1_stops": 0,
+        "b1_updates": 0,
+        "b1_closed": 0,
+        "b1_gestures": [],
+        "b1_active": false,
+        "b1_latched": false,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "screenshots": [
+        "artifacts/playable-games/ci-synthetic-blocks-scored.png",
+        "artifacts/playable-games/ci-synthetic-maze-scored.png",
+        "artifacts/playable-games/ci-synthetic-snake-scored.png"
+      ],
+      "sha256_before": "98ec28076dcacfba15d56ae37329bbd27752f00171e9e6c9c7039110cc65bbc6",
+      "sha256_after": "98ec28076dcacfba15d56ae37329bbd27752f00171e9e6c9c7039110cc65bbc6",
+      "actual_browser_gameplay": true,
+      "not_run": [
+        "actual Pi USB gamepad",
+        "native Qt display",
+        "physical devices",
+        "paid APIs"
+      ]
+    },
+    {
+      "status": "PASS",
+      "screen_profile": "r10",
+      "checks": [
+        "actual hash-verified bundled catalog contains three nonsimulated original web games; idle preserves the unchanged face with zero gamepad polling",
+        "real 800x480 blocks receives keyboard movement/rotation and keyboard/gamepad hard-drop score, pauses its RAF, restarts and returns to the original face",
+        "real maze moves and consumes pellets for score from keyboard and gamepad, pauses/restarts and returns to the same face/audio owner",
+        "standard gamepad boundary drives real Snake food/growth/score and wall gameover; disconnect releases input and game/audio ownership",
+        "actual falling-block engine moves, rotates, stacks, clears a genuine row for score, pauses, collides and restarts from controls",
+        "actual snake engine eats food, grows, scores, pauses, rejects reverse, collides and restarts",
+        "actual maze engine blocks walls, consumes pellets, scores, freezes on pause, loses lives to ghosts and restarts",
+        "blur releases inputs and stops the actual game RAF; explicit restart and exit leave no stale game state",
+        "reload/repeated launches preserve one greeting and return ownership; game Enter/keys never call PTT/brain/Fish/camera/arms or browser audio",
+        "normal Desktop exit reaps the owned browser/greeting child and closes the actual packaged-game owner"
+      ],
+      "counts": {
+        "hosts": 1,
+        "browsers": 1,
+        "browser_reaped": 1,
+        "greeting_calls": 1,
+        "greeting_started": 1,
+        "greeting_ended": 1,
+        "cache_published": 1,
+        "brain": 0,
+        "synthesis": 0,
+        "players": 1,
+        "reaped": 1,
+        "forbidden": 0,
+        "max_players": 1,
+        "initial_history": 0,
+        "initial_dialogue_cache": false,
+        "mic_sources": 0,
+        "mic_closed": 0,
+        "stt": 0,
+        "active_mics": 0,
+        "max_mics": 0,
+        "b1_commands": 0,
+        "b1_pings": 0,
+        "b1_holds": 0,
+        "b1_stops": 0,
+        "b1_updates": 0,
+        "b1_closed": 0,
+        "b1_gestures": [],
+        "b1_active": false,
+        "b1_latched": false,
+        "last_code": "greeting_completed",
+        "last_phase": "ready"
+      },
+      "screenshots": [
+        "artifacts/playable-games/r10-blocks-scored.png",
+        "artifacts/playable-games/r10-maze-scored.png",
+        "artifacts/playable-games/r10-snake-scored.png"
+      ],
+      "sha256_before": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "sha256_after": "8c3ef98ba0e0645213c95295a24d7353fc2865b5ad9bc85390360c4ec9b78c82",
+      "actual_browser_gameplay": true,
+      "not_run": [
+        "actual Pi USB gamepad",
+        "native Qt display",
+        "physical devices",
+        "paid APIs"
+      ]
+    }
+  ],
+  "physical_pi_usb_gamepad": "NOT_RUN"
+}
