@@ -42,6 +42,7 @@ class FeatureServer:
             self._resources["/"] = ("text/html; charset=utf-8",
                 product.joinpath("index.html").read_text().replace("__COMMAND_TOKEN__", self._token).encode())
             for name, mime in (("desktop.js", "text/javascript; charset=utf-8"),
+                               ("playable.js", "text/javascript; charset=utf-8"),
                                ("desktop.css", "text/css; charset=utf-8")):
                 self._resources["/" + name] = (mime, product.joinpath(name).read_bytes())
             if developer:
@@ -123,6 +124,14 @@ class FeatureServer:
                         video_id = path.removeprefix("/api/video/")
                         payload = owner.host.video_bytes(video_id) if re.fullmatch(r"video_[0-9a-f]{32}", video_id) else None
                         self._send(200, payload, "application/octet-stream") if payload else self._send(404)
+                    elif path.startswith("/games/"):
+                        resources = getattr(owner.host, "game_resources", None)
+                        resource = resources().get(path) if callable(resources) else None
+                        if resource is None:
+                            self._send(404)
+                        else:
+                            mime, body = resource
+                            self._send(200, body, mime)
                     elif path in owner._resources:
                         mime, body = owner._resources[path]
                         self._send(200, body, mime)

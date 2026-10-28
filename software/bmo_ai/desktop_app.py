@@ -28,6 +28,7 @@ def parser():
                    help="auto selects optional system Qt when present; Chromium remains the explicit fallback")
     p.add_argument("--developer", action="store_true", help="enable /developer and hidden Ctrl+Alt+D")
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
+    p.add_argument("--playable-games", action="store_true", help="opt in to the SHA-verified original offline web-game pack; no ROMs or external processes")
     p.add_argument("--video-directory", type=Path, help="user-selected private local synthetic-video storage; live camera video remains denied")
     p.add_argument("--music-directory", type=Path, help="explicit reviewed private WAV library; live playback additionally needs --music-supervised")
     p.add_argument("--music-supervised", action="store_true", help="explicit opt-in to requested local WAV playback; requires --live and --music-directory")
@@ -109,6 +110,8 @@ def public_plan(args):
                           "live_playback_enabled": args.music_supervised, "automatic_import": False},
         "usb_gamepad": {"enabled": args.usb_gamepad, "physical_verified": False,
                         "conversation_input": False, "motor_input": False},
+        "playable_games": {"enabled": args.playable_games, "source": "verified_packaged_web",
+                           "external_processes": False, "device_permission_granted": False},
         "pi_kiosk_verified": "NOT_RUN"}
 
 
@@ -122,6 +125,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             p.error("timeouts must be finite and from 0 to 120 seconds")
     if args.demo_assets and not args.simulate:
         p.error("--demo-assets requires --simulate")
+    if args.playable_games and args.demo_assets:
+        p.error("--playable-games uses the original pack; --demo-assets is a separate fixture catalog")
     if args.music_directory is not None and args.demo_assets:
         p.error("--music-directory and --demo-assets are separate catalogs")
     if args.music_supervised and (not args.live or args.music_directory is None):
@@ -165,6 +170,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 install_settings["ptt_microphone"] = True
             if args.usb_gamepad:
                 install_settings["usb_gamepad"] = True
+            if args.playable_games:
+                install_settings["playable_games"] = True
             if args.music_directory is not None:
                 install_settings["music_directory"] = args.music_directory
             if args.music_supervised:
@@ -272,6 +279,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 settings["music_supervised"] = True
             if args.usb_gamepad:
                 settings["usb_gamepad"] = True
+            if args.playable_games:
+                settings["playable_games"] = True
             if args.camera_supervised:
                 settings.update(camera_supervised=True, photo_directory=args.photo_directory,
                                 camera_video_supervised=args.camera_video_supervised)

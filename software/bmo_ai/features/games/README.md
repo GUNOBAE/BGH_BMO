@@ -40,3 +40,24 @@ Tests run only generated states and harmless owned Python children. They cover
 menu → game → list → another game → face, B forwarding, hold/release/debounce,
 crash, pad loss, cleanup failure and TERM-resistant child cleanup. No real game,
 game server, media output, device or downloaded asset is used.
+
+## Original playable web pack
+
+`--playable-games` selects `PackagedGamesFeature` from `packaged.py` instead of
+the empty/default or synthetic catalogue. `pack/` contains three original MIT
+Canvas games: Stack Sprout, Lantern Labyrinth and Vine Run. They run in the same
+Desktop, without an external process, ROM, CDN, audio or additional device grant.
+Exact manifest/file hashes must pass before READY; fixed resources are served
+from their verified immutable bytes. A launch stays accepted/unexecuted until
+the browser creates the engine and acknowledges the current launch/generation.
+
+Keyboard and optional standard gamepad edges pass through the existing host and
+InputRouter. Bounded sequence/generation/TTL streams support long play without
+exhausting the general action ledger. Python owns admission and lifetime; the
+actual JavaScript engines own gameplay and score. `simulated=False` describes
+real browser software execution, never physical Pi/pad validation. Existing
+external native/RetroArch admission remains denied unless separately reviewed.
+
+See [Korean usage](../../../PLAYABLE_GAMES_KR.md) and the genuine-play browser gate
+`software/checks/check_playable_games_browser.py` for scores, collision/restart,
+keyboard/gamepad routing, face return, screenshots and cleanup checks.

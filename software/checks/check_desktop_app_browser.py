@@ -307,8 +307,12 @@ class DesktopFixture:
         environment = {"PATH": os.defpath, "HOME": str(self.root), "LC_ALL": "C.UTF-8",
             "PYTHONPATH": str(SOFTWARE), "PYTHONDONTWRITEBYTECODE": "1", "BMO_PYTHON": str(wrapper),
             "BMO_TEST_ROOT": str(self.root), "BMO_TEST_PROFILE": profile, "BMO_TEST_SCENARIO": scenario}
-        command = [*entry_command, "--windowed", "--demo-assets", "--screen-profile", profile,
+        command = [*entry_command, "--windowed", "--screen-profile", profile,
                    "--face-file", str(self.face)]
+        if scenario == 'playable':
+            command.extend(['--playable-games', '--usb-gamepad'])
+        else:
+            command.append('--demo-assets')
         if scenario=='media':command.extend(['--video-directory',str(self.root/'video-content')])
         if developer:command.append("--developer")
         command.extend(extra_args)
