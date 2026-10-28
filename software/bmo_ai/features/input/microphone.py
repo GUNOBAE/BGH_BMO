@@ -110,6 +110,8 @@ class MicPcmSource:
         self._process, self._state, self._code = None, "idle", "disabled" if not live_opt_in else "ok"
         self._selector = None
         self._bytes = 0
+        self._planned_end = None
+        self._discarded_partial_bytes = 0
         self.on_timing = on_timing
 
     def set_timing_observer(self, observer):
@@ -120,6 +122,8 @@ class MicPcmSource:
             return dict(state=self._state, reason_code=self._code,
                         microphone_open=self._process is not None,
                         captured_bytes=self._bytes, max_bytes=self.max_bytes,
+                        planned_end=self._planned_end,
+                        discarded_partial_bytes=self._discarded_partial_bytes,
                         frame_ms=self.frame_ms, automatic_capture=False,
                         enabled=self.live_opt_in and not self._closed.is_set() and not self._failed)
 
@@ -151,6 +155,7 @@ class MicPcmSource:
                         close_fds=True, start_new_session=True, env=_microphone_environment())
                 with self._lock:
                     self._process, self._state, self._code, self._bytes = process, "recording", "ok", 0
+                    self._planned_end, self._discarded_partial_bytes = None, 0
                 fd = process.stdout.fileno()
                 os.set_inheritable(fd, False)
                 os.set_blocking(fd, False)
@@ -171,8 +176,12 @@ class MicPcmSource:
                 if now < began:
                     raise MicError("invalid_capture_clock")
                 if now - began >= self.max_duration or self._bytes >= self.max_bytes:
-                    if pending:
-                        raise MicError("pcm_truncated")
+                    # A deliberately finite capture can end between driver
+                    # chunks. Discard the incomplete frame without labelling
+                    # that planned boundary as an unexpected device EOF.
+                    with self._lock:
+                        self._planned_end = "wall_duration" if now - began >= self.max_duration else "byte_limit"
+                        self._discarded_partial_bytes = len(pending)
                     raise MicError("pcm_duration_limit")
                 events = selector.select(min(.04, self.max_duration - (now - began)))
                 self._check(cancel_check)

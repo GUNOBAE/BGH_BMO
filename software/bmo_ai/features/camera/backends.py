@@ -1,5 +1,6 @@
 """Synthetic defaults and explicit opt-in adapters; constructors open nothing."""
 from io import BytesIO
+from pathlib import Path
 from threading import Lock
 import time
 
@@ -17,6 +18,23 @@ def _opencv_modules():
     import cv2
     import numpy
     return cv2, numpy
+
+
+def _haar_cascade_path(cv2):
+    """Use the wheel's data directory or an installed Debian OpenCV asset.
+
+    Debian python3-opencv does not provide cv2.data. Do not download a model,
+    search arbitrary directories, or treat a missing classifier as detection.
+    """
+    directory = getattr(getattr(cv2, 'data', None), 'haarcascades', None)
+    name = 'haarcascade_frontalface_default.xml'
+    if type(directory) is str and directory:
+        return str(Path(directory) / name)
+    for directory in ('/usr/share/opencv4/haarcascades', '/usr/share/opencv/haarcascades'):
+        path = Path(directory) / name
+        if path.is_file():
+            return str(path)
+    raise FeatureError('face_detector_asset_missing')
 
 
 def _check_cancel(callback):
@@ -270,7 +288,7 @@ class OpenCVFaceDetector:
                 self._modules = self._loader()
             cv2, np = self._modules
             if self._classifier is None:
-                classifier = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+                classifier = cv2.CascadeClassifier(_haar_cascade_path(cv2))
                 if classifier.empty():
                     raise ValueError()
                 self._classifier = classifier

@@ -1,5 +1,7 @@
 # 선택적 로컬 Hey BMO 입력 준비
 
+후속 [2026-10-29 실제 장치 검수](DEVICE_ACCEPTANCE_20261029_KR.md)에서 모델 없는 wake OFF 후 실제 finite PTT를 확인했다. 실제 호출어 모델/음향 시험은 계속 `MODEL_MISSING / NOT_RUN`이다. 아래는 최초 구현의 모델 계약과 당시 검증 범위다.
+
 `LocalWakeDetector`는 `software/bmo_ai/features/input/wake_word.py`의 로컬 ONNX 어댑터다. GP8 PTT를 유지하며, 호출어는 선택 사항이다. 저장소에는 승인된 BMO 호출어 모델이나 그에 맞는 frontend 모델이 없다. 선택적 `numpy`·`onnxruntime`·`openwakeword` 런타임의 실제 설치와 ARM64 추론도 이 작업에서 검증하지 않았다. 자동 설치·모델 학습·다운로드·실제 마이크 활성화는 하지 않는다.
 
 `Hey BMO`, `Hey Beemo`, `헤이 비모` 세 문구를 manifest에 적었다는 사실만으로 인식 성공을 주장하지 않는다. 기존 영어 사전 학습 호출어를 BMO 모델 대신 연결하지 않는다. `READY`는 로컬 파일·런타임·입출력 shape 검사를 통과한 상태이고, 실제 발음·억양·거리·소음에서 인식되었다는 뜻이 아니다. `acoustic_acceptance`와 `real_wake_word`는 실기 인수 전까지 `NOT_RUN`이다.
