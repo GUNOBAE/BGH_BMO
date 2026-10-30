@@ -1,4 +1,114 @@
-# 현재 요청 해석·사진 review·응답 자막 — 2026-10-31
+# BMO 통합 후보 — 팔·영상·눈 트래킹·기존 기능 인계 — 2026-10-31
+
+## 최신 기준과 인수 신호
+
+[BMO-COMPLETE-USER-FLOWS-20261031](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6532398427)이 아래 과거의 사진 한정/영상·tracking UI 유지 지시보다 우선한다. Cloud는 같은 PR #40의 코드 writer이며 Pi는 환경·후보 설치·제한된 실기 담당이다. 아래의 이전 사진 진단은 당시 기록으로 보존하며, 최신 기능과 현재 성공 기준은 이 절을 따른다.
+
+사용자는 `3ebe0fb79b0515a303b6ea9474b36cfd3ded4c75` 후보의 **수동 사진 저장과 부드러운 preview 체감**, GP8·thinking 취소·감정·자막·승인 부팅음을 확인했다. 새 후보의 실제 fps·영상·사람 눈 따라오기·양팔 움직임은 별도다. 성공한 마이크·GPT·감정 코드를 예전 Fish401 때문에 다시 설계하지 않는다.
+
+배포 가능한 전체 SHA와 **그 SHA의** Python3.11/3.13·제품 Chromium CI는 PR의 **`CLOUD-FULL-BATCH-READY-20261031`** 댓글이 인수 신호다. 작업 중인 HEAD나 아래 코드의 placeholder를 배포 대상으로 쓰지 않는다. 새 수정이 나오면 새 READY SHA가 이전 신호를 대체한다. 커밋 이력·미커밋 작업·정상본은 자동 stash/reset/clean/force로 바꾸지 않는다.
+
+## 실제 제품 경로와 상태 구분
+
+| 기능 | 구현 경로 | 자동 검사 근거 | 현장/자산/감독 상태 |
+|---|---|---|---|
+| 양팔 | 현재 턴의 단일 GPT 의미 해석/메뉴 → Host 허용 이름 → 기존 B1 adapter, HOLD/cancel·STOP·once/generation | semantic·B1/Host 회귀, 제품 메뉴 click/key | IMPLEMENTED / AUTOMATED_TESTED; 현재 remote 활성화·배선·즉시 전원 차단과 실물 움직임은 NEEDS_OPERATOR |
+| 무음 영상 | 준비 대사 완료 → 실제 preview 표시 ACK →5초→REC/경과→GP8/Stop→압축 MP4 finalize/검증→저장 `<video>` 재생/일시정지/다운로드→Back | 실제 ffmpeg/ffprobe·range HTTP·브라우저 decode/상태 전환/취소·복구 | IMPLEMENTED / AUTOMATED_TESTED; Pi 실제 source FPS·길이·저장/재생은 PI_VERIFIED와 별개 |
+| 눈 트래킹 | 영어/한국어 현재 요청·toggle → 같은 CameraFeature의4Hz TargetTracker → GazeArbiter → 기존 BMOFace | 다중 표적·상실·stale·사진/영상 일시 양보/복귀·제품 toggle | IMPLEMENTED / AUTOMATED_TESTED; HUMAN tracking 품질은 NEEDS_OPERATOR |
+| 사진·대화·감정·자막·GP8 | 기존 승인 경로 보존, 사진5초/실제 PNG review/성공 후 대사/repeat 재촬영 없음 | 기존 제품 회귀와 신규 모드 왕복 | 기준3ebe0fb USER_ACCEPTED; 새 exact HEAD 비회귀는 CI/짧은 인수로 구분 |
+| v8 음성팩 | private ZIP hash/경로/용량/PCM/provenance 검증→별도 staging→목록/선택/개별 SHA 승인→이벤트 | 주입 ZIP/PCM·선택·승인 gate·실제 playback 경계 | IMPLEMENTED / AUTOMATED_TESTED; 정리 ZIP 미전달 ASSET_PENDING, 일괄 청취 승인 없음 |
+| master volume/mute | 기존 시작0.25, RAW1.0/preview baked0.25 분리, 기존 단일 출력 owner | PCM 진폭/0/mute·cache 불변·음악 현재 PCM 위치/일시정지 유지 | IMPLEMENTED / AUTOMATED_TESTED; 실제 ALSA 출력·청취는 USER_ACCEPTED 대기 |
+| Hey BMO/ACK/idle | 기존 선택 wake, missing ACK는 visual listening, idle 기본OFF/승인 clip+opt-in만 | 무질문0회·취소·소유권·미승인/누락 자산 회귀 | IMPLEMENTED; 정확한 wake_ack_01은 ASSET_PENDING, 무간격 전체 질문 복원은 미검증/제한 |
+| 자체 게임 | PR #38의 Stack Sprout/Lantern Labyrinth/Vine Run 자산·엔진만 이식, 같은 Host 입력/수명 | 실제 menu/key·engine gameplay·RAF/blur/restart·복귀, terminal event once | IMPLEMENTED / AUTOMATED_TESTED; 실제 USB pad/Pi 화면은 별도, ROM/공식 게임 아님 |
+| 로컬 음악 | 기존 검증 WAV 목록·재생/일시정지/재개/다음/종료·얼굴복귀, master volume 공유 | 실제 menu click + 주입 출력, owned child·PCM/FD 정리 | IMPLEMENTED / AUTOMATED_TESTED; 사용자가 제공한 라이브러리 없으면 ASSET_PENDING |
+| 후보 아이콘/종료/복귀 | BMO Candidate namespace, applications-only private0700 launcher, 같은 interpreter/옵션 | 합성 home의 실제 wrapper 실행·0775 기존 파일 보존·원자적 설치 | IMPLEMENTED / AUTOMATED_TESTED; Cloud는 Pi 아이콘/OS/서비스 설치·교체 안 함 |
+
+`AUTOMATED_TESTED`는 소프트웨어 경계를 검사했다는 뜻이며 사용자 청취·실제 사진/영상·LCD 프레임·사람/USB/서보 PASS를 뜻하지 않는다. 최종 exact HEAD에서 필요한 검사가 실패하면 READY를 게시하지 않는다. 선택 게임팩/음성팩/codec 실패는 해당 capability에 안전한 이유를 남기며 정상 대화·사진까지 함께 막지 않는다.
+
+### 최신 Pi 인계의 정확한 범위
+
+[PI-FULL-BATCH-20261031](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6532528946)은 **2026-10-31 05:08–05:11 KST**의 준비 결과다.
+
+- 후보 폴더는3ebe0fb/clean, 관측 때 실제 BMO 앱 PID는 식별되지 않았다. 폴더 SHA를 실행 SHA로 대신하지 않는다.
+- 후보 resolver는 `saved_store`, env override 없음, **새 키 wallet 인증 HTTP200/AUTHENTICATION_PASS**다. 무료 TTS 한 번은 `diagnostic_interrupted`로 유효 WAV 미확보/미검증, 재생0이다. 새 키401·모델/음색·제품 마이크/감정 실패로 해석하지 않는다. TTS 한도는 소진됐으므로 추가 POST 없이 진행한다. 후처리의 `/tmp→home rename` EXDEV는 별도 진단 코드에서 재현된 후보 원인이며 당시 원인의 확정은 아니다.
+- **FFmpeg7.1.5/ffprobe/libx264와 Chromium153**이 있고 합성 H264 MP4의 실제 decode10프레임은 PASS다. 이는 카메라 실측 FPS·실물 영상 PASS가 아니다. 현 준비에서 새 의존성 설치는 필요 없었다.
+- photos/videos 기본 경로는 uid1000/0700/non-symlink다. private bytes/keys/개인 프레임은 업로드하지 않는다.
+- `BMO_Voice_Organized_112_v8.zip`은 Pi 수신 경로에 **미전달**이다. 최신 자산 계약은112개 후보/224WAV, 초기30개는 선정안이며 모든 SHA의 청취 승인이 아니다. 정리 ZIP 예상 SHA는 `9f5ca192a86dedd87a227418802108ee7e13e713b0faf8361e484cd39134cfa0`다. wake_ack_01은 이112개에 없다.
+- 보드 mounted 파일의 `REMOTE_ENABLED=False`는 정적 관측이다. code.py `4e30cb8dd29f3af03867828da2fee7e1ea1c1e5099be725e7daa11b98f67ebae`, bridge `14fc42886a39f5b74fb7bc28e7eecf0914801b05e1fe5bd74cfdb3df0f0fcbfe`, boot.py `f59e20f97feef6eab364bdb305cb3d7d0639c7f3aa88a0f5e3ff517912c122eb`다. RAM·배선·전원·reviewed-enabled SHA로 확대하지 않는다. 포트 open/close까지 무reset 근거가 없어 HELLO/출력0이며 새 개방을 요구하지 않는다.
+
+같은 Pi 댓글의 **05:27 KST 마감 갱신**에서는 새 후보가 여전히 DEPLOY_PENDING이며 실제 설치/실물 검수0회다. 정상본은 `0f46e3203afcc0d2bb7455cf49b3ac7ba0d4e978`/clean으로 보존됐다. Pi task는 종료됐고 상주 watcher나 댓글 이후 자동 재개는 없다. 준비한 private 인수 도구는 READY/동일 SHA CI·clean branch를 확인한 뒤에만 fast-forward하며, 다음 명령은 사용자가 아침에 수동 실행한다.
+
+```bash
+python3 -B /home/bgh/BMO_private/tools/intake_full_batch_candidate.py --apply && python3 -B /home/bgh/BMO_private/tools/run_bmo_candidate.py
+```
+
+이 private 도구는 Pi 담당의 인계이며 Cloud가 접근·실행·코드 검수했다고 주장하지 않는다. 직접 Git 인수를 원하면 아래 exact-SHA 명령을 사용한다.
+
+## 최소 Pi 갱신·한 앱 실행·후보 아이콘
+
+현재 앱을 메뉴 **종료**로 닫고 mic/camera/player/encoder cleanup 완료를 확인한 뒤 실행한다. 아래 `FINAL_FULL_BATCH_SHA`에는 최신 READY 댓글의40자리 전체 SHA를 넣는다. 확인 실패 시 중단하며 기존 작업이나 정상본을 덮지 않는다.
+
+```bash
+(
+  set -eu
+  bmo_full_sha='FINAL_FULL_BATCH_SHA'
+  [[ "$bmo_full_sha" =~ ^[0-9a-f]{40}$ ]]
+  cd /home/bgh/BMO_CHARACTER_LIFE
+  test "$(git branch --show-current)" = feature/bmo-character-life-v1
+  test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+  git fetch origin refs/heads/feature/bmo-character-life-v1
+  git cat-file -e "$bmo_full_sha^{commit}"
+  git merge --ff-only "$bmo_full_sha"
+  test "$(git rev-parse HEAD)" = "$bmo_full_sha"
+)
+cd /home/bgh/BMO_CHARACTER_LIFE && ./launch-character-life
+```
+
+한 앱이 대화·카메라·영상·눈 트래킹·자체 게임을 요청 시 사용한다. 기본 실행은 팔 remote/wake/idle 자동 활성화를 추가하지 않는다. 수면 중의 제한된 무재생 기동·카메라 검수에는 다음 명령을 사용한다. Cloud는 이 명령을 Pi에서 실행하지 않는다.
+
+```bash
+cd /home/bgh/BMO_CHARACTER_LIFE
+./launch-character-life --silent-start --no-feedback-voice --presence-mode off
+```
+
+`--silent-start`는 chime과 cached greeting 모두 재생하지 않으며 승인 자산 bytes나 평소 기본값을 바꾸지 않는다. `--no-feedback-voice`는 사진/영상의 준비·결과를 시각 안내로만 처리한다. wake 옵션을 추가하지 않고, 새 음성 질문/PTT·자동 음성 재생·마이크 녹음은 하지 않는다. `--no-startup-chime`만으로 다른 승인 greeting까지 무음이라고 가정하지 않는다. 사용자 실제 출력·청취는 아침에 한다. 기존 키는 정상 resolver를 사용하고 키/prefix/hash/전체 환경변수를 출력하거나 바꾸지 않는다.
+
+Pi에서 보고한0775 Desktop/source launcher는 chmod하거나 안전 검사를 완화하지 않는다. 다음 dry-run은 기존 Desktop을 건드리지 않고 **별도 BMO Candidate** application entry, candidate SVG와 private0700 wrapper를 준비한다. wrapper는 검증한 기존 launch-desktop bytes를 데이터로 hash-check하며0775 source shell을 실행/복사하지 않는다. `.venv-device/bin/python` 또는 명시적 BMO_PYTHON, 같은 module·프로필·카메라/voice 설정을 사용한다. 기존 운영 BMO.desktop은 교체하지 않는다.
+
+```bash
+cd /home/bgh/BMO_CHARACTER_LIFE
+./launch-character-life --install-desktop --desktop-install-target applications-only --dry-run
+# Pi 담당이 위 후보 target/옵션을 검토한 뒤에만 같은 명령에서 --dry-run을 뺀다.
+```
+
+이미 다른 bytes의 후보 entry가 있으면 installer는 conflict로 중단하고 기존 파일을 유지한다. 검수하지 않은 임의 launcher, 소유자/권한이 불안전한 application data 경로, source hash 불일치는 우회하지 않는다. 시스템 autostart/service/reboot는 이 작업에서 바꾸지 않는다.
+
+정상 종료와 장치 해제 뒤 보존 정상본으로 복귀하려면 기존 검수 명령을 쓴다. 후보와 정상본을 동시에 실행하지 않는다.
+
+```bash
+env -u FISH_API_KEY XDG_CONFIG_HOME=/home/bgh/.config BMO_PYTHON=/home/bgh/BMO_REAL_ROBOT/.venv/bin/python /home/bgh/BMO_REAL_ROBOT/launch-desktop --live --frontend chromium --screen-profile r10 --ptt-microphone
+```
+
+### 모드별 조작·아침 짧은 확인
+
+1. **영상:** 메뉴/영어·한국어 요청→준비 대사 완료→실제로 보이는 preview→5초→REC/경과→GP8 또는 Stop→저장 MP4 play/pause/replay→GP8/Back으로 대화. 녹화 중 PTT/wake/idle/TTS는 억제한다. 기본30초/상한60초, 요청 길이 clamp는 표시한다. preview 고유 decode/display와 영상 source timestamp/frame/drop·컨테이너 재생 길이를 따로 기록한다. 설정20/헤더FPS/복제frame/Cloud 속도를 실측15fps로 보고하지 않는다.
+2. **눈 따라오기:** `Look at me`/`Follow my face` 또는 한국어 요청/메뉴 toggle→얼굴은 계속 BMO, 로컬 위치만 눈에 적용. 사람이 좌우·가림·복귀를 짧게 확인한다. 사진/영상은 잠시 양보하고 Back 때 이전에 켜 둔 tracking만 복구한다. Stop tracking은 다른 preview owner를 끄지 않는다. 신원/감정 식별·자동 촬영은 없다.
+3. **팔:** 먼저 `cd software && ../.venv-device/bin/python -B -m bmo_ai.arm_prepare`의 기본 read-only dry-run으로 현재 static/admission/지원 이름/중단 의미를 확인한다. 실제 reviewed-enabled 전체 SHA·현재 사용자 입회·전체 전원 차단 수단이 없으면 NEEDS_OPERATOR에서 끝낸다. 조건이 모두 확인된 새 감독 session에서만 도구가 제시한 기존 실행 명령을 사용하고 메뉴의 허용 이름1개·취소/HOLD·STOP을 검수한다. 좌우는 BMO 자신의 좌우다. HOLD는 현재 명령 위치, STOP은 session latch이며 물리 전원 차단이 아니다. GP7/GP8·GP10/11·600–2400µs/50Hz·기존 반전/보정을 그대로 둔다.
+4. **짧은 대화/자막·선택 기능:** GP8 질문→thinking 취소→다음 질문·en/ko/off/repeat 확인. master volume/0/mute를 실제 출력에서 짧게 검수한다. 게임 Enter는 START, Esc/Back은 복귀이며 PTT가 아니다. 음악은 이미 제공된 로컬 검증 WAV만 사용한다. 자산이 없으면 정확한 빈 목록/ASSET_PENDING을 확인하며 다운로드·생성하지 않는다.
+
+이번 밤 Pi 제한은 **새 사진≤1장·무음 영상≤1개/5초·preview/tracking 관측 합계≤30초**다. 성공 사진을 불필요하게 다시 찍지 않으며 인간 tracking/청취/실제 팔동작을 밤 자동검사로 PASS 처리하지 않는다. 수면 중 remote enable/flash/reset/재보정/GP7 자동 입력·실물 구동은 금지다. wake/tracking을 밤새 켜 두지 않는다.
+
+### v8 import·선택과 볼륨
+
+private 정리 ZIP이 전달된 경우만 후보 staging에 import한다. 기본 staging은 `~/.local/share/bmo/voice-pack-v8`이며 기존 제작/원본/구 bank를 덮지 않는다. `python -m bmo_ai.voice_pack --help`의 import/list/approve/select 도구와 같은 앱의 선택/승인 UI를 사용한다. provenance가 없으면 실제 제작 모델을 확인해 명시하고 Drama3를 live free 모델로 위장하지 않는다. 자동 개별 청취 승인·유료 재생성은 없다. 영상/tracking/wake 추가 대사 WAV 미전달은 각 이벤트만 대기하며 시각 안내/기존 적절한 전후 응답으로 앱을 계속 쓴다.
+
+master volume은 시작0.25에서 사용자가0..1/mute를 조절한다. RAW1.0과 preview baked0.25를 구분해 총0.0625로 중복 감쇠하지 않는다. runtime volume은 캐시/model fingerprint와 분리되며 변경 때문에 새 TTS를 생성하지 않는다. 현재 음악은 단일 owned player를 멈춘 뒤 같은 PCM 위치/일시정지 상태에서 새 음량 copy로 잇는다. live/cache/feedback 진행 발화는 실제 UI 정책에 따라 취소/다음 재생에 적용하며 OS mixer를 조절했다고 표시하지 않는다. 승인 부팅음 파일·R10·Luna low/Aaron Soft/Beemo는 바꾸지 않는다.
+
+개인 후보의 기본 요청 budget은 비활성이다. 공용 검수가 필요할 때만 `--request-cooldown`, `--session-request-limit`, 사용자가 정한 `--estimated-request-cost`/`--estimated-session-cost-limit`를 명시한다. 같은 Host의 동시성1/취소/once gate를 유지하며 cooldown·횟수·추정 상한은 새 mic/provider 작업 전에 적용한다. 추정 계수/상한은 provider의 실제 과금·잔액·일예산이 아니며 임의 요율을 정하지 않는다. 사용자가 명시한 설치 옵션만 후보 아이콘에 보존한다.
+
+---
+
+## 이전 사진·자막 후속 기록 — 당시 근거 보존
 
 PR #40의 [새 사용자 지시](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6527145621)를 적용한다. 기존 사진 촬영 직후 자동 복귀 지시는 이 문서의 명시적 review 복귀로 대체한다.
 

@@ -161,7 +161,11 @@ def run(profile='ci-synthetic',face_path=None,chromium='/usr/bin/chromium'):
                     wait(page,"()=>BMOFeatures.state.photo_phase==='photo_review'&&!BMOFeatures.state.conversation_busy&&BMOFeatures.state.audio_owner===null",'Photo feedback did not finish in review')
                     assert not page.evaluate('()=>BMOFeatures.state.camera.on')
                     intent('return_to_face');wait(page,"()=>BMOFeatures.state.mode==='conversation'&&BMOFeatures.state.camera.tracking&&BMOFeatures.state.camera.preview",'Photo tracking not restored')
-                    intent('stop_face_tracking');wait(page,'()=>!BMOFeatures.state.camera.on','Camera off failed')
+                    intent('stop_face_tracking')
+                    wait(page,'()=>!BMOFeatures.state.camera.tracking&&BMOFeatures.state.camera.preview&&BMOFeatures.state.camera.on',
+                         'Stopping tracking must preserve the requested preview')
+                    control('camera_off')
+                    wait(page,'()=>!BMOFeatures.state.camera.on','Explicit camera off failed')
                     # Inject an old face snapshot after OFF; retired utterance cannot restart speech.
                     assert page.evaluate("""()=>{const s=BMOIntegration.state;return BMOIntegration.applySnapshot({...s,playback:'started',phase:'speaking',sequence:s.sequence+1,cues:[]})}""") is False
                     assert not page.evaluate('()=>BMOFeatures.state.camera.on')
