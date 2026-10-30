@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import math
 
 from ..contracts import FeatureError
-from .models import FaceBox, Frame, GazeTarget, finite
+from .models import FaceBox, Frame, PreviewFrame, GazeTarget, finite
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +89,7 @@ class TargetTracker:
         return self._result(now, "tracking")
 
     def update(self, frame: Frame, boxes, *, now, generation):
-        if not isinstance(frame, Frame) or not finite(now):
+        if not isinstance(frame, (Frame, PreviewFrame)) or not finite(now):
             raise FeatureError("invalid_camera_frame")
         self._generation = generation
         if (frame.captured_at > now + .05 or now - frame.captured_at > self.config.max_age

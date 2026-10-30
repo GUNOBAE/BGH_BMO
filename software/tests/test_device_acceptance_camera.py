@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import stat
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 from types import SimpleNamespace
@@ -16,7 +17,7 @@ from bmo_ai.features.camera.backends import OpenCVFaceDetector, _haar_cascade_pa
 from bmo_ai.features.camera.models import Frame
 from bmo_ai.features.camera.store import PhotoStore
 from bmo_ai.features.contracts import FeatureError
-from test_feature_camera_adapters import Clock, FakeCamera
+from test_feature_camera_adapters import Clock, FakeCamera, jpeg_bytes
 
 
 class CameraAcceptanceTests(unittest.TestCase):
@@ -49,8 +50,9 @@ class CameraAcceptanceTests(unittest.TestCase):
                 result = original(*args, **kwargs)
                 if type(result) is dict:
                     kind, output = args[0]
-                    size = sdk.size if kind == "frame" else sdk.still_size
-                    output.seek(0);output.truncate();output.write(png_bytes(*size, color=(0, 0, 0)))
+                    size = sdk.size if kind in ("frame", "preview") else sdk.still_size
+                    payload = jpeg_bytes(*size) if kind == 'preview' else png_bytes(*size, color=(0, 0, 0))
+                    output.seek(0);output.truncate();output.write(payload)
                     self.clock.now += .001
                     result["SensorTimestamp"] = 1_000_000_000 if frozen else 1_000_000_000+round(self.clock()*1e9)
                 return result
@@ -58,9 +60,15 @@ class CameraAcceptanceTests(unittest.TestCase):
             return sdk
         return create
 
+    def sleep(self, seconds):
+        self.clock.now += seconds
+        # Yield to the production bounded preview/photo threads while advancing
+        # injected time. Owner-thread polling alone is not a new sensor frame.
+        time.sleep(.01)
+
     def run_fixture(self, **settings):
         return run_camera_acceptance(self.root/"camera", allow_camera=True, camera_factory=self.factory(),
-            clock=self.clock, sleeper=lambda seconds: setattr(self.clock, "now", self.clock.now+seconds),
+            clock=self.clock, sleeper=self.sleep,
             ffprobe_runner=lambda _path: {"status": "NOT_RUN", "code": "offline_test"}, **settings)
 
     def test_explicit_opt_in_and_caps_are_required_before_any_files_or_host(self):
@@ -83,7 +91,8 @@ class CameraAcceptanceTests(unittest.TestCase):
         self.assertFalse(report['preview_displayed'])
         previews=report['preview_validation']
         self.assertEqual([row['photo_index'] for row in previews], [1, 2, 3, None])
-        self.assertTrue(all(row['decoded'] and not row['displayed'] and row['countdown_seconds']==5
+        self.assertTrue(all(row['structure_validated'] and not row['decoded']
+                            and row['encoding']=='image/jpeg' and not row['displayed'] and row['countdown_seconds']==5
                             for row in previews))
         self.assertEqual(previews[-1]['probe'], 'cancelled_photo')
         self.assertEqual(len([row for row in report['stages']
@@ -107,7 +116,7 @@ class CameraAcceptanceTests(unittest.TestCase):
         attempts = []
         def busy(): attempts.append(1);raise RuntimeError("private camera owner detail")
         report = run_camera_acceptance(self.root/"camera", allow_camera=True, camera_factory=busy,
-            clock=self.clock, sleeper=lambda seconds: setattr(self.clock, "now", self.clock.now+seconds))
+            clock=self.clock, sleeper=self.sleep)
         self.assertEqual(report["status"], "BLOCKED", report)
         self.assertEqual(len(attempts), 1);self.assertEqual(report["sdk"]["created"], 0)
         self.assertTrue(report["cleanup"]["resources_cleaned"])
@@ -116,11 +125,14 @@ class CameraAcceptanceTests(unittest.TestCase):
     def test_old_sensor_timestamps_still_fail_even_when_identical_pixels_are_allowed(self):
         report = run_camera_acceptance(self.root/"camera", allow_camera=True,
             camera_factory=self.factory(frozen=True), clock=self.clock,
-            sleeper=lambda seconds: setattr(self.clock, "now", self.clock.now+seconds),
+            sleeper=self.sleep,
             ffprobe_runner=lambda _path: {"status": "NOT_RUN"})
         self.assertEqual(report["status"], "BLOCKED", report)
-        self.assertEqual(report["code"], "stale_photo")
+        self.assertEqual(report["code"], "photo_focus_uncertain")
         self.assertEqual(report["photos"], [])
+        self.assertEqual(report['sdk']['still_capture_requests'], 0)
+        self.assertTrue(report['sdk']['streams'])
+        self.assertTrue(all(row['strictly_advancing'] is False for row in report['sdk']['streams']))
         self.assertTrue(report["cleanup"]["resources_cleaned"])
 
     def test_existing_or_symlinked_destination_is_never_overwritten(self):

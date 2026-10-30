@@ -312,6 +312,7 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
     from ..features.camera.backends import _picamera_factory
     from ..features.camera.codec import validate_png
     from ..features.camera.live_codec import validate_rgb_avi
+    from ..features.camera.jpeg_codec import validate_jpeg
     from ..features.camera.video import VideoConfig
     from ..features.host import FeatureHost, HostControl
     from ..features.reply import HostIntent
@@ -359,8 +360,8 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
         evidence.phase = name
         stages.append(dict(stage=name, at_ms=round((clock()-began)*1000, 3)))
     def acknowledge_preview(request, label, photo_index=None):
-        # This component tool has no Desktop or display. Validate fresh preview
-        # pixels and acknowledge their consumption without claiming GUI review.
+        # This component tool has no Desktop or display. Consume the bounded
+        # latest frame without claiming JPEG pixel decode or GUI review.
         def preview_ready():
             state = host.snapshot()
             if state.get('photo_phase') == 'failed':
@@ -369,12 +370,21 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
                 and bool(state.get('photo_preview_token'))
                 and state['camera']['preview_available'])
         wait_until(preview_ready, 5)
-        preview = host.preview_bytes()
-        width, height = validate_png(preview)
+        preview = host.preview_frame()
+        if preview is None:
+            raise CameraAcceptanceError('photo_preview_unavailable')
+        mime = preview['mime']
+        if mime == 'image/jpeg':
+            width, height = validate_jpeg(preview['payload'])
+        elif mime == 'image/png':
+            width, height = validate_png(preview['payload'])
+        else:
+            raise CameraAcceptanceError('invalid_camera_preview')
         state = host.snapshot()
         stage('preview_validated_'+label)
         report['preview_validation'].append(dict(photo_index=photo_index, probe=label,
-            decoded=True, width=width, height=height, displayed=False, countdown_seconds=5))
+            structure_validated=True, decoded=mime == 'image/png', encoding=mime,
+            width=width, height=height, displayed=False, countdown_seconds=5))
         require(host.control(HostControl('photo_preview_ready', {
             'generation': state['mode_generation'], 'request_id': request,
             'preview_token': state['photo_preview_token']}), 'acceptance_preview_'+label),
@@ -405,7 +415,13 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
             request = "acceptance_photo_"+str(index+1)
             acknowledge_preview(request, str(index+1), photo_index=index+1)
             stage('photo_'+str(index+1))
-            wait_until(lambda: (host.snapshot().get("photo") or {}).get("request_id") == request, 11)
+            def photo_finished():
+                state = host.snapshot()
+                if state.get('photo_phase') == 'focus_review':
+                    # Quality override belongs to the user, never this tool.
+                    raise CameraAcceptanceError('photo_focus_uncertain')
+                return (state.get('photo') or {}).get('request_id') == request
+            wait_until(photo_finished, 11)
             photo = host.snapshot()["photo"]
             if photo["status"] != "succeeded" or not photo["completed"]:
                 raise CameraAcceptanceError(photo["code"])

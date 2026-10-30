@@ -1,5 +1,7 @@
 """Loopback-only HTTP security checks with fake host and synthetic face bytes."""
 import http.client
+from contextlib import redirect_stderr
+from io import StringIO
 import json
 import socket
 from threading import get_ident
@@ -28,6 +30,9 @@ class FakeHost:
         self.beats = 0
         self.photo_ids = []
         self.preview = b"\x89PNG\r\n\x1a\nfixture"
+        self.frame = None
+        self.frame_requests = []
+        self.frame_error = False
         self.error = False
 
     def heartbeat(self):
@@ -46,6 +51,12 @@ class FakeHost:
 
     def preview_bytes(self):
         return self.preview
+
+    def preview_frame(self, after=None):
+        self.frame_requests.append(after)
+        if self.frame_error:
+            raise RuntimeError('private fixture camera payload')
+        return self.frame
 
     def photo_bytes(self, photo_id):
         self.photo_ids.append(photo_id)
@@ -257,6 +268,75 @@ class FeatureHTTPTests(unittest.TestCase):
             with self.subTest(method=method):
                 self.assertEqual(self.request(method, "/api/intent")[0], 405)
         self.assertEqual(self.host.queued, [])
+
+    def test_latest_preview_frame_binary_route_returns_cached_jpeg_and_fixed_metadata(self):
+        payload=b'\xff\xd8private fixture encoded image\xff\xd9'
+        self.host.frame=dict(id='7:1',payload=payload,mime='image/jpeg',captured_at=123.125,age_ms=4.5)
+        logged=StringIO()
+        with redirect_stderr(logged):
+            status,headers,body=self.request('GET','/api/preview/frame')
+        self.assertEqual(status,200)
+        self.assertEqual(body,payload)
+        self.assertEqual(headers['Content-Type'],'image/jpeg')
+        self.assertEqual(headers['Content-Length'],str(len(payload)))
+        self.assertEqual(headers['X-BMO-Frame-Id'],'7:1')
+        self.assertEqual(float(headers['X-BMO-Captured-At']),123.125)
+        self.assertEqual(float(headers['X-BMO-Frame-Age-Ms']),4.5)
+        self.assertEqual(headers['Cache-Control'],'no-store')
+        self.assertEqual(headers['Cross-Origin-Resource-Policy'],'same-origin')
+        self.assertEqual(self.host.frame_requests,[None])
+        self.assertEqual(self.host.beats,0)
+        self.assertEqual(self.host.queued,[])
+        self.assertEqual(logged.getvalue(),'')
+        # Image bytes remain independent from both JSON snapshots and logs.
+        for path in ('/api/features','/api/state'):
+            self.assertNotIn(payload,self.request('GET',path)[2])
+
+    def test_latest_preview_frame_empty_or_unchanged_is_204_without_body_or_busywait(self):
+        self.assertEqual(self.request('GET','/api/preview/frame?after=')[::2],(204,b''))
+        self.host.frame=dict(id='2:1',payload=self.host.preview,mime='image/png',captured_at=100.,age_ms=0.)
+        self.assertEqual(self.request('GET','/api/preview/frame?after=2%3A1')[::2],(204,b''))
+        self.host.frame=dict(self.host.frame,id='2:2')
+        status,headers,body=self.request('GET','/api/preview/frame?after=2%3A1')
+        self.assertEqual((status,headers['X-BMO-Frame-Id'],body),(200,'2:2',self.host.preview))
+        self.assertEqual(headers['Content-Type'],'image/png')
+        self.assertEqual(self.host.frame_requests,[None,'2:1','2:1'])
+
+    def test_latest_preview_frame_head_has_no_payload_or_host_side_effects(self):
+        self.host.frame=dict(id='2:1',payload=self.host.preview,mime='image/png',captured_at=100.,age_ms=0.)
+        status,headers,body=self.request('HEAD','/api/preview/frame?after=2%3A0')
+        self.assertEqual((status,body),(204,b''))
+        self.assertEqual(headers['Content-Length'],'0')
+        self.assertNotIn('X-BMO-Frame-Id',headers)
+        self.assertEqual(self.host.frame_requests,[])
+
+    def test_latest_preview_frame_cursor_is_strict_and_never_reaches_host_when_invalid(self):
+        for query in ('after','after=1','after=1:2:3','after=-1:2','after=1:2&after=1:2',
+                      'other=1:2','after=1:2&other=value','after=%0D%0AHeader:value',
+                      'after='+('1'*64)+':2','after=%EF%BC%91:2'):
+            with self.subTest(query=query):
+                self.assertEqual(self.request('GET','/api/preview/frame?'+query)[0],400)
+                self.assertEqual(self.request('HEAD','/api/preview/frame?'+query)[0],400)
+        self.assertEqual(self.host.frame_requests,[])
+
+    def test_latest_preview_frame_enforces_host_origin_and_rejects_header_injection(self):
+        for headers in ([],[('Host','evil.invalid')],[('Host',self.authority),('Host',self.authority)],
+                        [('Host',self.authority),('Origin','https://evil.invalid')],
+                        [('Host',self.authority),('Origin',self.origin),('Origin',self.origin)]):
+            with self.subTest(headers=headers):
+                self.assertEqual(self.request('GET','/api/preview/frame',headers=headers)[0],403)
+        self.assertEqual(self.host.frame_requests,[])
+        good=dict(id='3:1',payload=self.host.preview,mime='image/png',captured_at=100.,age_ms=0.)
+        for bad in (dict(good,id='3:1\r\nInjected: true'),dict(good,mime='image/png\r\nInjected: true'),
+                    dict(good,captured_at=float('nan')),dict(good,age_ms=float('inf')),
+                    dict(good,age_ms=-1),dict(good,captured_at=True),dict(good,payload='private fixture image')):
+            self.host.frame=bad
+            status,headers,body=self.request('GET','/api/preview/frame')
+            self.assertEqual((status,body),(503,b'State unavailable'))
+            self.assertNotIn('Injected',headers)
+            self.assertNotIn(b'private fixture',body)
+        self.host.frame_error=True
+        self.assertEqual(self.request('GET','/api/preview/frame')[::2],(503,b'State unavailable'))
 
     def test_short_body_has_finite_timeout_and_never_queues_partial_command(self):
         start = time.monotonic()

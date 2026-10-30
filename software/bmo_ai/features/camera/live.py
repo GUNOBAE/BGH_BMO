@@ -34,7 +34,7 @@ class LiveCameraOptions:
     enabled: bool = False
     supervised: bool = False
     tracking: bool = False
-    size: tuple[int, int] = (320, 240)
+    size: tuple[int, int] = (640, 360)
     still_size: tuple[int, int] = (1280, 720)
     max_photo_bytes: int = 8 * 1024 * 1024
     max_storage_bytes: int = 256 * 1024 * 1024
@@ -79,11 +79,12 @@ class BoundedPhotoStore(PhotoStore):
         self._budget(self.options.max_photo_bytes)
         return super().begin(request_id, simulated=simulated, fingerprint=fingerprint)
 
-    def save(self, request_id, frame, *, simulated, cancel_check):
+    def save(self, request_id, frame, *, simulated, cancel_check, allow_unconfirmed=False):
         if len(frame.payload) > self.options.max_photo_bytes:
             raise FeatureError('photo_byte_limit')
         self._budget(len(frame.payload))
-        return super().save(request_id, frame, simulated=simulated, cancel_check=cancel_check)
+        return super().save(request_id, frame, simulated=simulated, cancel_check=cancel_check,
+                            allow_unconfirmed=allow_unconfirmed)
 
 
 class LiveCameraFactory:
@@ -150,6 +151,7 @@ def build_live_camera(options, photo_root, *, clock=time.monotonic, camera_facto
     store = BoundedPhotoStore(photo_root, options=options, free_bytes=free_bytes)
     detector = OpenCVFaceDetector(enabled=True) if options.tracking else NullDetector()
     feature = CameraFeature(backend_factory=factory, detector=detector, store=store,
-                            clock=clock, on_target=on_target, max_hz=4)
+                            clock=clock, on_target=on_target, max_hz=4,
+                            asynchronous_preview=True, preview_hz=20)
     feature.broker = LiveCameraBroker(factory)
     return feature

@@ -40,8 +40,9 @@ class PhotoEvidenceTests(unittest.TestCase):
         self.addCleanup(camera.close)
         return camera, sdk
 
-    def test_focus_and_still_timeouts_keep_distinct_journal_stages_without_retry(self):
-        for phase, expected in (('focus', 'focus'), ('photo', 'still_capture')):
+    def test_still_timeout_keeps_journal_stage_without_retry(self):
+        # AF now runs during preview; there is no new blocking focus Job here.
+        for phase, expected in (('photo', 'still_capture'),):
             with self.subTest(phase=phase):
                 camera, sdk = self.camera(phase)
                 request = 'bounded_' + phase
@@ -92,7 +93,7 @@ class PhotoEvidenceTests(unittest.TestCase):
         self.clock.now += 1.
         # Old sensor time cannot be made current by a later successful Job.
         result = camera.take_photo('old_exposure', generation=1)
-        self.assertEqual((result.code, result.completed), ('stale_photo', False))
+        self.assertEqual((result.code, result.completed), ('photo_focus_uncertain', False))
         self.assertEqual(list((self.root/'photos').glob('*.png')), [])
 
     def test_diagnostic_projection_does_not_publish_unknown_codes_paths_or_exceptions(self):

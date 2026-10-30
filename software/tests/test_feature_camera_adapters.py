@@ -2,6 +2,7 @@
 import builtins
 from dataclasses import replace
 from pathlib import Path
+import struct
 from types import SimpleNamespace
 import tempfile
 import unittest
@@ -19,6 +20,22 @@ class Clock:
         return self.now
 
 
+def jpeg_bytes(width=32, height=24):
+    """A valid constant grayscale baseline JPEG, generated with stdlib only."""
+    def segment(marker, body):
+        return b'\xff' + bytes((marker,)) + struct.pack('!H', len(body) + 2) + body
+    quant = segment(0xDB, b'\x00' + b'\x01' * 64)
+    frame = segment(0xC0, struct.pack('!BHHB', 8, height, width, 1) + b'\x01\x11\x00')
+    counts = b'\x01' + b'\x00' * 15
+    huffman = segment(0xC4, b'\x00' + counts + b'\x00' + b'\x10' + counts + b'\x00')
+    scan = segment(0xDA, b'\x01\x01\x00\x00\x3f\x00')
+    bits = ((width + 7) // 8) * ((height + 7) // 8) * 2
+    entropy = b'\x00' * (bits // 8)
+    if bits % 8:
+        entropy += bytes(((1 << (8 - bits % 8)) - 1,))
+    return b'\xff\xd8' + quant + frame + huffman + scan + entropy + b'\xff\xd9'
+
+
 class FakeCamera:
     """Only the public SDK signatures used by the adapter, never a device."""
     def __init__(self, clock):
@@ -30,6 +47,12 @@ class FakeCamera:
         self.still_size = (64, 48)
         self.sensor = 1_000_000_000
         self.focused = True
+        self.af_mode = 2
+        self.af_state = None
+        self.lens_position = 1.25
+        self.metadata_override = None
+        self.controls = []
+        self.advance_clock = False
         self.fail = None
         self.pending = False
         self.on_wait = None
@@ -54,9 +77,17 @@ class FakeCamera:
     def start(self, *, show_preview):
         self.mark('start');assert show_preview is False
 
+    def set_controls(self, controls):
+        self.mark('set_controls')
+        self.controls.append(dict(controls))
+        if 'AfMode' in controls:
+            self.af_mode = controls['AfMode']
+        if 'LensPosition' in controls:
+            self.lens_position = controls['LensPosition']
+
     def capture_file(self, output, *, format, wait):
-        self.mark('capture');assert format == 'png' and wait is False
-        return ('frame', output)
+        self.mark('capture');assert format in ('png', 'jpeg') and wait is False
+        return ('preview' if format == 'jpeg' else 'frame', output)
 
     def switch_mode_and_capture_file(self, config, output, *, format, wait):
         self.mark('still');assert config['kind'] == 'still' and format == 'png' and wait is False
@@ -80,12 +111,19 @@ class FakeCamera:
         kind, output = job
         if kind == 'focus':
             return self.focused
-        size = self.size if kind == 'frame' else self.still_size
-        output.write(png_bytes(*size))
+        size = self.size if kind in ('frame', 'preview') else self.still_size
+        output.write(jpeg_bytes(*size) if kind == 'preview' else png_bytes(*size))
         self.sensor += 100_000_000
+        if self.advance_clock:
+            self.clock.now += .1
         if kind == 'photo':
             self.mode = 'preview'  # SDK switch-and-capture restores original mode.
-        return {'SensorTimestamp': self.sensor}
+        metadata = {'SensorTimestamp': self.sensor, 'AfMode': self.af_mode,
+            'AfState': self.af_state if self.af_state is not None else 2 if self.focused else 3,
+            'LensPosition': self.lens_position}
+        if self.metadata_override is not None:
+            metadata.update(self.metadata_override)
+        return metadata
 
     def cancel_all_and_flush(self):
         self.mark('flush')
@@ -101,6 +139,7 @@ class AdapterTests(unittest.TestCase):
     def setUp(self):
         self.clock = Clock()
         self.camera = FakeCamera(self.clock)
+        self.camera.advance_clock = True
         self.factory = Mock(return_value=self.camera)
         self.backend = Picamera2Backend(enabled=True, camera_factory=self.factory,
             clock=self.clock, wait_clock=self.clock, size=(32, 24), read_timeout=.12,
@@ -140,14 +179,19 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual((third.seq, third.stream_generation, self.camera.mode), (3, 4, 'preview'))
         self.assertAlmostEqual(third.captured_at - first.captured_at, .2)
         self.assertEqual(self.camera.still_options,
-            {'main': {'format': 'RGB888'}, 'raw': None, 'buffer_count': 1, 'queue': False})
+            {'main': {'format': 'RGB888'}, 'raw': None, 'buffer_count': 1, 'queue': False,
+             'controls': {'AfMode': 0, 'LensPosition': 1.25}})
         self.assertEqual(self.camera.preview_options['main']['size'], (32, 24))
         self.factory.assert_called_once_with()
 
     def test_explicit_still_size_and_fixed_focus_skip_autofocus(self):
         self.backend.still_size = (80, 60)
         self.camera.camera_controls = {}
-        self.backend.open(1);self.backend.capture_photo()
+        self.backend.open(1)
+        self.assert_code('photo_focus_uncertain', self.backend.capture_photo)
+        photo = self.backend.capture_photo(allow_unconfirmed=True)
+        self.assertFalse(photo.focus_ok)
+        self.assertEqual(photo.focus_status, 'unsupported')
         self.assertEqual(self.camera.still_options['main']['size'], (80, 60))
         self.assertNotIn('focus', self.camera.calls)
 
@@ -246,10 +290,13 @@ class AdapterTests(unittest.TestCase):
         self.factory.assert_called_once_with()
         self.assertEqual(self.camera.calls.count('close'), 1)
 
-    def test_focus_false_avoids_still_capture_and_timeout_closes_camera(self):
+    def test_focus_uncertain_avoids_still_preserves_stream_but_sdk_timeout_closes(self):
         self.backend.open(1);self.camera.focused = False
-        self.assert_code('photo_focus_failed', self.backend.capture_photo)
+        self.assert_code('photo_focus_uncertain', self.backend.capture_photo)
         self.assertNotIn('still', self.camera.calls)
+        self.assertEqual(self.backend.focus_snapshot()['status'], 'unconfirmed')
+        self.assertNotIn('close', self.camera.calls)
+        self.clock.now += .6  # Force a new observation after cached evidence expires.
         self.camera.pending = True
         self.assert_code('camera_timeout', self.backend.capture_photo)
         self.assertEqual(self.camera.calls[-3:], ['flush', 'stop', 'close'])
@@ -357,6 +404,13 @@ class DetectorTests(unittest.TestCase):
         with self.assertRaises(FeatureError):
             self.detector.detect(bad)
         self.loader.assert_not_called()
+
+    def test_jpeg_preview_uses_existing_local_decoder_and_same_normalized_boxes(self):
+        from bmo_ai.features.camera.models import PreviewFrame
+        preview = PreviewFrame(1, 1, 1., 32, 24, jpeg_bytes(32, 24))
+        boxes = self.detector.detect(preview)
+        self.assertEqual((boxes[0].x, boxes[0].y), (.25, .25))
+        self.cv.imdecode.assert_called_once()
 
 
 if __name__ == '__main__':

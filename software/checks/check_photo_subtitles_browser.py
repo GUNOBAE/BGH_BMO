@@ -36,7 +36,7 @@ def child_source():
         if photo_clock_origin[0] is None:photo_clock_origin[0]=time.monotonic()
         return photo_clock_origin[0]+offset
     settings['clock']=clock
-    counts.update(photo_captures=0,photo_saves=0,prepared_holds=0,english_speech=0)
+    counts.update(photo_captures=0,photo_saves=0,prepared_holds=0,english_speech=0,focus_refocus=0)
 """)
     anchor="            counts['brain']+=1;time.sleep(.15)\n            return super().create(**request)"
     assert child.count(anchor)==1
@@ -89,7 +89,22 @@ def child_source():
     # only IO is held, so caption and face cannot advance early.
     anchor="    host=FeatureHost(**settings,client=client);hosts.append(host)"
     assert child.count(anchor)==1
-    child=child.replace(anchor,anchor+"""
+    child=child.replace(anchor,"""
+    from bmo_ai.features.camera import CameraFeature,DemoBackend,PhotoStore
+    from bmo_ai.features.camera.models import PreviewFrame
+    sys.path.insert(0,str(Path(os.environ['PYTHONPATH'])/'tests'))
+    from test_feature_camera_adapters import jpeg_bytes
+    class JpegPreviewBackend(DemoBackend):
+        def __init__(self):
+            super().__init__(clock=clock)
+            self.jpeg=jpeg_bytes(640,360)
+        def read_preview(self):
+            frame=self.read_frame()
+            return PreviewFrame(frame.stream_generation,frame.seq,frame.captured_at,
+                640,360,self.jpeg,format='jpeg')
+    settings['camera']=CameraFeature(backend_factory=JpegPreviewBackend,
+        store=PhotoStore(root/'photos'),clock=clock,asynchronous_preview=True,preview_hz=20)
+"""+anchor+"""
     from bmo_ai import audio
     def player(command,**options):
         deadline=time.monotonic()+8
@@ -110,6 +125,20 @@ def child_source():
             raise CameraOperationError('camera_timeout','focus')
         return capture(**options)
     host.camera.broker.capture_photo=capture_photo
+    focus_snapshot=host.camera.focus_snapshot
+    def focus_state():
+        value=focus_snapshot()
+        if (root/'focus-uncertain').exists():
+            value=dict(value,status='unconfirmed',code='photo_focus_uncertain')
+        return value
+    host.camera.focus_snapshot=focus_state
+    refocus=host.camera.refocus
+    def user_refocus(*args,**options):
+        counts['focus_refocus']+=1
+        if not (root/'refocus-remains-uncertain').exists():
+            (root/'focus-uncertain').unlink(missing_ok=True)
+        return refocus(*args,**options)
+    host.camera.refocus=user_refocus
     save=host.camera.store.save
     def save_photo(*args,**options):
         result=save(*args,**options)
@@ -179,9 +208,23 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
             try:
                 page=browser.new_page(viewport={'width':800,'height':480});page.set_default_timeout(8000)
                 held_preview=[];hold_preview=[False]
+                held_features=[];hold_features=[False]
+                replay_preview=[False];sample_preview=[False];preview_sample=[None]
+                preview_requests=[0]
                 def route(request):
                     if not request.request.url.startswith(fixture.url):request.abort();return
-                    if '/api/preview?photo=' in request.request.url and hold_preview[0]:held_preview.append(request);return
+                    if '/api/features' in request.request.url and hold_features[0]:held_features.append(request);return
+                    if '/api/preview/frame?' in request.request.url:
+                        preview_requests[0]+=1
+                        if hold_preview[0]:held_preview.append(request);return
+                        if replay_preview[0] and preview_sample[0] is not None:
+                            request.fulfill(**preview_sample[0]);return
+                        if sample_preview[0]:
+                            response=request.fetch()
+                            if response.status==200:
+                                preview_sample[0]=dict(status=200,headers=response.headers,body=response.body())
+                                sample_preview[0]=False;replay_preview[0]=True
+                            request.fulfill(response=response);return
                     request.continue_()
                 page.route('**/*',route)
                 page.add_init_script("window.__audioCalls=0;HTMLMediaElement.prototype.play=function(){window.__audioCalls++;throw Error('Browser audio forbidden')}")
@@ -206,6 +249,22 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     page.locator('#subtitle-mode').select_option(mode)
                     wait(lambda s:s['subtitles']['mode']==mode)
                     page.locator('#resume').click()
+                def advance_photo_countdown():
+                    start=float((root/'photo-clock').read_text())
+                    for elapsed in (1,2,3,4,5.1):
+                        set_photo_clock(root,start+elapsed)
+                        fixture.features()
+                        page.wait_for_timeout(90)
+                def uncertain_photo():
+                    (root/'focus-uncertain').write_text('one test-owned completed uncertain focus observation')
+                    page.evaluate('()=>BMODesktop.menu()');page.locator('#camera-menu').click()
+                    page.locator('#photo-take').click()
+                    wait(lambda s:s['photo_phase']=='countdown')
+                    advance_photo_countdown()
+                    value=wait(lambda s:s['photo_phase']=='focus_review')
+                    page.wait_for_function("()=>BMODesktop.features?.photo_phase==='focus_review'&&document.querySelector('#photo-focus-actions').hidden===false")
+                    assert page.locator('#foreground-status').inner_text()=='Focus uncertain — Take anyway, Refocus, or Back.'
+                    return value
                 page.goto(fixture.url,wait_until='domcontentloaded')
                 page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'&&BMODesktop.features?.subtitles?.mode==='off'")
                 assert not page.locator('#subtitles').is_visible()
@@ -308,7 +367,53 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert not page.locator('#subtitles').is_visible()
                 checks.append('semantic subtitle off/ko controls do not switch voice language; cancellation before player-start never flashes generated captions')
 
+                # Transport faults use one genuine frame from the product
+                # endpoint. Replaying that ID must never count HTTP polls as
+                # new received/decoded/displayed camera frames.
+                page.evaluate('()=>BMODesktop.menu()');page.locator('#camera-menu').click()
+                page.locator('#camera-preview').click()
+                page.wait_for_function("()=>BMODesktop.previewEvidence?.displayed>=3&&document.querySelector('#camera-image').dataset.frameId")
+                sample_preview[0]=True
+                deadline=time.monotonic()+4
+                while preview_sample[0] is None and time.monotonic()<deadline:page.wait_for_timeout(20)
+                assert preview_sample[0] is not None
+                sampled_id=preview_sample[0]['headers']['x-bmo-frame-id']
+                page.wait_for_function('id=>BMODesktop.previewEvidence.last_displayed_id===id',arg=sampled_id)
+                repeated_frame=page.evaluate('()=>({...BMODesktop.previewEvidence})')
+                page.wait_for_timeout(250)
+                duplicate=page.evaluate('()=>({...BMODesktop.previewEvidence})')
+                assert duplicate['requests']>repeated_frame['requests']
+                assert all(duplicate[key]==repeated_frame[key] for key in ('received','decoded','displayed'))
+                replay_preview[0]=False;hold_preview[0]=True
+                deadline=time.monotonic()+4
+                while not held_preview and time.monotonic()<deadline:page.wait_for_timeout(20)
+                assert len(held_preview)==1
+                slow=page.evaluate('()=>({...BMODesktop.previewEvidence})')
+                page.wait_for_timeout(300)
+                held=page.evaluate('()=>({...BMODesktop.previewEvidence})')
+                assert held['requests']==slow['requests'] and held['pending']==held['max_pending']==1
+                assert held['last_displayed_id']==slow['last_displayed_id']
+                hold_preview[0]=False
+                for pending in held_preview:pending.continue_()
+                held_preview.clear()
+                page.wait_for_function('previous=>BMODesktop.previewEvidence.displayed>previous',arg=held['displayed'])
+                resumed=page.evaluate('()=>({...BMODesktop.previewEvidence})')
+                assert resumed['dropped']>slow['dropped']
+                assert resumed['received']>=resumed['decoded']>=resumed['displayed']>0
+                assert all(type(resumed[key]) in (int,float) and math.isfinite(resumed[key]) and resumed[key]>=0
+                    for key in ('last_frame_age_ms','last_display_age_ms'))
+                page.evaluate("()=>BMODesktop.control('preview',false)")
+                wait(lambda s:not s['camera']['on'])
+                page.locator('#camera-dialog .dialog-close').click()
+                page.wait_for_function('()=>BMODesktop.previewEvidence.active===false&&BMODesktop.previewEvidence.pending===0')
+                stopped_preview=page.evaluate('()=>({...BMODesktop.previewEvidence})')
+                page.wait_for_timeout(150)
+                assert all(page.evaluate('()=>({...BMODesktop.previewEvidence})')[key]==stopped_preview[key]
+                    for key in ('requests','displayed'))
+                checks.append('independent latest-frame transport counts distinct received/decoded/displayed IDs and ages; duplicate HTTP responses do not inflate frames, slow consumer keeps one pending request and drops old frames, and preview close stops requests/draws')
+
                 hold_preview[0]=True
+                photo_decoded_before=page.evaluate('()=>BMODesktop.previewEvidence.decoded')
                 # Freeze only Host/camera time for exact countdown boundaries;
                 # the Desktop heartbeat and owned player stay on real clocks.
                 set_photo_clock(root,0)
@@ -328,7 +433,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 hold_preview[0]=False
                 for pending in held_preview:pending.continue_()
                 held_preview.clear()
-                page.wait_for_function("()=>{const image=document.querySelector('#photo-preview-image');return image.complete&&image.naturalWidth>0}")
+                page.wait_for_function('previous=>BMODesktop.previewEvidence.decoded>previous',arg=photo_decoded_before)
                 page.wait_for_timeout(150)
                 assert fixture.features()['photo_phase']=='preparing'
                 assert fixture.features()['photo_countdown'] is None
@@ -341,7 +446,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 checks.append('a decoded preview behind an open menu or a zero-sized hidden ancestor cannot start the countdown; visible preview resumes the same request')
                 page.wait_for_function("()=>BMODesktop.features?.photo_phase==='countdown'&&document.querySelector('#photo-countdown').textContent==='5'")
                 assert page.locator('#photo-preview-image').is_visible()
-                assert page.locator('#photo-preview-image').evaluate('image=>image.complete&&image.naturalWidth>0')
+                assert page.locator('#photo-preview-image').evaluate('canvas=>canvas.width>0&&canvas.height>0&&!!canvas.dataset.frameId')
                 for digit in (4,3,2,1):
                     set_photo_clock(root,7-digit)
                     page.wait_for_function('digit=>document.querySelector("#photo-countdown").textContent===String(digit)',arg=digit)
@@ -354,6 +459,11 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert '/api/photo/'+photo_id in page.locator('#photo-result-image').get_attribute('src')
                 assert not page.locator('#photo-preview-image').is_visible()
                 assert not saved['camera']['on']
+                page.wait_for_function('()=>BMODesktop.previewEvidence.active===false&&BMODesktop.previewEvidence.pending===0')
+                reviewed_preview=page.evaluate('()=>({...BMODesktop.previewEvidence})')
+                page.wait_for_timeout(150)
+                assert all(page.evaluate('()=>({...BMODesktop.previewEvidence})')[key]==reviewed_preview[key]
+                    for key in ('requests','displayed'))
                 status,png=fixture.request('/api/photo/'+photo_id)
                 assert status==200 and png.startswith(b'\x89PNG')
                 page.wait_for_function("()=>BMOIntegration.state?.playback==='started'&&document.querySelector('#subtitles').textContent==='짜잔! 꽤 괜찮지?'")
@@ -420,6 +530,85 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 (root/'fail-photo').unlink()
                 checks.append('injected focus timeout retains safe stage/code and a short specific UI reason, saves nothing, emits no success voice, does not retry, and Back to BMO restores conversation')
 
+                before_uncertain=fixture.features()['test_fixture']
+                uncertain=uncertain_photo()
+                assert uncertain['test_fixture']['photo_captures']==before_uncertain['photo_captures']
+                assert uncertain['test_fixture']['photo_saves']==before_uncertain['photo_saves']
+                page.locator('#photo-take-anyway').click()
+                unconfirmed=wait(lambda s:s['photo_phase']=='photo_review' and s['photo'] and s['photo']['completed'])
+                assert unconfirmed['photo']['focus_status']=='unconfirmed'
+                assert unconfirmed['test_fixture']['photo_captures']==before_uncertain['photo_captures']+1
+                assert unconfirmed['test_fixture']['photo_saves']==before_uncertain['photo_saves']+1
+                page.wait_for_function("()=>document.querySelector('#foreground-status').textContent==='Photo saved. Focus unconfirmed.'")
+                page.wait_for_function("()=>{const image=document.querySelector('#photo-result-image');return !image.hidden&&image.complete&&image.naturalWidth>0}")
+                status,png=fixture.request('/api/photo/'+unconfirmed['photo']['photo_id'])
+                assert status==200 and png.startswith(b'\x89PNG')
+                page.wait_for_function("()=>BMOIntegration.state?.playback==='started'")
+                finished_unconfirmed=finish()
+                assert finished_unconfirmed['test_fixture']['synthesis']==before_uncertain['synthesis']+1
+                page.evaluate("()=>BMODesktop.control('repeat')")
+                page.wait_for_function("()=>BMOIntegration.state?.playback==='started'");finish()
+                assert fixture.features()['test_fixture']['photo_captures']==unconfirmed['test_fixture']['photo_captures']
+                page.locator('#foreground-back').click();wait(lambda s:s['mode']=='conversation')
+                (root/'focus-uncertain').unlink()
+                checks.append('Focus uncertain retains the current transaction without still capture; native Take anyway stores one new actual synthetic still with unconfirmed focus and truthful persistent review, and repeat cannot retake')
+
+                before_refocus=fixture.features()['test_fixture']
+                refocus_request=uncertain_photo()
+                duplicate_refocus=dict(generation=refocus_request['mode_generation'],
+                    request_id=refocus_request['photo_request_id'],action='refocus')
+                page.locator('#photo-refocus').click()
+                page.evaluate('value=>BMODesktop.control("photo_focus",value)',duplicate_refocus)
+                refocused=wait(lambda s:s['photo_phase']=='photo_review' and s['photo'] and s['photo']['completed'])
+                assert refocused['photo']['focus_status']=='focused'
+                assert refocused['test_fixture']['focus_refocus']==before_refocus['focus_refocus']+1
+                assert refocused['test_fixture']['photo_captures']==before_refocus['photo_captures']+1
+                assert refocused['test_fixture']['photo_saves']==before_refocus['photo_saves']+1
+                page.wait_for_function("()=>BMOIntegration.state?.playback==='started'")
+                finished_refocus=finish()
+                assert finished_refocus['test_fixture']['synthesis']==before_refocus['synthesis']+1
+                page.locator('#foreground-back').click();wait(lambda s:s['mode']=='conversation')
+                checks.append('native Refocus runs once for the current uncertain transaction, observes the next focused state and saves one still; duplicate control cannot start another scan or capture')
+
+                uncertain_photo()
+                (root/'refocus-remains-uncertain').write_text('completed user refocus remains uncertain')
+                hold_features[0]=True
+                deadline=time.monotonic()+4
+                while not held_features and time.monotonic()<deadline:page.wait_for_timeout(20)
+                assert held_features
+                before_failed_refocus=fixture.features()['test_fixture']['focus_refocus']
+                page.locator('#photo-refocus').click()
+                wait(lambda s:s['test_fixture']['focus_refocus']==before_failed_refocus+1)
+                set_photo_clock(root,float((root/'photo-clock').read_text())+2.6)
+                fixture.features()
+                wait(lambda s:s['photo_phase']=='focus_review' and s['photo_refocus_used'])
+                hold_features[0]=False
+                for pending in held_features:pending.continue_()
+                held_features.clear()
+                page.wait_for_function("()=>BMODesktop.features?.photo_phase==='focus_review'&&BMODesktop.features.photo_refocus_used===true")
+                assert page.locator('#photo-refocus').is_disabled()
+                assert page.locator('#photo-take-anyway').is_enabled()
+                before_focus_back=fixture.features()['test_fixture']
+                before_focus_ptt=page.evaluate('()=>BMODesktop.inputEvidence.request_sent')
+                page.locator('#photo-take-anyway').focus()
+                page.keyboard.down('Enter');wait(lambda s:s['mode']=='conversation')
+                page.keyboard.down('Enter');page.keyboard.up('Enter')
+                page.wait_for_timeout(150)
+                after_focus_back=fixture.features()['test_fixture']
+                assert all(after_focus_back[key]==before_focus_back[key] for key in ('photo_captures','photo_saves','mic_sources','synthesis'))
+                assert page.evaluate('()=>BMODesktop.inputEvidence.request_sent')==before_focus_ptt
+                (root/'focus-uncertain').unlink()
+                (root/'refocus-remains-uncertain').unlink()
+                uncertain_photo()
+                before_focus_repeat=fixture.features()['test_fixture']
+                page.evaluate("()=>BMODesktop.control('repeat')")
+                wait(lambda s:s['mode']=='conversation');finish()
+                advance_photo_countdown()
+                after_focus_repeat=fixture.features()['test_fixture']
+                assert all(after_focus_repeat[key]==before_focus_repeat[key] for key in ('photo_captures','photo_saves','synthesis','focus_refocus'))
+                (root/'focus-uncertain').unlink()
+                checks.append('an uncertain Refocus whose intermediate phase is missed keeps Take anyway usable and Refocus disabled; GP8/Enter on that button only returns without capture/PTT, and repeat cannot revive the old photo')
+
                 count=fixture.features()['test_fixture']['photo_captures']
                 for text in ("Don't take a photo.",'Can you take photos?','Tomorrow, take a photo.','Translate "take a photo".'):
                     question(text);finish()
@@ -427,6 +616,14 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     assert fixture.features()['test_fixture']['photo_captures']==count
                 checks.append('negation, capability, future and translated quotation cannot authorize a photo even with forged model execution metadata')
                 assert page.evaluate('()=>window.__audioCalls')==0
+                page.evaluate('()=>BMODesktop.menu()');page.locator('#camera-menu').click()
+                page.locator('#camera-preview').click()
+                page.wait_for_function("()=>BMODesktop.previewEvidence.active===true&&document.querySelector('#camera-image').dataset.frameId")
+                page.goto('about:blank')
+                navigated_requests=preview_requests[0]
+                page.wait_for_timeout(200)
+                assert preview_requests[0]==navigated_requests
+                checks.append('native pagehide navigation ends the preview fetch pipeline; the departed product document sends no further frame requests')
                 code,counts,error=fixture.finish()
                 assert code==0 and counts['forbidden']==0,error
                 assert counts['players']==counts['reaped'] and counts['max_players']==1

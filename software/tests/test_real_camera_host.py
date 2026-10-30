@@ -71,7 +71,7 @@ class SupervisedCameraHostTests(unittest.TestCase):
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             self.poll(host)
-            if not host.session.busy and host.audio.owner is None:
+            if not host.session.busy and host.audio.owner is None and host._photo_job is None:
                 return
             time.sleep(.002)
         self.fail('dialogue did not finish')
@@ -79,16 +79,19 @@ class SupervisedCameraHostTests(unittest.TestCase):
     def present_photo_preview(self, host):
         # Model the product image-load acknowledgement, not a PID/open sensor.
         state = self.poll(host)
-        for _ in range(4):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
             if state['camera']['preview_available']:
                 break
-            self.clock.now += .11
-            self.sdk.sensor += 110_000_000
+            time.sleep(.005)  # Yield to the one bounded SDK preview producer.
             state = self.poll(host)
         self.assertEqual(state['photo_phase'], 'preparing')
         self.assertIsNone(state['photo_countdown'])
         self.assertTrue(state['camera']['preview_available'])
-        self.assertIsNotNone(host.preview_bytes())
+        preview = host.preview_frame()
+        self.assertIsNotNone(preview)
+        self.assertEqual(preview['mime'], 'image/jpeg')
+        self.assertTrue(preview['payload'].startswith(b'\xff\xd8'))
         result = host.control(HostControl('photo_preview_ready', {
             'generation': state['mode_generation'],
             'request_id': state['photo_request_id'],
@@ -98,10 +101,22 @@ class SupervisedCameraHostTests(unittest.TestCase):
         self.assertEqual(host._photo_phase, 'countdown')
         self.assertAlmostEqual(host._pending_photo['deadline'] - self.clock(), 5.)
 
+    def wait_fresh_preview(self, host):
+        # Advancing injected time skips real producer ticks; let the next SDK
+        # frame refresh its current-stream focus before firing the shutter.
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            focus = host.camera.focus_snapshot()
+            if focus.get('can_take_anyway') is True:
+                return
+            time.sleep(.005)
+        self.fail('current-stream SDK preview did not refresh')
+
     def finish_photo(self, host):
         self.present_photo_preview(host)
         self.clock.now += 5.1
         self.sdk.sensor += 5_100_000_000
+        self.wait_fresh_preview(host)
         self.poll(host)
         self.finish_dialogue(host)
         return host.snapshot()
@@ -174,7 +189,10 @@ class SupervisedCameraHostTests(unittest.TestCase):
         self.sdk.fail = 'still'
         self.clock.now += 5.1
         self.sdk.sensor += 5_100_000_000
-        state = self.poll(host)
+        self.wait_fresh_preview(host)
+        self.poll(host)
+        self.finish_dialogue(host)
+        state = host.snapshot()
         self.assertEqual(state['photo']['status'], 'failed')
         self.assertEqual(state['mode'], 'photo')
         self.assertEqual(state['photo_phase'], 'failed')
@@ -309,7 +327,7 @@ class SupervisedCameraHostTests(unittest.TestCase):
         raw=host.video_bytes(result['video_id'])
         self.assertIsNotNone(raw)
         self.assertEqual(hashlib.sha256(raw).hexdigest(),result['sha256'])
-        self.assertEqual(validate_rgb_avi(raw)['width'],320)
+        self.assertEqual(validate_rgb_avi(raw)['width'],640)
         self.assertIsNone(host.video_bytes('video_'+'f'*32))
 
     def test_auto_video_stop_updates_real_receipt_without_synthetic_result_decoder(self):

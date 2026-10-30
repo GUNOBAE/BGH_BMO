@@ -4,6 +4,8 @@ PR #40의 [새 사용자 지시](https://github.com/GUNOBAE/BGH_BMO/pull/40#issu
 
 **밤 RC 갱신:** [NIGHT CLOSEOUT](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6529744247)에 따라 Cloud가 같은 PR의 유일한 코드 writer다. Pi의 이미 끝난 진단을 반복하지 않으며, 이 문서 하나에 아침 후보 인계를 모은다. 운영 앱·바탕화면·OS·서비스·펌웨어를 밤중에 설치하거나 교체하지 않는다.
 
+**사진 후속:** [CAMERA-FOCUS-PREVIEW-20261031](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6530863546)은 `d6d6865bb53bdf42db044f0cadba5ce487ec622b`의 새 실기 실패와 preview 개선 지시다. 앞선 밤 RC를 사진 촬영·초점·부드러운 preview 완료로 취급하지 않는다. 아래의 최신 후속 정책과 최종 HEAD 검증을 함께 따른다.
+
 ## 사용자 실기와 Cloud 검증의 구분
 
 - 사용자 확인: GP8 초기/메뉴 복귀/얼굴 클릭 후 대화, thinking 취소와 새 대화, 사실 질문의 기본 표정 복귀. 현재 부팅음은 승인되어 변경하지 않았다.
@@ -27,6 +29,34 @@ Cloud의 SDK·취소·review 경계 검사는 별도 소스 근거다. 최종 �
 독립 SDK 재현에서 **현재 촬영 구간 안에 노출된 still**도 PNG 인코딩·preview 복귀에 0.8초가 걸리면 tracking용 0.5초 frame-age 검사에 걸려 `stale_photo`가 됐다. still은 완료 시점의 preview 표시 나이 대신 현재 capture 시작~완료 구간과 노출 시각을 비교하도록 수정했다. 이전 요청의 노출·미래 timestamp·SDK focus/still timeout·취소 검사는 유지한다. 이는 별도로 재현한 소스 결함이며, request_id가 일치하지 않는 Pi의 `camera_timeout`을 해결했다는 뜻은 아니다.
 
 호출어에서는 수신 때 신선도를 검증한 질문 PCM을 소비자가 700ms 늦게 읽으면 버리던 문제와, detector 오류 뒤 이전 마이크 close가 끝나기 전에 새 reader를 시작할 수 있던 경합을 고쳤다. 기존 wake 질문 큐의 유한 12초 범위를 일관되게 적용하고 cleanup 완료 전 재시작을 보류한다. 원래 GP8 신선도·수신 검사와 무간격 질문 제한은 유지한다.
+
+## 새 focus 실패와 preview 제품 정책
+
+사용자는 `d6d6865…`에서도 countdown 뒤 **“The camera could not finish focusing.”**와 촬영 실패를 관찰했다. 이 문구만으로 확인되는 것은 `focus` stage다. 이후 [PI-CAMERA-FOCUS-20261031](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6531063407)에서 과거 journal에 없던 새 요청 `spoken_photo_98e5763f74f05362bdac4fc4811d2cf2`의 **`camera_timeout / focus / executed=true / completed=false / capture_attempted`**, 예상 PNG 없음이 확인됐다. 이 새 기록은 AF False의 `photo_focus_failed`나 SDK 예외의 `camera_focus_failed`가 아닌 **AF 대기 deadline 실패**로 좁혀진다. AF가 끝나지 않은 근본 이유는 계속 미확정이다.
+
+폴더 HEAD는 `d6d6865bb53bdf42db044f0cadba5ce487ec622b`이고 깨끗했지만 live PID·실행 HEAD/interpreter·화면 request_id와 직접 대조하지 못했다. 따라서 사용자가 본 바로 그 요청과의 일치에는 이 한계가 있다. journal mtime **2026-10-31 03:38:52 KST**를 AF 시작/종료·elapsed로 쓰지 않는다. AfMode/AfState/LensPosition·실제 반환값/타입·동일 요청 preview fps는 미수집이다. 설정된 2.5초를 실측 AF 시간으로 보고하지 않으며 과거 stage 없는 timeout도 재사용하지 않는다.
+
+반면 느린 preview에는 소스 근거가 있다. 이전 live feature의 고정 **4Hz gate**가 화면 preview와 tracking을 함께 제한했고, 매 프레임 PNG 생성/검증과 전체 JSON poll이 전달 경로에 있었다. 이는 확정된 소프트웨어 제한이며 센서·Pi 화면·VNC의 실측 fps가 아니다.
+
+이번 후속의 제품 정책은 다음과 같다. 기존 한 CameraBroker/Picamera2 인스턴스·서버·UI를 유지하며 대화·감정·자막·GP8·승인 부팅음은 동결한다.
+
+- AF를 preview/countdown 동안 진행·관측하고 현재 stream의 완료 상태를 사용한다. countdown 직후 매번 새 scan부터 시작하지 않으며 still 전환에서 초점/렌즈 위치 보존을 검사한다. 성공 bool이나 metadata가 없다고 임의로 `focus_ok=True`를 만들지 않는다.
+- `AfMode`가 매 프레임 metadata에 없을 수 있으므로 유효한 `AfState=Focused`와 현재 렌즈 값으로 판정한다. 누락된 `af_mode`는 `None`으로 남기고 설정한 모드를 실측처럼 채우지 않는다. Refocus는 여전히 새 Scanning→Focused 관측을 요구한다.
+- 살아 있는 stream에서 AF 작업이 종료됐지만 품질 확신이 낮으면 **Focus uncertain — Take anyway / Refocus / Back**을 제공한다. 사용자의 Take anyway는 현재 request/generation의 새 **1280×720 still**만 저장하고 초점 미확인으로 표시한다. preview 이미지를 사진 성공으로 저장하거나 흐릿한 결과를 초점 성공으로 선언하지 않는다.
+- Refocus는 사용자 선택에 따른 한 번의 명시적 시도이며 자동 반복하지 않는다. 취소·Back·late result·repeat로 촬영 권한을 재생성하지 않는다. 미완료 AF job·timeout·cleanup unknown·장치 fault는 단순 품질 불확실과 구분하고, 정리 미확인 작업과 still capture를 병행하지 않는다.
+- 화면 preview는 **640×360 JPEG, 목표 20fps**, tracking은 별도 **4Hz**다. 기존 SDK `capture_file(..., format='jpeg')`의 **소프트웨어 인코딩**을 비동기 producer에서 처리하며 MJPEG/hardware encoder로 바꿨다고 주장하지 않는다. buffer capacity는 1이고 느린 소비자에게 오래된 프레임을 쌓지 않고 drop한다. 실제 사진 저장 해상도·PNG review는 preview와 분리해 보존한다.
+- frame 생산·인코딩·serve, browser 수신·decode·display의 서로 다른 프레임 수와 frame age를 각각 관측한다. 센서 설정값·HTTP 요청 수·requestAnimationFrame 호출 수만으로 화면 fps를 보고하지 않는다. **Pi 화면의 서로 다른 유효 프레임 15fps 이상은 인수 목표이며 현재 실측은 NOT_MEASURED**다. Cloud/headless 합성 수치를 Pi/VNC 성능으로 바꾸지 않는다.
+- Back·review·취소·종료에서는 producer·encoder·HTTP 소비 루프와 기존 카메라 소유권을 정리한다. latest-frame endpoint는 기존 loopback 접근 제어와 캐시된 bytes만 사용하며 HTTP 요청이 두 번째 카메라 owner를 만들지 않는다. review는 live stream이 아닌 저장한 정지 사진을 유지한다.
+
+자동 검사는 주입한 SDK/시계/프레임/브라우저 경계의 AF 상태·취소·중복 방지·버퍼/소유권 정리를 확인한다. 실물 AF·촬영 품질·Pi 화면 15fps·VNC 지연은 사용자의 다음 한 번의 현장 검수 항목이다. 정확한 SDK 실패 원인이 아직 없으면 제품 정책 개선과 현장 root-cause 확정을 분리한다.
+
+### 현재 진단 필드와 해석
+
+`camera.focus`의 whitelist는 `status/code/stream_generation/observed_at/sensor_timestamp/af_mode/af_state/lens_position/af_started_at/af_finished_at/elapsed/can_take_anyway`다. AF mode/state는 고정 enum이고 현재 stream의 신선한 관측만 사용한다. preview에서는 Continuous를 사용하고 명시적 Refocus는 Auto+Start 한 번 뒤 **새 Auto/Scanning 관측 → Focused/Failed**를 확인하므로 이전 focused frame을 새 시도의 완료로 쓰지 않는다. shutter에서는 새 autofocus_cycle을 시작하지 않고 현재 초점을 Manual과 관측 lens position으로 고정해 still configuration에도 넘긴다. 지원하지 않는 AF·불확실·장치 fault는 별도 상태다.
+
+사진 stream을 닫은 뒤에도 Host의 `photo_focus`와 준비 상태 메뉴에는 **선택/촬영 직전의 whitelist 관측**을 남긴다. `observation=before_capture_or_choice`는 그 시점의 관측이며 실제 실패 순간의 AF trace나 사후 물리 초점 증거가 아니다. 실패 원인은 해당 요청의 `photo_diagnostic.stage/code`와 journal로 비교한다.
+
+`camera.preview_pipeline`에는 `sensor_frames_observed/encoded/published/served/dropped_replaced/capacity/target_hz/worker_alive/physical_fps`가 있다. sensor counter는 이 producer가 metadata와 함께 받은 서로 다른 preview frame 관측이며 센서의 전체 노출 수나 하드웨어 FrameRate 실측이 아니다. `served`는 서버가 제공한 프레임이며 브라우저 decode/display 수와 다르다. browser의 고유 frame ID별 수신·decode·display/age를 따로 비교하고 `physical_fps=NOT_MEASURED`를 유지한다. frame HTTP는 `/api/preview/frame?after=<epoch:seq>`에서 캐시된 최신 bytes만 읽고 새 프레임이 없으면 204다. 처리·취소·Back/종료를 포함한 단일 producer/worker 회귀는 Pi에서의 실제 속도 측정을 대신하지 않는다.
 
 ## 한 응답의 의미 해석
 
@@ -96,7 +126,7 @@ Pi의 최종 읽기 전용 인계는 다음과 같다. 자산의 존재·내부 
 
 ## Pi 후보 갱신·실행과 정상 작동본 복귀
 
-아침 사용자가 기존 앱의 메뉴 **종료**로 정상 종료하고 자원 정리를 확인한 뒤 실행한다. `/home/bgh/BMO_REAL_ROBOT`은 보존하고 후보만 갱신한다. 미커밋 변경·다른 브랜치·분기한 커밋이 있으면 중단하고 보존·통합한다. 정상 환경의 의존성·음성팩·부팅음·펌웨어를 다시 설치하지 않는다. 아래 `FINAL_RC_SHA`는 최종 `CLOUD-NIGHT-RC-20261031` 댓글의 검토된 전체 SHA로 치환하며 과거 폴더 HEAD를 그대로 쓰지 않는다.
+아침 사용자가 기존 앱의 메뉴 **종료**로 정상 종료하고 자원 정리를 확인한 뒤 실행한다. `/home/bgh/BMO_REAL_ROBOT`은 보존하고 후보만 갱신한다. 미커밋 변경·다른 브랜치·분기한 커밋이 있으면 중단하고 보존·통합한다. 정상 환경의 의존성·음성팩·부팅음·펌웨어를 다시 설치하지 않는다. 아래 `FINAL_RC_SHA`는 **이번 focus/preview 후속 완료 보고**의 검토된 전체 SHA로 치환하며 과거 `d6d6865…`나 폴더 HEAD를 그대로 쓰지 않는다.
 
 ```bash
 (
@@ -136,7 +166,7 @@ cd /home/bgh/BMO_REAL_ROBOT && BMO_PYTHON="$PWD/.venv-camera/bin/python" ./launc
 
 ## 아침 최소 네 시나리오
 
-1. **사진 한 장:** 자연스러운 영어 사진 요청 → 실제 preview 표시 → 5초 → 저장 PNG review 유지 → 저장 성공 뒤에만 짧은 대사 → repeat 재촬영 없음 → GP8/Back 복귀. 실패하면 같은 요청의 짧은 UI 이유·whitelist stage/code·journal 일치만 기록하고 자동 재촬영하지 않는다. countdown 취소나 late result가 성공 대사/추가 촬영으로 이어지지 않는지도 관련 경로만 확인한다.
+1. **사진 한 장과 preview:** 실제 preview에서 같은 10초 구간의 서로 다른 생산/encoded/served 프레임과 browser decoded/displayed 프레임·age를 구분한다. Pi 자체 화면의 ≥15fps 목표와 VNC 전달 지연을 따로 기록하고 계측이 없으면 NOT_MEASURED다. 자연스러운 영어 사진 요청 → 표시 ACK → 5초 중 AF 진행 → 필요하면 현재 요청의 Take anyway 또는 명시적 Refocus 한 번 → 새 1280×720 still → 저장 PNG review 유지 → 저장 성공 뒤에만 짧은 대사 → repeat 재촬영 없음 → GP8/Back 복귀를 확인한다. 실패하면 같은 요청의 stage/code·AF 상태/elapsed·journal·파일 존재 여부만 일치시켜 기록하고 자동 재촬영하지 않는다. 취소·Back 뒤 AF/stream 정리와 late result 차단도 관련 경로만 확인한다.
 2. **성공 기능 비회귀:** 기존 자연어 대화·감정 뒤 `two plus two` neutral, en/ko/off 자막·repeat·thinking 취소 후 다음 GP8 질문을 짧게 비교한다. 실제 억양·번역·하단 가림은 사람이 판단한다. 승인 부팅음·고정 하늘색 배경/원본 등장·R10/v13.2 원본은 변경하지 않는다. 이미 성공한 하드웨어 전체 검사는 반복하지 않는다.
 3. **선택 wake:** 기존 모델/자산이 확인된 경우 호출 → ACK 또는 listening → 새 질문 → 질문 종료 후 thinking, 무질문 timeout·취소를 확인한다. 모호한 앞부분을 버린 뒤 뒷부분만 STT로 보내지 않으며, 무간격 호출+질문의 전체 보존은 계속 미검증/제한이다. 누락·오류·OFF 뒤 GP8는 유지한다.
 4. **팔은 별도 감독 조건만:** 현재 Pi의 board SHA/REMOTE_ENABLED 정적 관찰과 실제 B1 adapter 상태를 source/preflight/transport로 나누고, 과거 disabled/커넥터 분리를 현재 상태로 복사하지 않는다. 실제 연결·기구 간섭·즉시 전원 차단 수단·현재 전체 SHA의 검토가 준비되지 않으면 `physical_verified=false / NEEDS_OPERATOR`에서 멈춘다. 조건 충족 후에만 기존 B1 명명 gesture 하나와 기존 취소/STOP 흐름을 감독 검수하고, 문제 시 전체 전원을 즉시 차단한다. STOP ACK는 전원 차단·위치 확인이 아니며 GP7 수동 기능과 기존 보정을 보존한다.
@@ -149,4 +179,4 @@ Pi가 재사용한 보드 파일 관측은 **2026-10-30의 정적 기록**이다
 
 위 조건이 준비된 단일 감독 시험은 `--windowed`와 기존 팔 인자로 같은 앱을 실행하고, 기존 앱의 `BMODesktop.intent('arm_gesture','wave')` 한 번만 요청하는 절차다. 자동 감정 모션을 늘리지 않도록 `--emotion-arms`는 이 한 번의 명명 시험에 필요하지 않다. 기존 `BMODesktop.control('cancel')`은 HOLD, 메뉴 **정지** 또는 `BMODesktop.control('stop')`은 현재 세션 STOP latch다. DISABLED/STOPPED/불명 ACK·timeout·boot 변경·cleanup 불명·예상치 못한 움직임에서 재요청·자동 재시도하지 않고 감독자가 중단한다. 이 명령 형식은 준비 자료이며 이번 밤에 실행하지 않았다.
 
-Luna low/history/output, Aaron Soft, Beemo, gain 0.25, GP7/GP8와 GP10/GP11·600–2400µs·50Hz·좌우 반전·서보 보정, 별도 음성팩은 보존했다. 새로운 게임·카메라 엔진·이미지 클라우드 업로드·팔 활성화는 없다. 유한 제품 회귀의 주입 IO 결과와 실제 장치 검수는 분리한다. 공개 전시 비용 상한·rate limit은 별도 승인/미검수 사항이며 공개 운영 준비 완료로 보고하지 않는다. 최종 SHA와 해당 HEAD의 Python 3.11/3.13·제품 브라우저 CI는 PR #40의 `CLOUD-NIGHT-RC-20261031` 완료 보고를 기준으로 한다.
+Luna low/history/output, Aaron Soft, Beemo, gain 0.25, GP7/GP8와 GP10/GP11·600–2400µs·50Hz·좌우 반전·서보 보정, 별도 음성팩은 보존했다. 새로운 게임·카메라 엔진·이미지 클라우드 업로드·팔 활성화는 없다. 유한 제품 회귀의 주입 IO 결과와 실제 장치 검수는 분리한다. 공개 전시 비용 상한·rate limit은 별도 승인/미검수 사항이며 공개 운영 준비 완료로 보고하지 않는다. 최종 SHA와 해당 HEAD의 Python 3.11/3.13·제품 브라우저 CI는 PR #40의 최신 focus/preview 후속 완료 보고를 기준으로 한다.

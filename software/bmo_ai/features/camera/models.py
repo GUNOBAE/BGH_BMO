@@ -23,6 +23,7 @@ class Frame:
     payload: bytes
     format: str = "png"
     focus_ok: bool = True
+    focus_status: str = "focused"
 
     def __post_init__(self):
         if (type(self.stream_generation) is not int or self.stream_generation < 0
@@ -30,7 +31,32 @@ class Frame:
                 or not finite(self.captured_at) or self.captured_at < 0
                 or any(type(n) is not int or not 1 <= n <= MAX_IMAGE_SIDE for n in (self.width, self.height))
                 or type(self.payload) is not bytes or not 0 < len(self.payload) <= MAX_PNG_BYTES
-                or self.format != "png" or type(self.focus_ok) is not bool):
+                or self.format != "png" or type(self.focus_ok) is not bool
+                or self.focus_status not in ("focused", "unconfirmed", "unsupported")):
+            raise FeatureError("invalid_camera_frame")
+
+
+@dataclass(frozen=True, slots=True)
+class PreviewFrame:
+    """Bounded latest preview; never accepted as the saved still-photo Frame."""
+    stream_generation: int
+    seq: int
+    captured_at: float
+    width: int
+    height: int
+    payload: bytes
+    format: str = "jpeg"
+    sensor_timestamp: int | None = None
+
+    def __post_init__(self):
+        if (type(self.stream_generation) is not int or self.stream_generation < 0
+                or type(self.seq) is not int or self.seq < 0
+                or not finite(self.captured_at) or self.captured_at < 0
+                or any(type(n) is not int or not 1 <= n <= MAX_IMAGE_SIDE for n in (self.width, self.height))
+                or type(self.payload) is not bytes or not 0 < len(self.payload) <= 2 * 1024 * 1024
+                or self.format not in ("jpeg", "png")
+                or self.sensor_timestamp is not None and
+                   (type(self.sensor_timestamp) is not int or self.sensor_timestamp <= 0)):
             raise FeatureError("invalid_camera_frame")
 
 
@@ -96,12 +122,14 @@ class PhotoResult:
     completed: bool = False
     completion: str = "not_started"
     stage: str = "unknown"
+    focus_status: str = "unknown"
 
     def __post_init__(self):
         if (not request_id_ok(self.request_id)
                 or self.status not in ("running", "simulated", "succeeded", "failed", "cancelled", "rejected", "unknown")
                 or not valid_id(self.code) or not valid_id(self.completion)
                 or type(self.stage) is not str or self.stage not in PHOTO_STAGES
+                or self.focus_status not in ("unknown", "focused", "unconfirmed", "unsupported")
                 or self.photo_id is not None and (type(self.photo_id) is not str or re.fullmatch(r'photo_[0-9a-f]{32}', self.photo_id) is None)
                 or self.sha256 is not None and (type(self.sha256) is not str or re.fullmatch(r'[0-9a-f]{64}', self.sha256) is None)
                 or any(type(value) is not bool for value in (self.simulated, self.executed, self.completed))

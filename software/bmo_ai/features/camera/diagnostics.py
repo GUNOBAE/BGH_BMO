@@ -1,10 +1,12 @@
 """Bounded camera failure evidence, never SDK exception text or private paths."""
+import math
 from ..contracts import FeatureError
 
 PHOTO_STAGES = frozenset({'unknown', 'storage_prepare', 'camera_open', 'preview',
     'focus', 'still_capture', 'capture_result', 'frame_validation', 'storage',
     'review', 'complete', 'cancel'})
 PHOTO_CODES = frozenset({'photo_failed', 'photo_running', 'photo_busy', 'photo_saved',
+    'photo_focus_uncertain', 'camera_focus_control_failed', 'camera_preview_cleanup_failed', 'camera_preview_stop_failed',
     'photo_saved_journal_pending', 'photo_saved_state_unknown', 'photo_interrupted',
     'photo_cancelled', 'camera_cancelled', 'camera_timeout', 'camera_off',
     'camera_open_failed', 'camera_unavailable', 'camera_busy', 'camera_real_disabled',
@@ -42,3 +44,23 @@ def photo_diagnostic(result, *, storage_saved=None):
     return dict(stage=stage, code=code, status=status,
                 saved=storage_saved if type(storage_saved) is bool else result.get('completed') is True,
                 automatic_retry=False)
+
+
+def focus_diagnostic(value):
+    """Retain pre-capture AF observations after live preview has been closed."""
+    value = value if type(value) is dict else {}
+    result = {'observation': 'before_capture_or_choice'}
+    for key, allowed in {
+        'status': ('focused', 'unconfirmed', 'scanning', 'unsupported', 'device_fault'),
+        'af_mode': ('manual', 'auto', 'continuous'),
+        'af_state': ('idle', 'scanning', 'focused', 'failed'),
+    }.items():
+        result[key] = value.get(key) if value.get(key) in allowed else None
+    for key in ('stream_generation', 'observed_at', 'sensor_timestamp', 'lens_position',
+                'af_started_at', 'af_finished_at', 'elapsed'):
+        number = value.get(key)
+        try:
+            result[key] = number if type(number) in (int, float) and math.isfinite(number) and number >= 0 else None
+        except OverflowError:
+            result[key] = None
+    return result

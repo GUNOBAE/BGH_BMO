@@ -2,11 +2,12 @@
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 from pathlib import Path
 import re
 import secrets
 from threading import Thread
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from ..integration_face import FaceServer, _public_snapshot
 from .contracts import FeatureError
@@ -83,7 +84,13 @@ class FeatureServer:
                 expected = "http://" + authority
                 return origins == [expected] if write else not origins or origins == [expected]
 
-            def _send(self, status, body=b"", mime="text/plain; charset=utf-8"):
+            def _send(self, status, body=b"", mime="text/plain; charset=utf-8", *, extra_headers=None):
+                extra_headers = extra_headers or {}
+                if (not set(extra_headers) <= {"X-BMO-Frame-Id", "X-BMO-Captured-At", "X-BMO-Frame-Age-Ms"}
+                        or any(type(value) is not str or len(value) > 128
+                               or any(ord(char) < 32 or ord(char) > 126 for char in value)
+                               for value in extra_headers.values())):
+                    raise ValueError("invalid preview headers")
                 if isinstance(body, dict):
                     body, mime = json.dumps(body, allow_nan=False).encode(), "application/json"
                 self.send_response(status)
@@ -92,6 +99,8 @@ class FeatureServer:
                     "Cross-Origin-Resource-Policy": "same-origin",
                     "Referrer-Policy": "no-referrer", "X-Frame-Options": "SAMEORIGIN",
                     "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'none'; connect-src 'self'; frame-src 'self' about:; frame-ancestors 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"}.items():
+                    self.send_header(key, value)
+                for key, value in extra_headers.items():
                     self.send_header(key, value)
                 try:
                     self.end_headers()
@@ -104,7 +113,8 @@ class FeatureServer:
                 if not self._origin():
                     self._send(403)
                     return
-                path = urlsplit(self.path).path
+                request_url = urlsplit(self.path)
+                path = request_url.path
                 try:
                     if path == "/api/state":
                         self._send(200, _public_snapshot(owner.host.face_snapshot()))
@@ -116,6 +126,41 @@ class FeatureServer:
                     elif path == "/api/desktop" and owner.desktop is not None:
                         owner.host.heartbeat()
                         self._send(200, owner.desktop.startup_snapshot())
+                    elif path == "/api/preview/frame":
+                        try:
+                            query = parse_qsl(request_url.query, keep_blank_values=True,
+                                              strict_parsing=True, max_num_fields=1)
+                            after = query[0][1] if query else None
+                            if query and (query[0][0] != "after" or len(after) > 64
+                                    or after and re.fullmatch(r"[0-9]+:[0-9]+", after) is None):
+                                raise ValueError("invalid preview cursor")
+                        except ValueError:
+                            self._send(400)
+                            return
+                        # HEAD is deliberately metadata-only: it must not mark
+                        # a cached frame served or touch camera/SDK ownership.
+                        if self.command == "HEAD":
+                            self._send(204)
+                            return
+                        frame = owner.host.preview_frame(after=after or None)
+                        if frame is None:
+                            self._send(204)
+                            return
+                        if (type(frame) is not dict or type(frame.get("id")) is not str
+                                or len(frame["id"]) > 64 or re.fullmatch(r"[0-9]+:[0-9]+", frame["id"]) is None
+                                or type(frame.get("payload")) is not bytes or not frame["payload"]
+                                or frame.get("mime") not in ("image/jpeg", "image/png")
+                                or any(type(frame.get(key)) not in (int, float)
+                                       or not math.isfinite(frame[key]) or frame[key] < 0
+                                       for key in ("captured_at", "age_ms"))):
+                            raise ValueError("invalid preview frame")
+                        if frame["id"] == after:
+                            self._send(204)
+                            return
+                        self._send(200, frame["payload"], frame["mime"], extra_headers={
+                            "X-BMO-Frame-Id": frame["id"],
+                            "X-BMO-Captured-At": str(float(frame["captured_at"])),
+                            "X-BMO-Frame-Age-Ms": str(float(frame["age_ms"]))})
                     elif path == "/api/preview":
                         image = owner.host.preview_bytes()
                         self._send(200, image, "image/png") if image else self._send(404)

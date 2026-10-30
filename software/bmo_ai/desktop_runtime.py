@@ -272,6 +272,9 @@ class DesktopRuntime:
             return self.host.snapshot()
         return {"version": 1, "simulation": self.simulate, "engine_ready": False}
 
+    def preview_frame(self, after=None):
+        return self.host.preview_frame(after=after) if self.host else None
+
     def preview_bytes(self):
         return self.host.preview_bytes() if self.host is not None else None
 

@@ -10,7 +10,7 @@ import math
 from pathlib import Path
 from queue import Empty, Full, Queue, PriorityQueue
 from tempfile import TemporaryDirectory
-from threading import Lock
+from threading import Lock, Thread
 import time
 from types import SimpleNamespace
 from uuid import uuid4, uuid5, UUID
@@ -23,7 +23,7 @@ from .journal import ActionJournal
 from .reply import FeatureClient, HostIntent
 from .resources import ModeManager, AudioFocus, InputRouter, GazeArbiter, LOGICAL_INPUTS
 from .runtime import RuntimePolicy
-from .camera.diagnostics import photo_diagnostic
+from .camera.diagnostics import photo_diagnostic, focus_diagnostic
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +50,11 @@ class HostControl:
             valid = (type(self.value) is dict and set(self.value) == {'generation', 'request_id', 'preview_token'}
                 and type(self.value['generation']) is int and self.value['generation'] >= 0
                 and request_id_ok(self.value['request_id']) and request_id_ok(self.value['preview_token']))
+        elif self.action == 'photo_focus':
+            valid = (type(self.value) is dict and set(self.value) == {'generation', 'request_id', 'action'}
+                and type(self.value['generation']) is int and self.value['generation'] >= 0
+                and request_id_ok(self.value['request_id'])
+                and self.value['action'] in ('take_anyway', 'refocus'))
         elif self.action == "preview":
             valid = type(self.value) is bool
         elif self.action == "video_start":
@@ -247,7 +252,9 @@ class FeatureHost:
         self._active_game_request = self._active_media_request = None
         self._pending_photo = self._photo_result = self._photo_restore = None
         self._photo_phase = 'idle'
+        self._photo_job = None
         self._photo_diagnostic = None
+        self._photo_focus_evidence = None
         self._photo_cancel_epoch = 0
         self._photo_back_pending = False
         self._photo_feedback = None
@@ -487,6 +494,8 @@ class FeatureHost:
             self.gaze.clear("camera")
 
     def _transition(self, mode, context=None, *, force=False):
+        if self._photo_job is not None and mode != 'photo':
+            raise FeatureError('photo_busy')
         if mode != self.modes.mode or force:
             self.gamepad.release()
             self._cancel_video("video_mode_changed")
@@ -574,6 +583,7 @@ class FeatureHost:
             success=context.get('success'), cancel_epoch=self._photo_cancel_epoch)
         self.camera.set_preview(True, generation=self.modes.generation)
         self._photo_result = self._photo_png = None
+        self._photo_focus_evidence = None
         self._photo_diagnostic = None
         self._photo_phase = 'preparing'
         self._photo_back_pending = False
@@ -587,13 +597,17 @@ class FeatureHost:
         if self.modes.mode != 'photo':
             return False
         self._last_ptt_press = self.clock()
+        with self._records_lock:
+            self._photo_cancel_epoch += 1
+        if self._photo_job:
+            self.camera.cancel_photo(self._photo_job['pending']['request_id'])
         if self._pending_photo:
             request = self._pending_photo['request_id']
             self.camera.cancel_photo(request)
             self._finish_result(HostResult(request, 'cancelled', 'photo_cancelled'))
             self._photo_diagnostic = photo_diagnostic(dict(status='cancelled', code='photo_cancelled', stage='cancel'))
         self._pending_photo = None  # Retire countdown before any cancellation callback.
-        if self.session.busy:
+        if self.session.busy or self._photo_job:
             self._photo_back_pending = True
             self.cancel_conversation()
         else:
@@ -610,6 +624,140 @@ class FeatureHost:
             raise FeatureError('stale_photo_preview')
         pending['deadline'] = self.clock()+5.
         self._photo_phase = 'countdown'
+
+    def _focus_gate(self, pending):
+        focus = self.camera.focus_snapshot()
+        self._photo_focus_evidence = focus_diagnostic(focus)
+        if focus.get('status') == 'focused' and focus.get('can_take_anyway') is not False:
+            self._begin_photo_capture(pending)
+        elif focus.get('status') == 'device_fault':
+            self._pending_photo = None
+            self._photo_phase = 'failed'
+            self._photo_diagnostic = photo_diagnostic(dict(status='failed', code='camera_focus_failed', stage='focus'))
+            self._finish_result(HostResult(pending['request_id'], 'failed', 'camera_focus_failed'))
+            self.camera.off()
+        else:
+            self._photo_phase = 'focus_review'
+            self._photo_diagnostic = photo_diagnostic(dict(status='rejected', code='photo_focus_uncertain', stage='focus'))
+
+    def _focus_choice(self, value):
+        pending = self._pending_photo
+        if (not pending or self.modes.mode != 'photo' or self._photo_phase != 'focus_review'
+                or value['generation'] != pending['generation'] or value['generation'] != self.modes.generation
+                or value['request_id'] != pending['request_id'] or self._photo_cancelled(pending)):
+            raise FeatureError('stale_photo_preview')
+        if value['action'] == 'take_anyway':
+            if self.camera.focus_snapshot().get('can_take_anyway') is False:
+                raise FeatureError('photo_focus_uncertain')
+            pending['allow_unconfirmed'] = True
+            self._begin_photo_capture(pending)
+        else:
+            if pending.get('refocus_used'):
+                raise FeatureError('photo_refocus_already_used')
+            pending['refocus_used'] = True
+            pending['focus_deadline'] = self.clock()+2.5
+            self._photo_phase = 'focusing'
+            self._start_photo_job(pending, kind='refocus')
+
+    def _start_photo_job(self, pending, *, kind):
+        if self._photo_job is not None:
+            raise FeatureError('photo_busy')
+        job = dict(pending=pending, kind=kind, result=None, error=False)
+        def work():
+            try:
+                if kind == 'refocus':
+                    job['result'] = self.camera.refocus(cancel_check=lambda: self._photo_cancelled(pending))
+                else:
+                    options = dict(cancel_check=lambda: self._photo_cancelled(pending))
+                    if pending.get('allow_unconfirmed'):
+                        options['allow_unconfirmed'] = True
+                    if getattr(self.camera, 'asynchronous_preview', False):
+                        options['resume_preview'] = False
+                    photo = self.camera.take_photo(pending['request_id'], generation=pending['generation'], **options)
+                    pixels = None
+                    if photo.photo_id:
+                        try: pixels = self.camera.photo_bytes(photo.photo_id)
+                        except Exception: pass
+                    job['result'] = (photo, pixels)
+            except Exception:
+                job['error'] = True
+        thread = Thread(target=work, name='bmo-photo-operation', daemon=True)
+        job['thread'] = thread
+        self._photo_job = job
+        thread.start()
+
+    def _begin_photo_capture(self, pending):
+        self._photo_focus_evidence = focus_diagnostic(self.camera.focus_snapshot())
+        self._pending_photo = None  # One accepted choice/capture per current transaction.
+        self._photo_phase = 'capturing'
+        if not getattr(self.camera, 'asynchronous_preview', False):
+            # Keep injected synchronous adapters on their existing owner path.
+            options = dict(cancel_check=lambda: self._photo_cancelled(pending))
+            if pending.get('allow_unconfirmed'):
+                options['allow_unconfirmed'] = True
+            photo = self.camera.take_photo(pending['request_id'], generation=pending['generation'], **options)
+            pixels = None
+            if photo.photo_id:
+                try: pixels = self.camera.photo_bytes(photo.photo_id)
+                except Exception: pass
+            self._complete_photo(pending, photo, pixels)
+        else:
+            self._start_photo_job(pending, kind='capture')
+
+    def _poll_photo_job(self):
+        job = self._photo_job
+        if not job or job['thread'].is_alive():
+            return
+        job['thread'].join()
+        self._photo_job = None
+        pending = job['pending']
+        if job['kind'] == 'refocus':
+            if self._photo_cancelled(pending):
+                self._pending_photo = None
+            elif job['error']:
+                self._pending_photo = None
+                self._photo_phase = 'failed'
+                self._photo_diagnostic = photo_diagnostic(dict(status='failed', code='camera_focus_control_failed', stage='focus'))
+                self._finish_result(HostResult(pending['request_id'], 'failed', 'camera_focus_control_failed'))
+                self.camera.off()
+            return
+        if job['error']:
+            from .camera.models import PhotoResult
+            photo = PhotoResult(pending['request_id'], 'failed', 'camera_capture_failed', stage='still_capture')
+            pixels = None
+        else:
+            photo, pixels = job['result']
+        if photo.code == 'photo_focus_uncertain' and not self._photo_cancelled(pending):
+            self._pending_photo = pending
+            self._photo_phase = 'focus_review'
+            self._photo_diagnostic = photo_diagnostic(photo.public())
+            return
+        self._complete_photo(pending, photo, pixels)
+
+    def _complete_photo(self, pending, photo, pixels):
+        if self._photo_cancelled(pending):
+            if pending['generation'] == self.modes.generation:
+                self.camera.off()
+                self._photo_phase = 'failed'
+                self._finish_result(HostResult(pending['request_id'], 'cancelled', 'photo_cancelled'))
+                self._photo_diagnostic = photo_diagnostic(dict(status='cancelled', code='photo_cancelled', stage='cancel'))
+        elif pending['generation'] == self.modes.generation and self.modes.mode == 'photo':
+            self._photo_result = photo.public()
+            self._photo_png = pixels
+            saved = bool(photo.completed and photo.photo_id and self._photo_png)
+            if photo.completed and not saved:
+                self._photo_result.update(status='unknown', code='photo_review_unavailable', completed=False, stage='review')
+            self._photo_diagnostic = photo_diagnostic(self._photo_result, storage_saved=photo.completed)
+            result = HostResult(photo.request_id,
+                photo.status if not photo.completed or saved else 'unknown',
+                photo.code if not photo.completed or saved else 'photo_review_unavailable',
+                photo.simulated, photo.executed, bool(saved),
+                photo.completion if not photo.completed or saved else 'unknown')
+            self._finish_result(result)
+            self.camera.off()  # Review owns saved pixels, not a live camera.
+            self._photo_phase = 'photo_review' if saved else 'failed'
+            if saved:
+                self._start_photo_feedback(pending.get('success'), pending)
 
     def _photo_cancelled(self, pending):
         with self._records_lock:
@@ -866,6 +1014,8 @@ class FeatureHost:
                 self.session.set_subtitles(value)
             elif action == 'photo_preview_ready':
                 self._preview_presented(value)
+            elif action == 'photo_focus':
+                self._focus_choice(value)
             elif action == "video_start":
                 self.runtime.require("camera_video")
                 if self.modes.mode != "conversation" or self.session.busy or self.audio.owner is not None:
@@ -1026,7 +1176,7 @@ class FeatureHost:
         return None
 
     def _begin_conversation(self, *, message=None, input_provider=None):
-        if self._closed or self.session.busy or self._ptt_cleanup_fault or self.video.snapshot()["recording"]:
+        if self._closed or self._photo_job is not None or self.session.busy or self._ptt_cleanup_fault or self.video.snapshot()["recording"]:
             return False
         self._transition("conversation")
         self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
@@ -1565,36 +1715,16 @@ class FeatureHost:
                 elif camera['preview_available'] and not pending['preview_token']:
                     pending['preview_token'] = uuid4().hex
             elif self._photo_phase == 'countdown' and self.clock() >= pending['deadline']:
-                self._pending_photo = None  # A request has exactly one capture attempt.
-                photo = self.camera.take_photo(pending['request_id'], generation=pending['generation'],
-                    cancel_check=lambda: self._photo_cancelled(pending))
-                if self._photo_cancelled(pending):
-                    if pending['generation'] == self.modes.generation:
-                        self.camera.off()
-                        self._photo_phase = 'failed'
-                        self._finish_result(HostResult(pending['request_id'], 'cancelled', 'photo_cancelled'))
-                        self._photo_diagnostic = photo_diagnostic(dict(status='cancelled', code='photo_cancelled', stage='cancel'))
-                elif pending['generation'] == self.modes.generation and self.modes.mode == 'photo':
-                    self._photo_result = photo.public()
-                    try:
-                        self._photo_png = self.camera.photo_bytes(photo.photo_id) if photo.photo_id else None
-                    except Exception:
-                        self._photo_png = None
-                    saved = bool(photo.completed and photo.photo_id and self._photo_png)
-                    if photo.completed and not saved:
-                        self._photo_result.update(status='unknown', code='photo_review_unavailable', completed=False, stage='review')
-                    self._photo_diagnostic = photo_diagnostic(self._photo_result, storage_saved=photo.completed)
-                    result = HostResult(photo.request_id,
-                        photo.status if not photo.completed or saved else 'unknown',
-                        photo.code if not photo.completed or saved else 'photo_review_unavailable',
-                        photo.simulated, photo.executed, bool(saved),
-                        photo.completion if not photo.completed or saved else 'unknown')
-                    self._finish_result(result)
-                    self.camera.off()  # Review owns saved pixels, not a live camera.
-                    self._photo_phase = 'photo_review' if saved else 'failed'
-                    if saved:
-                        self._start_photo_feedback(pending.get('success'), pending)
-        if self._photo_back_pending and not self.session.busy:
+                self._focus_gate(pending)
+            elif self._photo_phase == 'focusing' and self._photo_job is None:
+                if self.camera.focus_snapshot().get('status') in ('focused', 'device_fault'):
+                    self._focus_gate(pending)
+                elif self.clock() >= pending['focus_deadline']:
+                    self._photo_phase = 'focus_review'
+            elif self._photo_phase == 'focus_review' and self.camera.focus_snapshot().get('status') == 'device_fault':
+                self._focus_gate(pending)
+        self._poll_photo_job()
+        if self._photo_back_pending and not self.session.busy and self._photo_job is None:
             self._transition('conversation')
         if self._last_shell_seen is not None and self.clock() - self._last_shell_seen > 3.0:
             self.stop()
@@ -1645,8 +1775,10 @@ class FeatureHost:
             "photo_countdown": max(0, self._pending_photo['deadline'] - self.clock()) if self._pending_photo and self._pending_photo['deadline'] is not None else None,
             "photo_phase": self._photo_phase,
             "photo_diagnostic": self._photo_diagnostic,
+            "photo_focus": self._photo_focus_evidence,
             "photo_feedback": self._photo_feedback,
-            "photo_request_id": self._pending_photo['request_id'] if self._pending_photo else None,
+            "photo_request_id": self._pending_photo['request_id'] if self._pending_photo else self._photo_job['pending']['request_id'] if self._photo_job else None,
+            "photo_refocus_used": bool(self._pending_photo and self._pending_photo.get('refocus_used')),
             "photo_preview_token": self._pending_photo['preview_token'] if self._pending_photo else None,
             "subtitles": self.session.subtitle_snapshot(),
             "motion": motion, "imu": self.imu.snapshot(),
@@ -1673,12 +1805,16 @@ class FeatureHost:
                 "real_camera_video": "NOT_RUN"}}
         with self._snapshot_lock:
             self._public = state
-            self._preview = self.camera.preview_bytes()
+            image = self.camera.preview_bytes()
+            self._preview = image if image and image.startswith(b'\x89PNG\r\n\x1a\n') else None
             self._media_cue = self.media.cue_snapshot() if self.modes.mode == "music" else None
 
     def snapshot(self):
         with self._snapshot_lock:
             return json.loads(json.dumps(self._public, allow_nan=False))
+
+    def preview_frame(self, after=None):
+        return self.camera.latest_frame(after=after)
 
     def preview_bytes(self):
         with self._snapshot_lock:
@@ -1716,6 +1852,12 @@ class FeatureHost:
             self.stop()
         except Exception:
             errors.append("cleanup_failed")
+        if self._photo_job is not None:
+            self._photo_job['thread'].join(2.)
+            if self._photo_job['thread'].is_alive():
+                errors.append('photo_cleanup_failed')
+            else:
+                self._photo_job = None
         if self.microphone is not None:
             try:
                 if self.microphone.close() is not True:

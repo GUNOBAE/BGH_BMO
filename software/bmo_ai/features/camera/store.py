@@ -134,11 +134,11 @@ class PhotoStore:
         self.ledger.finish(result)
         return result
 
-    def save(self, request_id, frame, *, simulated, cancel_check):
+    def save(self, request_id, frame, *, simulated, cancel_check, allow_unconfirmed=False):
         width, height = validate_png(frame.payload)
         if (width, height) != (frame.width, frame.height):
             raise FeatureError('invalid_photo')
-        if not frame.focus_ok:
+        if not frame.focus_ok and not (allow_unconfirmed is True and frame.focus_status in ('unconfirmed', 'unsupported')):
             raise FeatureError('photo_focus_failed')
         root = private_root(self.root)
         photo_id = 'photo_' + hashlib.sha256(request_id.encode()).hexdigest()[:32]
@@ -160,7 +160,8 @@ class PhotoStore:
             committed = True
             result = PhotoResult(request_id, 'simulated' if simulated else 'succeeded', 'photo_saved',
                                  photo_id, hashlib.sha256(written).hexdigest(), len(written), simulated,
-                                 not simulated, True, 'synthetic_saved' if simulated else 'saved', stage='complete')
+                                 not simulated, True, 'synthetic_saved' if simulated else 'saved', stage='complete',
+                                 focus_status=frame.focus_status)
             # Cancellation after publication cannot erase the committed image.
             try:
                 self.ledger.finish(result)

@@ -2,7 +2,7 @@
 from threading import Lock, RLock
 
 from ..contracts import FeatureError
-from .models import Frame
+from .models import Frame, PreviewFrame
 
 
 class CameraBroker:
@@ -114,7 +114,7 @@ class CameraBroker:
                     raise
                 raise FeatureError('camera_open_failed') from None
 
-    def _call(self, method, cancel_check=None, owner=None):
+    def _call(self, method, cancel_check=None, owner=None, **options):
         with self._operation:
             if cancel_check is not None:
                 cancel_check()
@@ -124,11 +124,16 @@ class CameraBroker:
             if backend is None:
                 raise FeatureError('camera_off')
             try:
+                callback = getattr(backend, method, None)
+                if callback is None and method == 'read_preview':
+                    callback = backend.read_frame
                 if getattr(backend, 'cooperative_cancel', False) is True:
-                    frame = getattr(backend, method)(cancel_check=cancel_check)
+                    frame = callback(cancel_check=cancel_check, **options)
                 else:
-                    frame = getattr(backend, method)()
-            except BaseException:
+                    frame = callback(**options)
+            except BaseException as error:
+                if isinstance(error, FeatureError) and error.code == 'photo_focus_uncertain':
+                    raise  # Healthy stream; only an explicit current choice may proceed.
                 with self._state:
                     if backend is self._backend:
                         self.close(owner=owner)
@@ -138,9 +143,12 @@ class CameraBroker:
             with self._state:
                 if epoch != self._epoch or backend is not self._backend:
                     raise FeatureError('camera_cancelled')
-                if not isinstance(frame, Frame) or frame.stream_generation != epoch:
+                types = (Frame, PreviewFrame) if method == 'read_preview' else (Frame,)
+                if not isinstance(frame, types) or frame.stream_generation != epoch:
                     raise FeatureError('invalid_camera_frame')
                 if self._seq is not None and (frame.seq <= self._seq or frame.captured_at < self._stamp):
+                    return None
+                if method == 'read_preview' and self._stamp is not None and frame.captured_at == self._stamp:
                     return None
                 self._seq, self._stamp = frame.seq, frame.captured_at
                 return frame
@@ -148,8 +156,41 @@ class CameraBroker:
     def read_frame(self, *, cancel_check=None, owner=None):
         return self._call('read_frame', cancel_check, owner)
 
-    def capture_photo(self, *, cancel_check=None, owner=None):
-        frame = self._call('capture_photo', cancel_check, owner)
+    def read_preview(self, *, cancel_check=None, owner=None):
+        frame = self._call('read_preview', cancel_check, owner)
+        if isinstance(frame, Frame):
+            return PreviewFrame(frame.stream_generation, frame.seq, frame.captured_at,
+                frame.width, frame.height, frame.payload, format='png')
+        return frame
+
+    def focus_snapshot(self):
+        with self._state:
+            backend = self._backend
+            if backend is None:
+                return dict(status='device_fault', code='camera_off')
+            callback = getattr(backend, 'focus_snapshot', None)
+            if callback is not None:
+                return callback()
+            return dict(status='focused' if backend.simulated else 'unsupported',
+                        code='synthetic_focus' if backend.simulated else 'af_unsupported')
+
+    def refocus(self, *, cancel_check=None):
+        with self._operation:
+            if cancel_check is not None:
+                cancel_check()
+            with self._state:
+                self._check_owner(None)
+                backend = self._backend
+            if backend is None:
+                raise FeatureError('camera_off')
+            callback = getattr(backend, 'refocus', None)
+            if callback is not None:
+                return callback(cancel_check=cancel_check)
+            return self.focus_snapshot()
+
+    def capture_photo(self, *, cancel_check=None, owner=None, allow_unconfirmed=False):
+        options = {'allow_unconfirmed': True} if allow_unconfirmed else {}
+        frame = self._call('capture_photo', cancel_check, owner, **options)
         if frame is None:
             raise FeatureError('stale_photo')
         return frame
