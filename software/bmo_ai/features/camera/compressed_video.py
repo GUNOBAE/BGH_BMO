@@ -6,6 +6,7 @@ container with ffprobe before publishing it. Counters describe this consumer;
 none of the configured rates are a claim about physical Pi frame rate.
 """
 from dataclasses import asdict, dataclass
+import errno
 import fcntl
 import hashlib
 import json
@@ -15,6 +16,7 @@ from pathlib import Path
 import re
 import resource
 import select
+import signal
 import stat
 import struct
 import subprocess
@@ -605,8 +607,7 @@ class CompressedVideoRecorder:
         deadline, offset = time.monotonic() + 1., 0
         while offset < len(payload):
             if process.poll() is not None:
-                size = os.fstat(self.store._output).st_size
-                raise FeatureError('video_byte_limit' if size >= self.config.encoder_byte_limit else 'video_encoder_failed')
+                raise FeatureError(self._encoder_failure(process))
             if time.monotonic() >= deadline:
                 raise FeatureError('video_encoder_timeout')
             _, writable, _ = select.select([], [descriptor], [], .05)
@@ -615,6 +616,26 @@ class CompressedVideoRecorder:
                     offset += os.write(descriptor, payload[offset:offset + 65536])
                 except BlockingIOError:
                     pass
+                except OSError as failure:
+                    # A pipe may break before poll() observes SIGXFSZ. Keep it
+                    # at the encoder boundary; final reap checks the stronger
+                    # exit/file-size evidence without guessing from EPIPE.
+                    raise FeatureError(self._encoder_failure(process, failure)) from None
+
+    def _encoder_failure(self, process, failure=None):
+        """Classify bounded encoder IO using local, specific limit evidence."""
+        code = process.poll()
+        if (isinstance(failure, OSError) and failure.errno == errno.EFBIG
+                or code == -signal.SIGXFSZ):
+            return 'video_byte_limit'
+        try:
+            size = os.fstat(self.store._output).st_size
+        except (OSError, TypeError):
+            size = None
+        if size is not None and (size >= self.config.max_bytes
+                or code == 0 and size >= self.config.encoder_byte_limit):
+            return 'video_byte_limit'
+        return 'video_encoder_failed'
 
     def _spawn(self, frame):
         output_fd = self.store._output
@@ -695,7 +716,14 @@ class CompressedVideoRecorder:
                 if self._started is not None and now - self._started >= self._duration:
                     self._reason = 'video_duration_limit'
                     break
-                frame = self._take_frame()
+                try:
+                    frame = self._take_frame()
+                except FeatureError:
+                    raise
+                except Exception:
+                    # Only cache/source IO failed. Encoder size/signal evidence
+                    # must never relabel a device/cache failure as a byte cap.
+                    raise FeatureError('video_source_unavailable') from None
                 if frame is not None:
                     if not isinstance(frame, (Frame, PreviewFrame)):
                         raise FeatureError('invalid_video_frame')
@@ -767,11 +795,23 @@ class CompressedVideoRecorder:
                 self._phase = 'finalizing'
             if process is not None:
                 try:
-                    process.stdin.close()
+                    try:
+                        process.stdin.close()
+                    except OSError as failure:
+                        error = error or self._encoder_failure(process, failure)
                     if process.wait(timeout=self.config.finalize_timeout) != 0:
-                        limited = os.fstat(self.store._output).st_size >= self.config.encoder_byte_limit
-                        error = error or ('video_byte_limit' if limited else 'video_encoder_failed')
-                except (OSError, subprocess.TimeoutExpired):
+                        code = self._encoder_failure(process)
+                        # Preserve an independent source/validation error, but
+                        # upgrade the earlier pipe-race diagnosis once the
+                        # child's exit and final stage size are available.
+                        if error in (None, 'video_encoder_failed', 'video_encoder_timeout'):
+                            error = code
+                            if code == 'video_byte_limit':
+                                self._reason = 'video_byte_limit'
+                    elif error == 'video_encoder_failed' and self._encoder_failure(process) == 'video_byte_limit':
+                        error = 'video_byte_limit'
+                        self._reason = 'video_byte_limit'
+                except subprocess.TimeoutExpired:
                     error = error or 'video_encoder_timeout'
                     process.kill()
                     process.wait(timeout=2)

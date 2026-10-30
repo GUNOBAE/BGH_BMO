@@ -181,6 +181,24 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     finish_voice()
                 def wait_ui_mode(mode):
                     page.wait_for_function('mode=>BMODesktop.features?.mode===mode',arg=mode)
+                def wait_provider_ui(snapshot,name,text,*,recheck_disabled=None):
+                    """Wait for the browser to render THIS observed fault state.
+
+                    A disabled recheck button alone also matches the preceding
+                    healthy state, before the injected failure reaches the UI.
+                    Keep provider JSON, snapshot sequence and rendered guidance
+                    together so a stale poll cannot satisfy the assertion.
+                    """
+                    provider=snapshot['providers'][name]
+                    fields={key:provider[key] for key in ('code','blocked','recovery','authentication_verified') if key in provider}
+                    page.wait_for_function("""expected=>{
+                      const snapshot=window.BMODesktop?.features,provider=snapshot?.providers?.[expected.name];
+                      const panel=document.querySelector(expected.name==='cloud'?'#cloud-readiness':'#provider-readiness');
+                      return snapshot?.sequence>=expected.sequence&&provider
+                        &&Object.entries(expected.fields).every(([key,value])=>provider[key]===value)
+                        &&panel?.textContent.includes(expected.text)
+                        &&(expected.disabled===null||document.querySelector('#provider-recheck')?.disabled===expected.disabled);
+                    }""",arg=dict(sequence=snapshot['sequence'],name=name,fields=fields,text=text,disabled=recheck_disabled))
                 page.goto(fixture.url,wait_until='domcontentloaded')
                 try:
                     page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'&&BMODesktop.features?.mode==='conversation'")
@@ -217,31 +235,36 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
 
                 before_provider=fixture.features()['test_fixture']
                 (Path(directory)/'inject-provider-failure').write_text('synthetic authentication boundary only')
-                wait(lambda state:state['providers']['voice']['blocked'])
+                provider_failed=wait(lambda state:state['providers']['voice']['blocked'])
+                wait_provider_ui(provider_failed,'voice','Fish 인증',recheck_disabled=False)
                 page.locator('#face').click(position={'x':400,'y':230});page.keyboard.press('Enter')
                 page.wait_for_timeout(300)
                 blocked=fixture.features()['test_fixture']
                 assert (blocked['mic_sources'],blocked['brain'],blocked['synthesis'])==(before_provider['mic_sources'],before_provider['brain'],before_provider['synthesis'])
-                panel('system-menu');page.wait_for_function("()=>document.querySelector('#provider-recheck').disabled===false")
+                panel('system-menu');wait_provider_ui(provider_failed,'voice','Fish 인증',recheck_disabled=False)
                 assert 'Fish 인증' in page.locator('#provider-readiness').inner_text()
-                page.locator('#provider-recheck').click();wait(lambda state:not state['providers']['voice']['blocked'])
+                page.locator('#provider-recheck').click()
+                provider_cleared=wait(lambda state:not state['providers']['voice']['blocked'])
+                wait_provider_ui(provider_cleared,'voice','음성 오류가 관측되지',recheck_disabled=True)
                 page.locator('#system-dialog .dialog-close').click()
                 checks.append('injected Fish authentication fault blocks duplicate mic/GPT/TTS; explicit menu reset recovers local admission without an API probe')
 
                 before_cloud=fixture.features()['test_fixture']
                 (Path(directory)/'inject-cloud-failure').write_text('synthetic OpenAI authentication boundary')
-                wait(lambda state:state['providers']['cloud']['blocked'])
+                cloud_failed=wait(lambda state:state['providers']['cloud']['blocked'])
+                wait_provider_ui(cloud_failed,'cloud','OpenAI 인증',recheck_disabled=False)
                 page.locator('#face').click(position={'x':400,'y':230});page.keyboard.press('Enter');page.wait_for_timeout(250)
                 cloud_blocked=fixture.features()['test_fixture']
                 assert (cloud_blocked['mic_sources'],cloud_blocked['stt'],cloud_blocked['brain'],cloud_blocked['synthesis'])==(before_cloud['mic_sources'],before_cloud['stt'],before_cloud['brain'],before_cloud['synthesis'])
-                panel('system-menu');page.wait_for_function("()=>document.querySelector('#provider-recheck').disabled===false")
+                panel('system-menu');wait_provider_ui(cloud_failed,'cloud','OpenAI 인증',recheck_disabled=False)
                 assert 'OpenAI 인증' in page.locator('#cloud-readiness').inner_text()
                 page.locator('#provider-recheck').click()
                 cleared=wait(lambda state:not state['providers']['cloud']['blocked'])
                 assert cleared['providers']['cloud']['authentication_verified'] is False
+                wait_provider_ui(cleared,'cloud','OpenAI 오류가 관측되지',recheck_disabled=True)
                 (Path(directory)/'inject-cloud-setup-failure').write_text('synthetic startup missing-key boundary')
-                wait(lambda state:state['providers']['cloud']['recovery']=='restart_required')
-                page.wait_for_function("()=>document.querySelector('#provider-recheck').disabled===true")
+                setup_failed=wait(lambda state:state['providers']['cloud']['recovery']=='restart_required')
+                wait_provider_ui(setup_failed,'cloud','다시 실행',recheck_disabled=True)
                 assert '다시 실행' in page.locator('#cloud-readiness').inner_text()
                 page.locator('#system-dialog .dialog-close').click()
                 panel('camera-menu');page.locator('#camera-preview').click()
@@ -252,7 +275,8 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 # End only this injected fault boundary. Actual startup setup
                 # faults require a new configured process, as the UI states.
                 (Path(directory)/'clear-cloud-setup-failure').write_text('end test-owned fault injection')
-                wait(lambda state:not state['providers']['cloud']['blocked'])
+                setup_cleared=wait(lambda state:not state['providers']['cloud']['blocked'])
+                wait_provider_ui(setup_cleared,'cloud','OpenAI 오류가 관측되지',recheck_disabled=True)
                 after_cloud=fixture.features()['test_fixture']
                 assert (after_cloud['mic_sources'],after_cloud['stt'],after_cloud['brain'],after_cloud['synthesis'])==(before_cloud['mic_sources'],before_cloud['stt'],before_cloud['brain'],before_cloud['synthesis'])
                 checks.append('OpenAI fault blocks PTT before mic/STT/GPT/TTS; explicit runtime reset is not authentication approval, startup missing-key asks restart while preview/menu remain usable')
@@ -265,7 +289,12 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert fixture.features()['voice_pack']['approved']==0
                 candidate.locator('select').select_option('photo_saved')
                 candidate.get_by_role('button',name='선택',exact=True).click()
-                wait(lambda state:'photo_saved' in state['voice_pack']['inventory'][0]['selected_events'])
+                selected=wait(lambda state:'photo_saved' in state['voice_pack']['inventory'][0]['selected_events'])
+                page.wait_for_function("""sequence=>{
+                  const state=window.BMODesktop?.features,row=state?.voice_pack?.inventory?.find(item=>item.id==='PH_REVIEW_02_A');
+                  return state?.sequence>=sequence&&row?.selected_events.includes('photo_saved')
+                    &&document.querySelector('[data-candidate=PH_REVIEW_02_A] select')?.value==='photo_saved';
+                }""",arg=selected['sequence'])
                 assert fixture.features()['voice_pack']['approved']==0
                 preview=candidate.locator('[data-variant=preview_gain025]')
                 assert preview.get_by_role('button',name='이 SHA 승인').is_disabled()

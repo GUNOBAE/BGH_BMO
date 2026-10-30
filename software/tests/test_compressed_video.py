@@ -1,19 +1,23 @@
 """Real local codec IO with synthetic frames, never a camera or provider."""
 import hashlib
+import errno
+from io import BytesIO
 import json
 import os
 from dataclasses import asdict
 from pathlib import Path
 import random
+import signal
 import stat
 import struct
 import subprocess
 import tempfile
 from threading import Event
 import time
+from types import SimpleNamespace
 import unittest
 import zlib
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from bmo_ai.features.camera.compressed_video import (
     CompressedVideoConfig, CompressedVideoRecorder, CompressedVideoStore,
@@ -164,6 +168,94 @@ class CompressedContractTests(unittest.TestCase):
                 with self.assertRaises(FeatureError):
                     store.begin('fresh', 'a' * 64, {})
                 self.assertIsNone(store._root)
+
+    def test_encoder_pipe_failure_needs_specific_limit_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = CompressedVideoRecorder(Path(tmp) / 'clips',
+                config=CompressedVideoConfig(max_bytes=64 * 1024), simulated=True)
+            recorder.store.begin('pipe_failure', 'a' * 64,
+                recorder._base('pipe_failure', 'running', 'video_starting'))
+            read_fd, write_fd = os.pipe()
+            try:
+                process = SimpleNamespace(stdin=SimpleNamespace(fileno=lambda: write_fd), poll=lambda: None)
+                failure = BrokenPipeError(errno.EPIPE, 'synthetic private encoder detail')
+                with patch('bmo_ai.features.camera.compressed_video.os.write', side_effect=failure):
+                    with self.assertRaises(FeatureError) as caught:
+                        recorder._write_frame(process, b'header')
+                self.assertEqual(caught.exception.code, 'video_encoder_failed')
+                self.assertNotIn('synthetic private', str(caught.exception))
+                # Merely crossing the soft target while the child still runs
+                # does not prove EPIPE was caused by that limit.
+                os.ftruncate(recorder.store._output, recorder.config.encoder_byte_limit)
+                self.assertEqual(recorder._encoder_failure(process, failure), 'video_encoder_failed')
+                os.ftruncate(recorder.store._output, recorder.config.max_bytes)
+                self.assertEqual(recorder._encoder_failure(process, failure), 'video_byte_limit')
+                os.ftruncate(recorder.store._output, 0)
+                self.assertEqual(recorder._encoder_failure(process, OSError(errno.EFBIG, 'private')), 'video_byte_limit')
+                self.assertEqual(recorder._encoder_failure(SimpleNamespace(poll=lambda: -signal.SIGXFSZ)), 'video_byte_limit')
+                self.assertEqual(recorder._encoder_failure(SimpleNamespace(poll=lambda: -signal.SIGTERM)), 'video_encoder_failed')
+            finally:
+                os.close(read_fd)
+                os.close(write_fd)
+                recorder.store.close()
+
+    def test_reaped_sigxfsz_upgrades_earlier_epipe_without_false_saved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            read_fd, write_fd = os.pipe()
+            class ExitRace:
+                def __init__(self):
+                    self.stdin = os.fdopen(write_fd, 'wb', buffering=0)
+                    self.stderr = BytesIO()
+                    self.returncode = None
+                    self.waits = 0
+                def poll(self):
+                    return self.returncode
+                def wait(self, timeout):
+                    self.waits += 1
+                    self.returncode = -signal.SIGXFSZ
+                    return self.returncode
+            process = ExitRace()
+            recorder = CompressedVideoRecorder(Path(tmp) / 'clips', frame_source=CacheSource(), simulated=True)
+            try:
+                with patch('bmo_ai.features.camera.compressed_video.probe_compressed_video',
+                           return_value=dict(available=True, code='video_encoder_ready')), \
+                     patch.object(recorder, '_spawn', return_value=(process, None)), \
+                     patch('bmo_ai.features.camera.compressed_video.os.write',
+                           side_effect=BrokenPipeError(errno.EPIPE, 'synthetic private detail')):
+                    recorder.start('race', generation=1, consent=True)
+                    result = wait_done(recorder)
+                self.assertEqual(process.waits, 1)
+                self.assertEqual(result['code'], 'video_byte_limit')
+                self.assertEqual(result['stop_reason'], 'video_byte_limit')
+                self.assertEqual(result['status'], 'failed')
+                self.assertFalse(result['completed'])
+                self.assertFalse(result['playable'])
+                self.assertFalse(recorder.snapshot()['worker_alive'])
+                self.assertTrue(process.stdin.closed)
+                self.assertTrue(process.stderr.closed)
+                self.assertEqual(list((Path(tmp) / 'clips').glob('video_*.mp4')), [])
+            finally:
+                os.close(read_fd)
+                if not process.stdin.closed:
+                    process.stdin.close()
+                recorder.close()
+
+    def test_source_os_errors_are_not_encoder_or_size_failures(self):
+        for error in (OSError(errno.EFBIG, 'private SDK'), BrokenPipeError(errno.EPIPE, 'private SDK')):
+            with self.subTest(errno=error.errno), tempfile.TemporaryDirectory() as tmp:
+                recorder = CompressedVideoRecorder(Path(tmp) / 'clips',
+                    frame_source=Mock(side_effect=error), simulated=True)
+                with patch('bmo_ai.features.camera.compressed_video.probe_compressed_video',
+                           return_value=dict(available=True, code='video_encoder_ready')), \
+                     patch.object(recorder, '_spawn') as spawn:
+                    recorder.start('source_failure', generation=1, consent=True)
+                    result = wait_done(recorder)
+                self.assertEqual(result['code'], 'video_source_unavailable')
+                self.assertFalse(result['completed'])
+                self.assertFalse(result['playable'])
+                self.assertFalse(recorder.snapshot()['worker_alive'])
+                spawn.assert_not_called()
+                recorder.close()
 
 
 @unittest.skipUnless(probe_compressed_video()['available'], 'installed local ffmpeg/libx264/ffprobe required')
