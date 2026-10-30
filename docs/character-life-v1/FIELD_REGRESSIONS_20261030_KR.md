@@ -84,6 +84,8 @@ crying은 listening/thinking에도 유지한다. cancel 후 늦은 결과는 버
 
 Playwright 전체 묶음은 **공개 fixture 9회 + 승인 R10 5회 = 14회·122개 검사 그룹 PASS**다. 기존 shell/Desktop/RMS/WebRTC/Character/media/release를 보존하고 field expression/wake를 추가했다. R10은 Character, WebRTC PTT, field emotion, field wake, expression-layer entrance의 실제 원본 DOM을 검사했다. R10 그림 없는 CI에는 공개 계약만 사용한다. 마지막 ACK 경로 격리 변경 후 **R10 wake 7개 그룹도 별도로 재확인 PASS**했다. 기본 격리환경 `pip check`, AST 271개 Python 파일, `git diff --check`도 통과했다. 실물 장치·LLM 음질/인식 성능·LCD 체감 검사를 포함한 수치가 아니다.
 
+초기 제출 `e2d786b`의 PR CI는 세 job 모두 성공했지만 push CI의 기존 Desktop repeat 검사가 실패했다. audio-ended 공개 시점과 worker-finished/AudioFocus 해제 사이에 반복 명령을 보낼 수 있는 검사 경합을 확인했다. 기존 repeat는 busy 상태를 거부하므로, 캐시가 보인다는 이유만으로 worker 완료를 가정하면 안 된다. busy 거부·캐시·재생 정책을 바꾸지 않고, 검사에서 실제 worker 완료와 cache 보존을 확인한 뒤 repeat를 요청하도록 수정했다. 수정한 Desktop 검사는 **공개 fixture 7그룹·실제 R10 7그룹 PASS**다. 최종 추가 커밋의 CI를 다시 확인하며 초기 push 실패를 숨기지 않는다.
+
 - 표정: `character_director.py`, `features/reply.py`, `integration_session.py`, Host trace 노출, 신규 field flow/실제 제품 브라우저 검사.
 - wake: `features/host.py`, `input/microphone_owner.py`, `input/microphone.py`, `wake_ack.py`, CLI/launcher wait 옵션, 신규 handoff/cache 검사와 제품 브라우저 검사. 기존 wake 양성 fixture의 DC 상수는 실제 C VAD가 사용할 수 있는 공개 reference로 교체하고 같은 one-reader/one-turn assertion을 유지했다.
 - 등장: `desktop_web/desktop.js`, `integration_web/adapter.js`, 기존 character browser assertion과 신규 실제 R10 geometry/reload/error 검사.

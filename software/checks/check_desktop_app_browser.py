@@ -533,6 +533,17 @@ def run(profile="ci-synthetic", face=None, chromium="/usr/bin/chromium"):
                     audit = fixture.features()["test_fixture"]
                     assert audit["brain"] == audit["synthesis"] == 1 and audit["history_messages"] > 0 and audit["dialogue_cache"]
                     assert audit["greeting_calls"] == 1
+                    # Audio ended is visible before the worker's completion
+                    # receipt/AudioFocus release. Repeat intentionally rejects
+                    # busy turns; bind this assertion to actual owned cleanup,
+                    # rather than racing that short terminal publication gap.
+                    deadline=time.monotonic()+6
+                    while time.monotonic()<deadline:
+                        completed=fixture.features()
+                        if (not completed['conversation_busy']
+                                and completed['test_fixture']['dialogue_cache']):break
+                        page.wait_for_timeout(20)
+                    else:raise AssertionError('Dialogue worker did not finish before explicit repeat')
                     page.evaluate("()=>BMODesktop.control('repeat')")
                     page.wait_for_function("()=>BMOIntegration.state?.playback==='started'")
                     page.wait_for_function("()=>BMOIntegration.state?.playback==='ended'")
