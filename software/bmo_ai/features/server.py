@@ -112,8 +112,12 @@ class FeatureServer:
                 except OSError:
                     pass
 
-            def _video(self, video_id):
-                opened = owner.host.open_video(video_id) if callable(getattr(owner.host, 'open_video', None)) else None
+            def _video(self, video_id, *, music=False):
+                getter = getattr(owner.host, 'open_music_video' if music else 'open_video', None)
+                opened = getter(video_id) if callable(getter) else None
+                if opened is None and music:
+                    self._send(404)
+                    return
                 if opened is None:
                     # Legacy developer fixtures retain their old byte route.
                     payload = owner.host.video_bytes(video_id)
@@ -157,13 +161,16 @@ class FeatureServer:
                         self.send_header(name, value)
                     self.end_headers()
                     if self.command != 'HEAD':
-                        os.lseek(fd, start, os.SEEK_SET)
-                        remaining = end-start+1
+                        # A music fd is dup'ed from one pinned file; dup shares
+                        # its seek offset across simultaneous browser ranges.
+                        # Each response owns a position, never that shared seek.
+                        position, remaining = start, end-start+1
                         while remaining:
-                            chunk = os.read(fd, min(65536, remaining))
+                            chunk = os.pread(fd, min(65536, remaining), position)
                             if not chunk:
                                 break
                             self.wfile.write(chunk)
+                            position += len(chunk)
                             remaining -= len(chunk)
                 except OSError:
                     pass
@@ -229,6 +236,12 @@ class FeatureServer:
                         photo_id = path.removeprefix("/api/photo/")
                         image = owner.host.photo_bytes(photo_id) if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", photo_id) else None
                         self._send(200, image, "image/png") if image else self._send(404)
+                    elif path.startswith('/api/music-video/'):
+                        media_token = path.removeprefix('/api/music-video/')
+                        if re.fullmatch(r'[A-Za-z0-9_:-]{1,128}_[0-9]{1,12}', media_token) and not request_url.query:
+                            self._video(media_token, music=True)
+                        else:
+                            self._send(404)
                     elif path.startswith("/api/video/"):
                         video_id = path.removeprefix("/api/video/")
                         if re.fullmatch(r'video_[0-9a-f]{32}', video_id) and not request_url.query:
@@ -281,7 +294,7 @@ class FeatureServer:
                         self._send(202, result)
                         return
                     elif urlsplit(self.path).path == "/api/intent":
-                        if set(payload) != {"name", "target"}:
+                        if set(payload) not in ({"name", "target"}, {"name", "target", "media_mode"}):
                             raise FeatureError("invalid_request")
                         command = HostIntent(**payload)
                     else:

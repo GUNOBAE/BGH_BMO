@@ -135,6 +135,7 @@ class InputRouter:
         self.stop, self.talk = stop, talk
         self._handlers = {}
         self._physical = None
+        self._music_talk_held = False
 
     def bind(self, mode, handler):
         if mode not in MODES:
@@ -155,6 +156,19 @@ class InputRouter:
             key = self._physical[key]
         if key not in LOGICAL_INPUTS:
             raise FeatureError("invalid_input")
+        if key == 'TALK':
+            # A held media button belongs to the old surface until release,
+            # including after Back. Its repeats cannot become a fresh PTT.
+            if self._music_talk_held:
+                if pressed:
+                    return True
+                self._music_talk_held = False
+                if self.modes.mode != 'music':
+                    return True
+            if self.modes.mode == 'music':
+                self._music_talk_held = pressed
+                handler = self._handlers.get('music')
+                return handler(key, pressed, time.monotonic() if now is None else now) if handler else None
         if pressed and key == "STOP" and self.stop:
             return self.stop()
         if pressed and key == "TALK" and self.talk:

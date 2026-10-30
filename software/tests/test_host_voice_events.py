@@ -42,8 +42,8 @@ class HostVoiceEventTests(unittest.TestCase):
         for host in self.hosts:
             host.close()
 
-    def pack(self, *, approve=('G01', 'G04', 'TRACK_ON', 'TRACK_OFF', 'M10')):
-        entries = [('G01', 'A little game!', []), ('G04', 'That was a game!', []),
+    def pack(self, *, approve=('G02', 'G06', 'TRACK_ON', 'TRACK_OFF', 'M10')):
+        entries = [('G02', 'Ooh, game time!', []), ('G06', 'Oh... game over.', []),
                    ('TRACK_ON', 'I am looking over here.', ['tracking_started']),
                    ('TRACK_OFF', 'Eyes back to home.', ['tracking_stopped']),
                    ('M10', 'Music is all done.', [])]
@@ -152,7 +152,7 @@ class HostVoiceEventTests(unittest.TestCase):
 
     def test_unapproved_or_unmatched_event_has_no_audio_or_failed_optional_turn(self):
         # A different approved clip does not grant the unapproved tracking one.
-        self.pack(approve=('G01',))
+        self.pack(approve=('G02',))
         host, counts, _, _ = self.host()
         before = host.session.worker.turn
         host.execute(HostIntent('start_face_tracking'), request_id='unapproved_tracking')

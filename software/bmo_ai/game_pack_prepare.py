@@ -104,7 +104,8 @@ def prepare_game_pack(*, root=PACK_ROOT, apply=False):
                 files=reports, catalog_ids=[item.id for item in bundle.catalog],
                 source_bytes_changed=False, recursive=False, executed_games=False)
         return dict(status='REPAIR_REQUIRED' if needed else 'READY', dry_run=True,
-            files=reports, catalog_ids=[], source_bytes_changed=False, recursive=False,
+            files=reports, catalog_ids=([item.id for item in load_bundle(root=root).catalog] if not needed else []),
+            source_bytes_changed=False, recursive=False,
             executed_games=False, apply_argv=(['python', '-m', 'bmo_ai.game_pack_prepare',
                 '--root', str(Path(root).absolute()), '--apply'] if needed else None))
     except FeatureError:

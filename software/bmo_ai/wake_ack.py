@@ -47,22 +47,51 @@ class WakeAckCache:
     temporary asset or None. Cancellation and caller playback errors propagate;
     they are never disguised as an absent cache or retried.
     """
-    def __init__(self, config, directory=None, *, home=None):
+    def __init__(self, config, directory=None, *, home=None, organized_pack=None):
+        from .voice_pack import OrganizedVoicePack
+        if organized_pack is not None and not isinstance(organized_pack, OrganizedVoicePack):
+            raise ValueError('organized_voice_pack_required')
         self.spec = WakeAckSpec.from_config(config)
         self.directory = Path(directory) if directory is not None else default_wake_ack_directory(home=home)
         self._cache = GreetingCache(self.directory, self.spec)
+        self.organized_pack = organized_pack
+        self._source_model, self._asset_source = None, None
         self._status, self._reason, self._sha = "NOT_CHECKED", "not_checked", None
 
     def snapshot(self):
         return dict(schema=WAKE_ACK_SCHEMA, clip_id=WAKE_ACK_ID, status=self._status,
             reason_code=self._reason, approved=self._status == "APPROVED_READY",
             sha256=self._sha, spec_fingerprint=self.spec.fingerprint,
+            source_model=self._source_model, asset_source=self._asset_source,
             automatic_generation=False, automatic_approval=False, player_owned=False,
             missing_asset_fallback="VISUAL_LISTENING", maximum_seconds=MAX_ACK_SECONDS)
 
     @contextmanager
     def load(self, *, simulate=False, cancel_check=None):
         self._status, self._reason, self._sha = "CHECKING", "checking", None
+        self._source_model, self._asset_source = None, None
+        if self.organized_pack is not None:
+            from .voice_bank import VoiceBankError
+            try:
+                registered = self.organized_pack.snapshot()['wake_ack_registered']
+                if registered:
+                    asset = self.organized_pack.load_wake_ack(cancel_check=cancel_check)
+            except VoiceBankError:
+                self._status, self._reason = 'ASSET_INVALID', 'wake_ack_pack_invalid'
+                yield None
+                return
+            if registered:
+                if asset is None:
+                    self._status, self._reason = 'ASSET_UNAPPROVED', 'wake_ack_unapproved'
+                    yield None
+                    return
+                try:
+                    self._status, self._reason, self._sha = 'APPROVED_READY', 'ok', asset.sha256
+                    self._source_model, self._asset_source = asset.source_model, 'organized_voice_pack'
+                    yield asset
+                finally:
+                    asset.close()
+                return
         try:
             asset = self._cache.load(simulate=simulate, require_approved=True,
                                      cancel_check=cancel_check)
@@ -82,6 +111,7 @@ class WakeAckCache:
             return
         try:
             self._status, self._reason, self._sha = "APPROVED_READY", "ok", asset.sha256
+            self._source_model, self._asset_source = self.spec.fish_model, 'legacy_wake_cache'
             yield asset
         finally:
             asset.close()

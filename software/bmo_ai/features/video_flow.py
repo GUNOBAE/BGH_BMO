@@ -45,20 +45,7 @@ class ProductVideoFlow:
             self._video_say('video_ready', "Hold still. Movie time!")
 
     def _video_say(self, event, text):
-        if not self._photo_feedback_enabled or self._cloud_setup_error or self.volume.snapshot()['effective_level'] <= 0:
-            return False
-        if self.session.busy or self.audio.owner is not None:
-            return False
-        self._voice_lease = self.audio.acquire('video_feedback', stop=self.cancel_conversation)
-        queue_event = getattr(self.session.voice, 'queue_event', None)
-        if callable(queue_event):
-            queue_event(event)
-        if not self.session.start_feedback(text, {}):
-            discard = getattr(self.session.voice, 'discard_queued_event', None)
-            if callable(discard):
-                discard()
-            self.audio.release(self._voice_lease)
-            self._voice_lease = None
+        if not self._start_owned_notice(event, text, {}, 'video_feedback'):
             return False
         self._video_feedback = dict(event=event, status='pending')
         return True
@@ -76,7 +63,8 @@ class ProductVideoFlow:
         self._transition('video', dict(request_id=request,
             restore=(state.get('tracking_requested', state.get('tracking', False)), state.get('preview', False)),
             duration=duration['duration_seconds'], requested_seconds=duration['requested_seconds'],
-            duration_clamped=duration['duration_clamped'], prepared=request.startswith('spoken_device_')))
+            duration_clamped=duration['duration_clamped'],
+            prepared=request.startswith('spoken_device_') and not self._cached_event_available('video_ready')))
         return HostResult(request, 'running', 'video_preparing', simulated=self.runtime.simulate,
                           executed=False, completed=False, completion='not_started')
 

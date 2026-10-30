@@ -1,4 +1,4 @@
-"""Review user-owned PCM WAVs locally. Default mode never writes or plays."""
+"""Review local PCM WAVs or a private supplied media seed; never play audio."""
 import argparse
 import json
 from pathlib import Path
@@ -10,6 +10,10 @@ from .features.media.library import install_wav, load_library, retire_import, re
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--audio", type=Path)
+    parser.add_argument("--media-seed", type=Path,
+        help="Adapt the private Space Potatoes ZIP into one song with face/video variants")
+    parser.add_argument("--private-use-confirmed", action="store_true",
+        help="Confirm local private import; does not attest ownership/public rights")
     parser.add_argument("--sha256")
     parser.add_argument("--content-root", type=Path)
     parser.add_argument("--media-id")
@@ -23,7 +27,16 @@ def main(argv=None):
     mode.add_argument("--retire", action="store_true")
     args = parser.parse_args(argv)
     try:
-        if args.retire:
+        if args.media_seed is not None:
+            from .features.media.seed import review_media_seed, install_media_seed, SPACE_SEED_SHA256
+            if args.audio is not None or args.retire:
+                raise FeatureError("media_review_required")
+            if args.install and (args.content_root is None or args.sha256 is None):
+                raise FeatureError("media_review_required")
+            with review_media_seed(args.media_seed, expected_sha256=args.sha256 or SPACE_SEED_SHA256) as review:
+                report = (install_media_seed(review, args.content_root,
+                    private_use_confirmed=args.private_use_confirmed) if args.install else review.public())
+        elif args.retire:
             if args.content_root is None or not args.media_id or not args.sha256 or args.audio is not None:
                 raise FeatureError("media_review_required")
             report = retire_import(args.content_root, args.media_id, expected_sha256=args.sha256)

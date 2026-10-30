@@ -290,6 +290,9 @@ class DesktopRuntime:
     def video_bytes(self, video_id):
         return self.host.video_bytes(video_id) if self.host is not None else None
 
+    def open_music_video(self, token):
+        return self.host.open_music_video(token) if self.host is not None else None
+
     def open_video(self, video_id):
         return self.host.open_video(video_id) if self.host is not None else None
 

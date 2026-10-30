@@ -99,6 +99,7 @@ class IntegrationVoice:
         self.event_pack = None
         self._event_guard = Lock()
         self._queued_event = None
+        self._deferred_preparation = False
 
     def queue_event(self, event, request_id=None):
         """Queue one current host event for the next owned utterance only.
@@ -116,6 +117,18 @@ class IntegrationVoice:
     def discard_queued_event(self):
         with self._event_guard:
             self._queued_event = None
+            self._deferred_preparation = False
+
+    def defer_feature_preparation(self):
+        """Host-only one-shot deferral until the requested preview is ready.
+
+        This skips the current preparation utterance entirely. The Host owns
+        the later, approved cached preparation and the five-second countdown.
+        It grants no camera action and cannot report an unheard player-start.
+        """
+        with self._event_guard:
+            self._deferred_preparation = True
+            self._queued_event = None
 
     def _take_event_asset(self, check):
         from .voice_bank import VoiceBankError
@@ -124,6 +137,8 @@ class IntegrationVoice:
         if queued is None or self.event_pack is None:
             return None
         try:
+            if queued[0] == 'photo_countdown':
+                return self.event_pack.load_countdown(cancel_check=check)
             return self.event_pack.load_event(queued[0], cancel_check=check)
         except VoiceBankError:
             return None
@@ -195,6 +210,7 @@ class IntegrationVoice:
             self._cache_generation += 1
             with self._event_guard:
                 self._queued_event = None
+                self._deferred_preparation = False
         if previous is not None:
             audio._discard(previous["path"], suppress=True)
 
@@ -208,6 +224,7 @@ class IntegrationVoice:
             self._cache_generation += 1
             with self._event_guard:
                 self._queued_event = None
+                self._deferred_preparation = False
             return cancel() if cancel is not None else None
 
     def _check(self, cancellation):
@@ -370,7 +387,22 @@ class IntegrationVoice:
         finally:
             self.emit, self.cancel_check = previous_emit, previous_check
 
-    def speak(self, text, *, on_playback_start=None, _force_piper=False, _notice=False, _event_only=False):
+    def play_candidate(self, candidate_id, sha256, *, emit=None, cancel_check=None, on_playback_start=None):
+        """Explicit local per-SHA audition; no approval, TTS or repeat mutation."""
+        previous_emit, previous_check = self.emit, self.cancel_check
+        try:
+            if emit is not None:
+                self.emit = emit
+            if cancel_check is not None:
+                self.cancel_check = cancel_check
+            self.discard_queued_event()
+            return self.speak('Local voice review.', on_playback_start=on_playback_start,
+                _event_only=True, _candidate=(candidate_id, sha256)) is True
+        finally:
+            self.emit, self.cancel_check = previous_emit, previous_check
+
+    def speak(self, text, *, on_playback_start=None, _force_piper=False, _notice=False, _event_only=False,
+              _candidate=None):
         if not isinstance(text, str):
             raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
         if not text.strip():
@@ -392,8 +424,17 @@ class IntegrationVoice:
         source = "synthetic" if self.simulate else "piper" if _force_piper else "fish"
         try:
             check()
+            with self._event_guard:
+                deferred, self._deferred_preparation = self._deferred_preparation, False
+            if deferred and not _event_only and not _notice and not _force_piper:
+                emit('ended', source='deferred_feature_preparation')
+                return
             validate_gain(self.config.fish_gain)
-            event_asset = self._take_event_asset(check) if not _force_piper and not _notice else None
+            if _candidate is not None:
+                event_asset = (self.event_pack.load_candidate(*_candidate, review_requested=True, cancel_check=check)
+                               if self.event_pack is not None else None)
+            else:
+                event_asset = self._take_event_asset(check) if not _force_piper and not _notice else None
             if _event_only and event_asset is None:
                 return False
             if event_asset is not None:
@@ -442,10 +483,24 @@ class IntegrationVoice:
             cues = event_asset.cues if event_asset is not None else tuple(dict(cue) for cue in wav_cues(output))
             if event_asset is not None:
                 expression.update(cache_source_model=event_asset.source_model,
-                                  voice_pack_candidate=event_asset.candidate_id)
+                                  voice_pack_candidate=event_asset.candidate_id,
+                                  voice_pack_sha256=event_asset.sha256,
+                                  voice_pack_review_only=_candidate is not None)
             if source == "fish":
                 self._timing("fish", "audio_ready")
-            self._play(output, source, info, cues, check, emit, on_playback_start, expression,
+            def owned_started():
+                if on_playback_start is not None:
+                    on_playback_start()
+                if event_asset is not None:
+                    # A player-start observation grants neither listening
+                    # approval nor a new device action. Repeat never enters it.
+                    from .voice_bank import VoiceBankError
+                    try:
+                        self.event_pack.mark_played(event_asset.candidate_id, event_asset.sha256,
+                                                    review_requested=_candidate is not None)
+                    except (VoiceBankError, OSError):
+                        pass
+            self._play(output, source, info, cues, check, emit, owned_started, expression,
                        baked_gain=playback_baked_gain)
             check()
             if delivery is not None and source == "fish":

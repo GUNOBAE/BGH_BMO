@@ -13,7 +13,7 @@ class CompoundActions:
         self.last = None
         self.seen = set()
 
-    def begin(self, turn, steps, *, generation, photo_success=None):
+    def begin(self, turn, steps, *, generation, photo_success=None, preparation=None):
         from .reply import HostIntent
         if (turn in self.seen or len(self.seen) >= 512 or self.active is not None
                 or not 1 <= len(steps) <= 3
@@ -25,7 +25,7 @@ class CompoundActions:
             parent_request='plan_'+uuid5(self.host._namespace, turn).hex,
             steps=tuple(steps), index=0, request_id=None, results=[],
             deadline=self.host.clock()+180., status='running', code='plan_started',
-            photo_success=photo_success)
+            photo_success=photo_success, preparation=preparation)
         return True
 
     def cancel(self, code='plan_cancelled'):
@@ -69,10 +69,11 @@ class CompoundActions:
             plan['parent_request']+':'+str(plan['index'])).hex
         plan['request_id'] = request
         host._next_photo_success = plan['photo_success'] if step.name == 'take_photo' else None
+        host._next_photo_preparation = plan['preparation'] if step.name == 'take_photo' else None
         try:
             host.execute(step, request_id=request, expected_generation=plan['generation'])
         finally:
-            host._next_photo_success = None
+            host._next_photo_success = host._next_photo_preparation = None
         plan['generation'] = host.modes.generation
 
     def snapshot(self):
@@ -80,5 +81,5 @@ class CompoundActions:
         if plan is None:
             return None
         return {key: value for key, value in plan.items()
-                if key not in ('steps', 'photo_success', 'epoch', 'deadline')} | {
+                if key not in ('steps', 'photo_success', 'preparation', 'epoch', 'deadline')} | {
                     'steps': [step.public() for step in plan['steps']]}

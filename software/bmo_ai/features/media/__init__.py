@@ -11,12 +11,14 @@ from bisect import bisect_right
 
 from ..contracts import CatalogItem, FeatureError, FeatureEvent, HostResult, request_id_ok, valid_id
 from .assets import AssetHandle, MediaAsset, import_manifest
+from .pcm_clock import SampleClockWavBackend
 
 
 class FakeMediaBackend:
     """Silent clock-driven playback; no audio output or vocal lip-sync claim."""
     simulated = verified = True
     supported_types = frozenset({"audio/wav"})
+    clock_quality = "simulated_clock"
 
     def __init__(self, *, clock=time.monotonic, pausable=False):
         self.clock, self.pausable = clock, pausable
@@ -27,7 +29,7 @@ class FakeMediaBackend:
 
     @property
     def capabilities(self):
-        return ("stop", "pause", "resume") if self.pausable else ("stop",)
+        return ("stop", "pause", "resume", "seek", "replay") if self.pausable else ("stop",)
 
     def start(self, handle):
         self.handle, self._started, self._paused = handle, self.clock(), None
@@ -41,6 +43,10 @@ class FakeMediaBackend:
 
     def resume(self):
         self._started, self._paused = self.clock(), None
+
+    def seek(self, seconds):
+        self._offset, self._started = seconds, self.clock()
+        self._failed = False
 
     def fail(self):
         self._failed = True
@@ -65,6 +71,7 @@ class AlsaWavBackend:
     """
     simulated = False
     supported_types = frozenset({"audio/wav"})
+    clock_quality = "process_start_approximation"
     @property
     def capabilities(self):
         # The production owned runner implements both operations. Alternate
@@ -194,6 +201,9 @@ class MediaFeature:
         self._events, self._attempts = deque(maxlen=64), {}
         self._closed = False
         self._asset_status = {}
+        self._variant = "face"
+        self._video_fd = None
+        self._playback_generation = 0
         self._inspect_assets()
 
     def _inspect_assets(self):
@@ -202,6 +212,12 @@ class MediaFeature:
             try:
                 with AssetHandle(self.content_root, item):
                     pass
+                if item.video_path is not None:
+                    from .assets import _verified_fd
+                    descriptor = _verified_fd(self.content_root, item.video_path, item.video_sha256)
+                    os.close(descriptor)
+                    with AssetHandle(self.content_root, item.playback_asset("video")):
+                        pass
             except FeatureError as error:
                 self._asset_status[item.id] = ("ASSET_PENDING" if error.code == "asset_pending" else "UNVERIFIED", error.code)
 
@@ -223,13 +239,37 @@ class MediaFeature:
         return tuple(result)
 
     def snapshot(self):
+        position = self.backend.position() if self._handle and hasattr(self.backend, "position") else 0
+        duration = self._handle.duration if self._handle else None
         return dict(state=self._state, active_id=self._active.id if self._active else None,
-                    position=self.backend.position() if self._handle and hasattr(self.backend, "position") else 0,
+                    position=position, position_seconds=position, duration=duration, duration_seconds=duration,
+                    variant=self._variant, display_mode=self._variant,
+                    playback_generation=self._playback_generation,
+                    mode_generation=self._generation, request_id=self._request,
+                    clock_quality=getattr(self.backend, "clock_quality", "unknown"),
+                    output_started=bool(self._handle and getattr(self.backend, "output_started", True)),
                     readiness="READY" if any(i.readiness == "READY" for i in self.catalog()) else "ASSET_PENDING" if not self._items else "UNVERIFIED",
                     reason_code="user_media_missing" if not self._items else "ok",
                     capabilities=list(self.backend.capabilities) if self.backend else [],
                     simulated=bool(self.backend and self.backend.simulated),
-                    cue_kind="provided" if self._handle and self._handle.cues else "none")
+                    cue_kind=self._handle.asset.cue_kind if self._handle and self._handle.cues else "none")
+
+    def variants(self, catalog_id):
+        item = next((item for item in self._items if item.id == catalog_id), None)
+        return item.variants if item is not None else ()
+
+    def open_video(self, *, request_id=None, mode_generation=None):
+        """Duplicate the already verified active MP4 for bounded HTTP Range IO.
+
+        The caller owns this descriptor. No pathname is exposed or re-opened.
+        Optional identities let the HTTP bridge reject a stale browser URL.
+        """
+        if (self._video_fd is None or self._variant != "video"
+                or request_id is not None and request_id != self._request
+                or mode_generation is not None and mode_generation != self._generation):
+            raise FeatureError("media_video_inactive")
+        descriptor = os.dup(self._video_fd)
+        return descriptor, os.fstat(descriptor).st_size
 
     def cue_snapshot(self):
         """Only explicitly supplied cues, sampled from the backend playback clock.
@@ -245,10 +285,11 @@ class MediaFeature:
         position = max(0., position)
         cues = self._handle.cues
         index = bisect_right([cue["time"] for cue in cues], position) - 1
-        mouth = cues[index]["mouth"] if index >= 0 and self._state == "playing" else "closed"
+        playing = self._state == "playing" and getattr(self.backend, "output_started", True)
+        mouth = cues[index]["mouth"] if index >= 0 and playing else "closed"
         return {"request_id": self._request, "mode_generation": self._generation,
-                "playing": self._state == "playing", "position": position, "mouth": mouth,
-                "cue_kind": "provided"}
+                "playing": playing, "position": position, "mouth": mouth,
+                "cue_kind": self._handle.asset.cue_kind}
 
     def import_manifest(self, payload):
         if self._handle is not None:
@@ -258,11 +299,13 @@ class MediaFeature:
         self._inspect_assets()
         return self.catalog()
 
-    def start(self, catalog_id, *, request_id, mode_generation):
+    def start(self, catalog_id, *, request_id, mode_generation, variant="face"):
         if not valid_id(catalog_id) or not request_id_ok(request_id) or type(mode_generation) is not int or mode_generation < 0:
             raise FeatureError("invalid_request")
         if self._closed:
             return HostResult(request_id, "rejected", "feature_closed")
+        if variant not in ("face", "video"):
+            return HostResult(request_id, "rejected", "invalid_media_variant")
         if request_id in self._attempts:
             return HostResult(request_id, "rejected", "duplicate_request" if self._attempts[request_id] == catalog_id else "request_id_conflict")
         if self._handle is not None:
@@ -273,16 +316,23 @@ class MediaFeature:
         public = next((i for i in self.catalog() if i.id == catalog_id), None)
         if public is None or public.readiness != "READY":
             return HostResult(request_id, "rejected", "unknown_media" if public is None else public.reason_code)
+        if variant not in item.variants:
+            return HostResult(request_id, "rejected", "media_variant_unavailable")
         self._attempts[request_id] = catalog_id
         self._request, self._generation = request_id, mode_generation
         try:
-            self._handle = AssetHandle(self.content_root, item)  # Reverify immediately before playback.
+            self._handle = AssetHandle(self.content_root, item.playback_asset(variant))
+            if variant == "video":
+                from .assets import _verified_fd
+                self._video_fd = _verified_fd(self.content_root, item.video_path, item.video_sha256)
             self._active = item
+            self._variant = variant
+            self._playback_generation += 1
             self.backend.start(self._handle)
             self._state = "playing"
             self._events.append(FeatureEvent("media_started", mode_generation, request_id,
                 "synthetic_fixture" if self.backend.simulated else "playback_started",
-                {"catalog_id": catalog_id, "simulated": self.backend.simulated}))
+                {"catalog_id": catalog_id, "variant": variant, "simulated": self.backend.simulated}))
             simulated = self.backend.simulated
             return HostResult(request_id, "simulated" if simulated else "running", "ok", simulated,
                               not simulated, simulated, "simulated" if simulated else "running")
@@ -304,9 +354,34 @@ class MediaFeature:
             return False
         if self._handle is not None:
             self._handle.close()
+        if self._video_fd is not None:
+            os.close(self._video_fd)
+            self._video_fd = None
         self._handle = self._active = None
         self._state = "idle"
         return True
+
+    def seek(self, seconds):
+        if (type(seconds) not in (int, float) or not math.isfinite(seconds)
+                or self._handle is None or not 0 <= seconds <= (self._handle.duration or 0)):
+            raise FeatureError("invalid_media_position")
+        simulated = bool(self.backend.simulated)
+        if "seek" not in self.backend.capabilities or not callable(getattr(self.backend, "seek", None)):
+            return HostResult(self._request, "unsupported", "seek_unsupported", simulated)
+        try:
+            self.backend.seek(float(seconds))
+            self._playback_generation += 1
+            return HostResult(self._request, "simulated" if simulated else "succeeded", "ok", simulated,
+                              not simulated, True, "simulated" if simulated else "operation_completed")
+        except Exception:
+            self.stop("media_failed")
+            return HostResult(self._request, "failed", "media_control_failed", simulated)
+
+    def replay(self):
+        result = self.seek(0.)
+        if result.completed and self._state == "paused":
+            return self.resume()
+        return result
 
     def stop(self, reason="user"):
         simulated = bool(self.backend is None or self.backend.simulated)

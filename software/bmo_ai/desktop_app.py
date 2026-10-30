@@ -41,7 +41,7 @@ def parser():
     p.add_argument('--playable-games', action=argparse.BooleanOptionalAction, default=None,
                    help='reviewed bundled games: enabled in Character Life; --no-playable-games explicitly disables them')
     p.add_argument("--video-directory", type=Path, help="private local video storage; Character Life records verified silent H264/MP4 when camera video is opted in")
-    p.add_argument("--music-directory", type=Path, help="explicit reviewed private WAV library; live playback additionally needs --music-supervised")
+    p.add_argument("--music-directory", type=Path, help="reviewed private music library (WAV and pinned face/video variants); live playback needs --music-supervised")
     p.add_argument("--music-supervised", action="store_true", help="explicit opt-in to requested local WAV playback; requires --live and --music-directory")
     p.add_argument("--usb-gamepad", action="store_true", help="opt-in browser USB gamepad routing in game/menu modes only; never starts PTT or arms")
     p.add_argument("--no-startup-chime", action="store_true", help="skip the original offline boot sound; never changes the approved Aaron greeting")
@@ -53,7 +53,7 @@ def parser():
     p.add_argument("--install-desktop", action="store_true", help="explicit user installation, never autostart")
     p.add_argument('--desktop-install-target', choices=('desktop-and-applications', 'applications-only'),
         default='desktop-and-applications', help='candidate applications-only avoids changing an existing Desktop')
-    p.add_argument('--voice-pack-directory', type=Path, help='private imported organized v8 voice pack; approval remains per SHA')
+    p.add_argument('--voice-pack-directory', type=Path, help='private imported organized v8/v10 voice pack; approval remains per SHA')
     p.add_argument('--request-cooldown', type=float, default=0, help='optional seconds between admitted conversations; personal default unchanged')
     p.add_argument('--session-request-limit', type=int, help='optional admitted conversation limit for this process')
     p.add_argument('--estimated-request-cost', type=float, help='operator supplied accounting coefficient; not provider billing')

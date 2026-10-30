@@ -68,6 +68,9 @@ jobs:
       - run: python -B software/checks/check_full_batch_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_v10_media_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
       - run: python -B software/checks/check_playable_games_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
