@@ -71,7 +71,11 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
  const diagnosis=next.turn_diagnostics,failure=diagnosis?.failure;
  const inputFailed=capture==='failed'||next.ptt?.cleanup_fault===true||failure;
  const wakePhase=next.wake_word?.handoff?.phase;
- const wakeHint=({confirming:'One moment…',waiting_wake_end:'I heard you…',question_listening:'I’m listening. What’s up?'})[wakePhase]||'';
+ const wakeBoundary=next.microphone_broker?.question_boundary?.status;
+ const wakeRetry=['AMBIGUOUS_PREFIX_RETRY_REQUIRED','FRESH_AFTER_UTTERANCE_QUIET'].includes(wakeBoundary)
+  &&['waiting_wake_end','question_listening'].includes(wakePhase);
+ const wakeHint=wakeRetry?'Please pause, then ask again. Or press the button.':
+  ({confirming:'One moment…',waiting_wake_end:'I heard you…',question_listening:'I’m listening. What’s up?'})[wakePhase]||'';
  $('ptt-state').hidden=!inputFailed&&!wakeHint&&!['calibrating','listening','speech','transcribing'].includes(capture);
  const failures={no_speech:'말소리를 감지하지 못했어요. 버튼을 누르고 다시 말해 주세요.',stt_empty:'말을 알아듣지 못했어요. 다시 말해 주세요.'};
  $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':failures[failure?.code]||(capture==='failed'&&failure?.stage!=='stt'?'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.':'대화를 완료하지 못했어요. 준비 상태에서 실패 단계를 확인해 주세요.')):

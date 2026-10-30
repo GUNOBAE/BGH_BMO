@@ -543,7 +543,8 @@ class FeatureHost:
         self._photo_restore = context.get("restore", (False, False))
         self.camera.set_preview(True, generation=self.modes.generation)
         self._pending_photo = {"request_id": context["request_id"],
-            "generation": self.modes.generation, "deadline": self.clock() + 3.0}
+            "generation": self.modes.generation, "deadline": self.clock() + 3.0,
+            "return_to_conversation": context.get("return_to_conversation", False)}
         self._photo_result = None
 
     def _leave_photo(self):
@@ -639,7 +640,8 @@ class FeatureHost:
                 state = self.camera.snapshot()
                 restore = (self._photo_restore if self.modes.mode == "photo" else
                            (state.get("tracking", False), state.get("preview", False)))
-                self._transition("photo", {"request_id": request, "restore": restore}, force=True)
+                self._transition("photo", {"request_id": request, "restore": restore,
+                    "return_to_conversation": request.startswith("spoken_photo_")}, force=True)
                 result = HostResult(request, "running", "photo_countdown",
                     simulated=self.runtime.simulate, executed=not self.runtime.simulate,
                     completion="not_started" if self.runtime.simulate else "camera_preview")
@@ -973,6 +975,11 @@ class FeatureHost:
             voice._idle.clear()
             suspended = False
             previous_timing = voice.on_timing
+            ack_utterance = f"{self.session.session_id}:wake_ack:{uuid4().hex}"
+            def ack_event(kind, **fields):
+                check()
+                self.session.confirmation_playback_event(kind, utterance_id=ack_utterance,
+                    cues=fields.get("cues", ()))
             try:
                 if self._microphone_broker.suspend_confirmation() is False:
                     self._wake_handoff["acknowledgement"] = "SKIPPED_FOLLOWUP"
@@ -984,7 +991,7 @@ class FeatureHost:
                 # Preserve dialogue/repeat timing and cache on this same player.
                 voice.on_timing = None
                 voice._play(asset.path, "cached_wake_ack", asset.info, asset.cues,
-                    check, lambda *_a, **_kw: None, None,
+                    check, ack_event, None,
                     dict(emotion=self.session.snapshot()["emotion"], emotion_validation="none", notice=False))
                 check()
                 self._wake_handoff["acknowledgement"] = "PLAYED"
@@ -997,6 +1004,9 @@ class FeatureHost:
                 check()
                 self._wake_handoff["acknowledgement"] = "FAILED_VISUAL"
             finally:
+                # _play can exit before an ended event (cancel/device error).
+                # ACK lip cues must never leak into the fresh question or reply.
+                self.session.confirmation_playback_event("ended", utterance_id=ack_utterance)
                 try:
                     if suspended:
                         self._microphone_broker.resume_question()
@@ -1402,6 +1412,11 @@ class FeatureHost:
                 result = HostResult(photo.request_id, photo.status, photo.code, photo.simulated,
                                     photo.executed, photo.completed, photo.completion)
                 self._finish_result(result)
+                # A spoken request temporarily borrows the camera while the
+                # dialogue is idle. Release it and resume the same dialogue
+                # after capture; UI photos keep their existing review screen.
+                if pending.get("return_to_conversation"):
+                    self._transition("conversation")
         if self._last_shell_seen is not None and self.clock() - self._last_shell_seen > 3.0:
             self.stop()
             self._last_shell_seen = None

@@ -2,6 +2,11 @@
 
 2026-10-30 사용자 요청으로 대화 수정과 카메라·팔 통합을 병렬로 진행한다. 기존 `BMO_REAL_ROBOT`을 교체하지 않고 후보 `BMO_CHARACTER_LIFE`에서 같은 Desktop/FeatureHost를 사용한다.
 
+**현재 담당:** 구현·코드 검증·커밋은 일반/Cloud Codex의 현재 저장소에서,
+Pi 후보 갱신과 실기 검수는 사용자가 수행한다. Pi Codex 구현 지시는
+[현재 후속 지시와 절차](CLOUD_IMPLEMENTATION_FOLLOWUP_20261030_KR.md)로 대체한다.
+아래의 과거 실물 기록은 현재 연결 상태나 새 후보의 실기 PASS가 아니다.
+
 ## 현재 연결과 이번 수정
 
 - 실제 사진·영상·얼굴 위치 추적은 이미 `desktop_app.py` → `FeatureHost` → 한 `CameraBroker`에 연결돼 있다. 직전 현장 검수 명령에는 카메라 옵션이 없어서 이 경로가 활성화되지 않았다.

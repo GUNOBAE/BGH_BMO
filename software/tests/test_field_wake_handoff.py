@@ -170,7 +170,7 @@ class FieldWakeHandoffTests(unittest.TestCase):
         for _ in range(3):source.send(0)
         eventually(lambda:host._microphone_broker.snapshot()['question_buffered_bytes']>=11*1280)
         host.poll()
-        eventually(lambda:host.microphone.snapshot()['frames']>=1)
+        eventually(lambda:host._microphone_broker.snapshot()['question_boundary']['discarded_tail_samples']==8*640)
         clock.offset=5.2;self.finish(host)
         self.assertEqual(client.requests,[]);self.assertEqual(captures,[]);self.assertEqual(played,[])
         self.assertFalse(any(e['phase']=='thinking' for e in host.session.events))
@@ -195,7 +195,7 @@ class FieldWakeHandoffTests(unittest.TestCase):
         for _ in range(24):source.send(5001)
         for _ in range(3):source.send(0)
         eventually(lambda:host._microphone_broker.snapshot()['question_buffered_bytes']>=27*1280)
-        host.poll();eventually(lambda:host.microphone.snapshot()['frames']>=1)
+        host.poll();eventually(lambda:host._microphone_broker.snapshot()['question_boundary']['discarded_tail_samples']==24*640)
         clock.offset=5.2;self.finish(host)
         self.assertEqual(client.requests,[]);self.assertEqual(captures,[])
         self.assertFalse(any(e['phase']=='thinking' for e in host.session.events))
@@ -217,6 +217,33 @@ class FieldWakeHandoffTests(unittest.TestCase):
         self.assertEqual(len(client.requests),1)
         self.assertEqual(factory.maximum,1)
 
+    def test_ambiguous_first_words_then_short_pause_never_transcribes_only_sentence_suffix(self):
+        host,client,factory,detector,clock,captures,played=self.make()
+        source=self.trigger(host,factory,detector)
+        for _ in range(8):source.send(5001)  # e.g. what's your, before any quiet edge
+        for _ in range(3):source.send(0)     # a sentence-internal 120ms pause
+        for _ in range(8):source.send(5002)  # e.g. name, NOT a new whole question
+        for _ in range(24):source.send(0)
+        eventually(lambda:host._microphone_broker.snapshot()['question_buffered_bytes']>=43*1280)
+        host.poll();eventually(lambda:host.microphone.snapshot()['frames']>=1)
+        clock.offset=5.2;self.finish(host)
+        self.assertEqual(client.requests,[])
+        self.assertEqual(captures,[])
+        self.assertEqual(played,[])
+        self.assertGreater(host.snapshot()['microphone_broker']['question_boundary']['discarded_tail_samples'],0)
+
+    def test_ambiguous_segment_allows_a_whole_fresh_question_only_after_full_utterance_silence(self):
+        host,client,factory,detector,clock,captures,played=self.make()
+        source=self.trigger(host,factory,detector)
+        for _ in range(8):source.send(8000)
+        for _ in range(23):source.send(0)  # .92s: fresh utterance, not a short comma
+        self.speech(source)
+        eventually(lambda:host._microphone_broker.snapshot()['question_buffered_bytes']>=66*1280)
+        host.poll();self.finish(host)
+        self.assertEqual(len(client.requests),1)
+        self.assertIn((5001).to_bytes(2,'little')*640,captures[0])
+        self.assertNotIn((8000).to_bytes(2,'little')*640,captures[0])
+
     def test_real_c_vad_drains_public_reference_tail_without_transcribing_keyword_only_audio(self):
         from bmo_ai.ptt_replay import load_public_reference_pcm16k
         host,client,factory,detector,clock,captures,played=self.make()
@@ -227,7 +254,7 @@ class FieldWakeHandoffTests(unittest.TestCase):
         for _ in range(20):source.send(0)
         eventually(lambda:host._microphone_broker.snapshot()['question_buffered_bytes']>len(padded))
         with patch('bmo_ai.features.input.ambient_vad.WebRtcVoiceEvidence',ActualWebRtc):
-            host.poll();eventually(lambda:host.microphone.snapshot()['frames']>=1)
+            host.poll();eventually(lambda:host._microphone_broker.snapshot()['question_boundary']['discarded_tail_samples']>0)
             self.assertEqual(captures,[]);self.assertEqual(client.requests,[])
             clock.offset=5.2;self.finish(host)
         self.assertEqual(captures,[]);self.assertEqual(client.requests,[]);self.assertEqual(played,[])
@@ -245,6 +272,92 @@ class FieldWakeHandoffTests(unittest.TestCase):
         self.speech(factory.sources[-1]);self.finish(host)
         self.assertEqual(len(client.requests),1);self.assertEqual(len(played),2)
         self.assertTrue(host.session.voice.has_cache)
+
+    def test_approved_ack_face_cues_follow_actual_player_without_promoting_dialogue_or_repeat(self):
+        from bmo_ai.integration_face import _public_snapshot
+        host,client,factory,detector,clock,captures,played=self.make(ack=True)
+        voice=host.session.voice
+        voice.speak('A prior synthetic answer.')
+        cached=dict(voice._cache)
+        history=list(host.session.brain.history)
+        host.session.set_emotion('sad')
+        observed=[]
+        def player(command, *, on_start, cancel_check, **kwargs):
+            cancel_check()
+            before=_public_snapshot(host.face_snapshot())
+            self.assertEqual(before['source'],'cached_wake_ack')
+            self.assertEqual(before['playback'],'prepared')
+            self.assertEqual(before['phase'],'listening')
+            self.assertEqual(before['position'],0.)
+            self.assertEqual(before['cues'],[])  # Face adapter stays still before actual start.
+            on_start()
+            started=_public_snapshot(host.face_snapshot())
+            self.assertEqual(started['playback'],'started')
+            self.assertEqual(started['phase'],'speaking')
+            self.assertTrue(started['cues'])
+            self.assertEqual(started['emotion'],'sad')
+            self.assertEqual(started['emotion_mode'],'manual')
+            self.assertIn(':wake_ack:',started['utterance_id'])
+            clock.offset+=.2
+            self.assertGreaterEqual(host.face_snapshot()['position'],.2)
+            self.assertEqual(voice._cache,cached)
+            self.assertEqual(host.session.brain.history,history)
+            self.assertIsNone(host.session.snapshot()['character'])
+            self.assertIsNone(host.session.snapshot()['expression_trace'])
+            observed.append(started['utterance_id'])
+            cancel_check()
+        voice._player=player
+        self.trigger(host,factory,detector);host.poll()
+        eventually(lambda:host._microphone_broker.snapshot()['capture_active'])
+        after=host.face_snapshot()
+        self.assertEqual(len(observed),1)
+        self.assertNotEqual(after['source'],'cached_wake_ack')
+        self.assertNotEqual(after['utterance_id'],observed[0])
+        self.assertEqual(after['cues'],[])
+        self.assertEqual(after['emotion'],'sad')
+        self.assertEqual(voice._cache,cached)
+        self.assertEqual(host.session.brain.history,history)
+        self.assertFalse(any(e['source']=='cached_wake_ack' for e in host.session.events))
+        self.assertEqual(host._voice_started_turns,set())
+        clock.offset+=5.2
+        for _ in range(3):factory.sources[-1].send(0)
+        self.finish(host)
+        self.assertEqual(client.requests,[])
+        self.assertEqual(captures,[])
+
+    def test_ack_cancel_or_player_error_clears_face_overlay_and_owned_voice_lock(self):
+        from bmo_ai.conversation import TurnCancelled
+        for outcome in ('cancel','device_error'):
+            with self.subTest(outcome=outcome):
+                host,client,factory,detector,clock,captures,played=self.make(ack=True)
+                seen=[]
+                def player(command, *, on_start, cancel_check, **kwargs):
+                    on_start()
+                    seen.append(host.face_snapshot())
+                    self.assertEqual(seen[-1]['source'],'cached_wake_ack')
+                    self.assertEqual(seen[-1]['playback'],'started')
+                    if outcome=='cancel':
+                        host.cancel_conversation();cancel_check()
+                        raise AssertionError('Cancellation was ignored')
+                    raise audio.AudioPlaybackError('Fixture device failure','device_unavailable')
+                host.session.voice._player=player
+                self.trigger(host,factory,detector);host.poll()
+                eventually(lambda:bool(seen))
+                if outcome=='device_error':
+                    eventually(lambda:host._microphone_broker.snapshot()['capture_active'])
+                    clock.offset+=5.2
+                    for _ in range(3):factory.sources[-1].send(0)
+                self.finish(host)
+                face=host.face_snapshot()
+                self.assertNotEqual(face['source'],'cached_wake_ack')
+                self.assertEqual(face['cues'],[])
+                self.assertNotEqual(face['playback'],'started')
+                self.assertTrue(host.session.voice._speaking.acquire(blocking=False))
+                host.session.voice._speaking.release()
+                self.assertTrue(host.session.voice._idle.is_set())
+                self.assertEqual(client.requests,[])
+                self.assertEqual(captures,[])
+                self.assertEqual(len(seen),1)
 
     def test_resume_failure_still_releases_existing_voice_lock_and_admission_failure_retires_wake(self):
         host,client,factory,detector,clock,captures,played=self.make(ack=True)

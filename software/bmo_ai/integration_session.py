@@ -163,6 +163,7 @@ class IntegrationSession:
         self._staged_expression = self._notice_restore = None
         self._retained_expression_trace = None
         self._started = self._browser_seen = None
+        self._confirmation_playback = None
         self._turn = 0
         self._data = dict(session_id=self.session_id, turn_id=None,
                           utterance_id=None, sequence=0, phase="idle",
@@ -237,6 +238,35 @@ class IntegrationSession:
     def busy(self):
         return self.worker.busy
 
+    def confirmation_playback_event(self, kind, *, utterance_id, cues=()):
+        """Scoped input ACK lip cues, without promoting a dialogue expression.
+
+        The input provider owns this playback on the existing voice/player.
+        It must retire the overlay in a finally block, including cancellation
+        before player-start. Dialogue events, repeat state and diagnostics are
+        deliberately untouched by this input confirmation.
+        """
+        if kind not in ("prepared", "started", "ended", "cancelled", "error"):
+            raise ValueError("unknown confirmation playback event")
+        with self._lock:
+            if kind == "prepared":
+                if self._closed or not self._active:
+                    return
+                self._confirmation_playback = dict(utterance_id=utterance_id,
+                    source="cached_wake_ack", playback="prepared", cues=[dict(cue) for cue in cues],
+                    dialogue_utterance_id=self._data["utterance_id"], started=None)
+            elif (self._confirmation_playback is not None
+                    and self._confirmation_playback["utterance_id"] == utterance_id):
+                if kind == "started":
+                    self._confirmation_playback.update(playback="started", started=self.clock())
+                else:
+                    # The face adapter retires an identity when another one
+                    # appears. Do not restore the pre-ACK listening identity:
+                    # that would also reject this turn's later reply lip cues.
+                    if self._data["utterance_id"] == self._confirmation_playback["dialogue_utterance_id"]:
+                        self._data["utterance_id"] = f"{self._data['turn_id']}:after_wake_ack"
+                    self._confirmation_playback = None
+
     def snapshot(self):
         with self._lock:
             value = dict(self._data)
@@ -247,6 +277,14 @@ class IntegrationSession:
                 value["expression_trace"] = dict(value["expression_trace"])
             if self._started is not None and self._data["playback"] == "started":
                 value["position"] = max(0.0, self.clock() - self._started)
+            confirmation = self._confirmation_playback
+            if confirmation is not None:
+                value.update(utterance_id=confirmation["utterance_id"], source=confirmation["source"],
+                    playback=confirmation["playback"],
+                    phase="speaking" if confirmation["playback"] == "started" else "listening",
+                    cues=[dict(cue) for cue in confirmation["cues"]],
+                    position=max(0., self.clock() - confirmation["started"])
+                        if confirmation["started"] is not None else 0.)
             return value
 
     def browser_snapshot(self):

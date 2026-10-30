@@ -58,12 +58,24 @@ def field_child():
                     if cancel_check:cancel_check()
                     trigger=root/'wake-trigger'
                     if trigger.exists():
-                        same=trigger.read_text()=='same-breath';trigger.unlink()
+                        kind=trigger.read_text();trigger.unlink()
+                        if (root/'enable-ack').exists():
+                            from bmo_ai.wake_ack import WakeAckSpec
+                            from bmo_ai.integration_voice import synthetic_wav
+                            from bmo_ai import audio
+                            raw=synthetic_wav()
+                            try:GreetingCache(host._wake_ack_cache.directory,WakeAckSpec.from_config(host.config)).publish(
+                                raw,approved=True,simulated=True)
+                            finally:audio._discard(raw,suppress=True)
                         pending.extend([8000]*10+[10000])
-                        if same:pending.extend([0]*6+reference_frames+[0]*24)
+                        if kind=='same-breath':pending.extend([0]*6+reference_frames+[0]*24)
+                        if kind=='ambiguous-prefix':pending.extend([5003]*8+[0]*3+[5004]*8+[0]*24)
                     question=root/'new-question'
                     if question.exists():
                         question.unlink();pending.extend([0]*6+[5001]+[5000]*7+[0]*24)
+                    reference_question=root/'new-reference-question'
+                    if reference_question.exists():
+                        reference_question.unlink();pending.extend([0]*6+reference_frames+[0]*24)
                     value=pending.pop(0) if pending else 0
                     time.sleep(.02)
                     if cancel_check:cancel_check()
@@ -170,6 +182,14 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert after_repeat['wake_hits']==2
                 checks.append('repeat uses retained dialogue cache and suppresses detector during owned output, with no extra self-wake/provider')
 
+                wait(lambda s:s['microphone_broker']['ready_for_trigger'])
+                (root/'wake-trigger').write_text('ambiguous-prefix')
+                page.wait_for_function("()=>document.querySelector('#ptt-state').textContent.includes('ask again')")
+                wait(lambda s:not s['conversation_busy'] and s['wake_word']['handoff']['phase']=='timed_out')
+                rejected=fixture.features()['test_fixture']
+                assert rejected['stt']==rejected['brain']==rejected['synthesis']==1
+                checks.append('ambiguous first words + short internal pause never send only the suffix to providers; UI requests a whole fresh question, not zero-gap success')
+
                 wait(lambda s:s['microphone_broker']['microphone_open'])
                 (root/'hold-provider').write_text('synthetic gate')
                 page.locator('#face').click(position={'x':400,'y':230});page.keyboard.press('Enter')
@@ -183,6 +203,24 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert fixture.features()['test_fixture']['synthesis']==1
                 checks.append('existing GP8 input still ends on speech silence and GP8 during thinking cancels late output')
 
+                wait(lambda s:s['microphone_broker']['ready_for_trigger'])
+                prior=fixture.features()
+                (root/'enable-ack').write_text('private synthetic approved fixture only')
+                (root/'wake-trigger').write_text('wake-only')
+                page.wait_for_function("()=>BMOIntegration.state?.source==='cached_wake_ack'&&BMOIntegration.state.playback==='started'")
+                ack=page.evaluate("()=>({state:BMOIntegration.state,face:document.querySelector('#face').contentWindow.BMOFace.getState()})")
+                assert ack['face']['speech']=='external' and ack['face']['selectedEmotion']==prior['emotion']
+                assert ack['state']['cues'] and ack['state']['utterance_id']
+                wait(lambda s:s['wake_word']['handoff']['acknowledgement']=='PLAYED' and s['wake_word']['handoff']['phase']=='question_listening')
+                page.wait_for_function("()=>BMOIntegration.state?.phase==='listening'&&BMOIntegration.state.source!=='cached_wake_ack'")
+                after_ack=fixture.features()['test_fixture']
+                assert (prior['test_fixture']['brain'],prior['test_fixture']['synthesis'],prior['test_fixture']['history_messages'])==(
+                    after_ack['brain'],after_ack['synthesis'],after_ack['history_messages'])
+                (root/'new-reference-question').write_text('whole fresh question after actual ACK completion')
+                page.wait_for_function("()=>BMOIntegration.state?.phase==='speaking'&&BMOIntegration.state.source!=='cached_wake_ack'&&document.querySelector('#face').contentWindow.BMOFace.getState().speech==='external'")
+                wait(lambda s:not s['conversation_busy'] and s['test_fixture']['brain']==3)
+                checks.append('approved synthetic ACK emits actual-player lip cues with retained emotion/cache/history; the fresh question and reply remain accepted after ACK identity retirement')
+
                 page.evaluate("()=>BMODesktop.desktop('wake_off')")
                 wait(lambda s:not s['wake_word']['armed'] and not s['microphone_broker']['reader_alive'])
                 assert not fixture.features()['microphone_broker']['microphone_open']
@@ -190,8 +228,8 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.keyboard.press('Enter')
                 wait(lambda s:s['ptt']['microphone_open'])
                 (root/'new-question').write_text('question')
-                wait(lambda s:not s['conversation_busy'] and s['test_fixture']['brain']==3)
-                assert fixture.features()['test_fixture']['stt']==3
+                wait(lambda s:not s['conversation_busy'] and s['test_fixture']['brain']==4)
+                assert fixture.features()['test_fixture']['stt']==4
                 checks.append('wake OFF releases actual broker reader; finite manual GP8 remains available with one PCM owner')
                 code,counts,error=fixture.finish()
                 assert code==0 and counts['forbidden']==0,error

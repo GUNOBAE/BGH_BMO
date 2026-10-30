@@ -465,6 +465,7 @@ class _BrokerSource:
         self._wake_question = wake_question
         self._needs_boundary = False
         self._boundary_quiet = 0.
+        self._ambiguous_prefix = False
         self._queue, self._queued_bytes = deque(), 0
         self._finite, self._error, self._observer = None, None, None
         self._streaming, self._started, self._closed = False, False, False
@@ -522,15 +523,26 @@ class _BrokerSource:
                     except VadError as error:raise MicError(error.code) from None
                     if voiced:
                         self._boundary_quiet = 0.
+                        self._ambiguous_prefix = True
                         with self.owner._condition:
                             self.owner._question_boundary["discarded_tail_samples"] += len(pcm)//2
+                            self.owner._question_boundary["status"] = "AMBIGUOUS_PREFIX_RETRY_REQUIRED"
                         continue  # Quarantine keyword tail, never question STT.
                     self._boundary_quiet += len(pcm)/32000
-                    if self._boundary_quiet + 1e-9 < .12:
+                    # A short comma cannot prove that earlier speech was only
+                    # the keyword. It may have been "what's your" followed by
+                    # "name". Do not submit just that suffix as a whole query.
+                    # Without lexical alignment, admit only a fresh utterance
+                    # after the conservative .9s end-of-speech quiet boundary.
+                    # This does NOT recover a zero-gap question; the UI asks
+                    # for a repeat instead of silently pretending it did.
+                    quiet_required = .9 if self._ambiguous_prefix else .12
+                    if self._boundary_quiet + 1e-9 < quiet_required:
                         continue  # Observed quiet evidence, not a fixed sleep.
                     self._needs_boundary = False
                     with self.owner._condition:
-                        self.owner._question_boundary["status"] = "FRESH_AFTER_QUIET_EDGE"
+                        self.owner._question_boundary["status"] = ("FRESH_AFTER_UTTERANCE_QUIET"
+                            if self._ambiguous_prefix else "FRESH_AFTER_QUIET_EDGE")
                 # Buffered samples keep their PCM; the monotonic timestamp is
                 # their receipt by this finite cursor, not a fabricated device
                 # capture time before the newly admitted PTT turn existed.
