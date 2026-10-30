@@ -2,6 +2,8 @@
 import hashlib
 from pathlib import Path
 import tempfile
+import time
+from threading import Event
 import unittest
 from unittest.mock import Mock, patch
 
@@ -64,6 +66,90 @@ class SupervisedCameraHostTests(unittest.TestCase):
         host.heartbeat()
         host.poll()
         return host.snapshot()
+
+    def finish_dialogue(self, host):
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            self.poll(host)
+            if not host.session.busy:
+                return
+            time.sleep(.002)
+        self.fail('dialogue did not finish')
+
+    def test_spoken_photo_after_reply_uses_one_existing_real_camera_and_repeat_does_not_retake(self):
+        host = self.host(video=False)
+        self.assertTrue(host.start_question('Take my picture please.'))
+        self.finish_dialogue(host)
+        self.assertEqual(host.modes.mode, 'photo')
+        self.assertTrue(host._last_result['request_id'].startswith('spoken_photo_'))
+        self.factory.assert_called_once()
+        self.clock.now += 3.1
+        # The sensor clock also advances while the countdown runs; otherwise
+        # this already-open SDK double deliberately produces stale frames.
+        self.sdk.sensor += 3_100_000_000
+        state = self.poll(host)
+        photo_id = state['photo']['photo_id']
+        self.assertEqual(state['photo']['status'], 'succeeded')
+        self.assertFalse(state['photo']['simulated'])
+        photos_before = list((self.root/'photos').glob('*.png'))
+        host.control(HostControl('repeat'), 'spoken_photo_repeat')
+        self.finish_dialogue(host)
+        self.clock.now += 4
+        self.poll(host)
+        self.assertEqual(list((self.root/'photos').glob('*.png')), photos_before)
+        self.assertIsNotNone(host.photo_bytes(photo_id))
+
+    def test_model_photo_after_nonrequest_still_cannot_open_camera(self):
+        host = self.host(video=False)
+        host.session.expression_client.responses._responses.replies.append(dict(
+            version=1, speech='A fixture answer.', emotion='neutral', gesture='none',
+            intent={'name':'take_photo','target':None}))
+        self.assertTrue(host.start_question('Do not take my picture.'))
+        self.finish_dialogue(host)
+        self.assertEqual(host._last_result['code'], 'camera_human_action_required')
+        self.factory.assert_not_called()
+
+    def test_cancelled_spoken_photo_cannot_capture_or_authorize_a_later_model_photo(self):
+        host = self.host(video=False)
+        started = Event()
+        original_player = host.session.voice._player
+        def player(_command, *, on_start, cancel_check, **_options):
+            # Prepared audio has not started; cancellation must not promote
+            # the already-resolved human photo command to an action.
+            started.set()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                cancel_check()
+                time.sleep(.002)
+            raise AssertionError('cancel did not retire spoken photo response')
+        host.session.voice._player = player
+        self.assertTrue(host.start_question('사진 찍어줘.'))
+        self.assertTrue(started.wait(2))
+        self.poll(host)
+        host.cancel_conversation()
+        self.finish_dialogue(host)
+        self.factory.assert_not_called()
+        host.session.voice._player = original_player
+        host.session.expression_client.responses._responses.replies.append(dict(
+            version=1, speech='Two plus two is four.', emotion='neutral', gesture='none',
+            intent={'name':'take_photo','target':None}))
+        self.assertTrue(host.start_question('What is two plus two?'))
+        self.finish_dialogue(host)
+        self.assertEqual(host._last_result['code'], 'camera_human_action_required')
+        self.factory.assert_not_called()
+
+    def test_spoken_photo_countdown_can_be_cancelled_before_capture(self):
+        host = self.host(video=False)
+        self.assertTrue(host.start_question('사진 한 장 찍어줘.'))
+        self.finish_dialogue(host)
+        self.assertEqual(host.modes.mode, 'photo')
+        host.control(HostControl('cancel'), 'spoken_photo_cancel')
+        self.clock.now += 3.1
+        self.poll(host)
+        self.assertEqual(host.modes.mode, 'conversation')
+        self.assertFalse(host.camera.snapshot()['on'])
+        self.assertNotIn('still', self.sdk.calls)
+        self.assertFalse((self.root/'photos').exists())
 
     def test_production_flags_construct_one_lazy_real_broker_and_live_recorder(self):
         host=self.host()

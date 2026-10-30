@@ -165,6 +165,13 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--wake-model-manifest requires --wake-word")
     if args.simulate and args.wake_model_manifest is not None:
         p.error("real wake models are separate from synthetic desktop simulation")
+    if args.install_desktop and (args.arms_supervised or args.emotion_arms
+            or args.arm_legacy_bridge or args.arm_reviewed_code_sha is not None
+            or args.arm_power_off_ready):
+        # The installer has no arm configuration. Never silently discard these
+        # options or turn a session's physical acknowledgements into a launcher.
+        p.error("arm controls are session-only and cannot be used with --install-desktop; "
+                "launch the supervised arm session directly")
     if args.arm_legacy_bridge and not args.arms_supervised:
         p.error("--arm-legacy-bridge requires an independently supervised physical arm session")
     if args.emotion_arms and not (args.simulate or args.arms_supervised):

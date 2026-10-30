@@ -57,6 +57,41 @@ class DesktopCLITests(unittest.TestCase):
             self.assertEqual(main(["--install-desktop", "--dry-run"]), 0)
         install.assert_called_once_with(install=False, simulate=False, frontend="auto")
 
+    def test_installer_rejects_arm_options_instead_of_silently_dropping_them(self):
+        cases = (["--arms-supervised"], ["--arm-legacy-bridge"],
+                 ["--arm-reviewed-code-sha", "a"*64], ["--arm-power-off-ready"],
+                 ["--simulate", "--emotion-arms"],
+                 ["--live", "--arms-supervised", "--arm-legacy-bridge",
+                  "--arm-reviewed-code-sha", "a"*64, "--arm-power-off-ready", "--emotion-arms"])
+        forbidden = Mock(side_effect=AssertionError("No installer, lock or credentials"))
+        for options in cases:
+            for suffix in ([], ["--dry-run"]):
+                args = ["--install-desktop", *options, *suffix]
+                with self.subTest(args=args), patch("os.open", forbidden), \
+                        patch("bmo_ai.desktop_install.install_desktop", forbidden), \
+                        patch("bmo_ai.private_credentials.resolve_credentials", forbidden), \
+                        redirect_stderr(io.StringIO()) as error, self.assertRaises(SystemExit) as end:
+                    main(args)
+                self.assertEqual(end.exception.code, 2)
+                self.assertIn("session-only", error.getvalue())
+                self.assertIn("--install-desktop", error.getvalue())
+        forbidden.assert_not_called()
+
+    def test_direct_supervised_arm_session_still_has_explicit_dry_run_plan(self):
+        forbidden = Mock(side_effect=AssertionError("No device or credential IO"))
+        with patch("os.open", forbidden), \
+                patch("bmo_ai.private_credentials.resolve_credentials", forbidden), \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(main(["--live", "--arms-supervised", "--arm-legacy-bridge",
+                "--arm-reviewed-code-sha", "a"*64, "--arm-power-off-ready", "--emotion-arms",
+                "--dry-run"], host_factory=forbidden, browser_factory=forbidden), 0)
+        result = json.loads(output.getvalue())
+        self.assertTrue(result["arm_legacy_bridge"]["requested"])
+        self.assertTrue(result["emotion_arms"]["requested"])
+        self.assertFalse(result["physical_features_enabled"])
+        self.assertFalse(result["credentials_accessed"])
+        forbidden.assert_not_called()
+
     def test_explicit_prepare_and_approval_are_separate_and_never_start_engine_or_player(self):
         cache = Mock()
         cache.prepare.return_value = {"approved": False, "sha256": "a"*64}

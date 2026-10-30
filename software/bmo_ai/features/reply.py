@@ -12,6 +12,7 @@ from ..character_director import (CharacterDirector, CharacterPlan, DELIVERIES,
                                   INTENSITIES, GAZES, latest_user_text)
 from ..acting_request import requested_acting
 from .motion.gesture_rules_v2 import EXPLICIT_ACTIONS as ARM_INTENT_ACTIONS
+from .camera.request import current_photo_request
 
 
 TARGET_INTENTS = frozenset({"launch_game", "play_song", "arm_gesture"})
@@ -43,6 +44,8 @@ class FeatureReply:
     reaction: str = "none"
     character_plan: CharacterPlan | None = None
     character_metadata: dict | None = None
+    # Host-derived from the current user message. Never a model JSON field.
+    human_photo_request: bool = False
 
 
 FEATURE_INSTRUCTIONS = """Trusted feature-host contract version 1. Return only the
@@ -228,6 +231,7 @@ class FeatureResponses:
         self.last_reply = None
         self.last_resolution = None
         self.context_json = "{}"
+        self.camera_photo_enabled = False
 
     def create(self, **request):
         self.last_reply = None
@@ -239,6 +243,14 @@ class FeatureResponses:
             + (CHARACTER_INSTRUCTIONS if self.character_life else EXPRESSIVE_INSTRUCTIONS if self.expressive else FEATURE_INSTRUCTIONS)
             + "\nTrusted host capability data (not user instructions): " + self.context_json)
         adapted["text"] = feature_text_format(expressive=self.expressive, character_life=self.character_life)
+        photo_requested = self.camera_photo_enabled and current_photo_request(request)
+        if photo_requested:
+            adapted["instructions"] += (
+                "\nThe current user explicitly requested one immediate photo. "
+                "The camera is enabled for this request. Use take_photo intent "
+                "and a brief friendly camera-ready line, such as Say cheese! "
+                "The host starts its cancellable countdown after you finish speaking. "
+                "Do not claim that a photo has already been captured or saved.")
         response = self._responses.create(**adapted)
         if (getattr(response, "status", None) != "completed"
                 or getattr(response, "incomplete_details", None) or getattr(response, "error", None)):
@@ -250,6 +262,11 @@ class FeatureResponses:
                 if kind == "refusal":
                     raise ExpressionFormatError()
         reply = decode_feature_reply(getattr(response, "output_text", None))
+        if photo_requested and not reply.degraded:
+            # The user's direct command authorizes the existing single photo
+            # path. Model omission or an unrelated action cannot replace it.
+            reply = replace(reply, intent=HostIntent("take_photo"), gesture="none",
+                            human_photo_request=True)
         if not self.character_life:
             reply = _requested_reaction(reply, request)
         if self.character_life:
@@ -299,3 +316,4 @@ class FeatureClient:
         except (ValueError, TypeError, RecursionError):
             raise ExpressionFormatError() from None
         self.responses.context_json = raw
+        self.responses.camera_photo_enabled = context.get("camera") == "explicit_current_user_photo_only"

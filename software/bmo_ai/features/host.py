@@ -440,7 +440,8 @@ class FeatureHost:
 
     def _reply(self, reply, turn_id, utterance_id):
         self._put_voice(("reply", turn_id, (reply.gesture, reply.intent,
-            getattr(reply, "character_plan", None)), self.clock()))
+            getattr(reply, "character_plan", None),
+            getattr(reply, "human_photo_request", False) is True), self.clock()))
 
     def _playback(self, kind, turn_id, at):
         if kind == "started":
@@ -913,10 +914,10 @@ class FeatureHost:
             return False
         self._transition("conversation")
         self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
-            "real_features_enabled": self.runtime.arms_supervised,
+            "real_features_enabled": self.runtime.public()["real_features_enabled"],
             "games": [{"id": item.id, "readiness": item.readiness} for item in self.games.catalog()],
             "songs": [{"id": item.id, "readiness": item.readiness} for item in self.media.catalog()],
-            "camera": "synthetic_only" if self.runtime.simulate else "human_action_only" if self.runtime.camera_supervised else "denied",
+            "camera": "synthetic_only" if self.runtime.simulate else "explicit_current_user_photo_only" if self.runtime.camera_supervised else "denied",
             "arm": ("mock_ack_position_unverified" if self.runtime.simulate
                     else "explicit_supervised_position_unverified" if self.runtime.arms_supervised
                     else "denied"),
@@ -1249,7 +1250,8 @@ class FeatureHost:
                 continue
             if kind == "reply":
                 self._proposals[turn] = {"gesture": data[0], "intent": data[1], "ended": False,
-                                         "character_plan": data[2] if len(data) > 2 else None}
+                                         "character_plan": data[2] if len(data) > 2 else None,
+                                         "human_photo_request": len(data) > 3 and data[3] is True}
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
                 fresh = 0 <= self.clock() - at <= .5
@@ -1342,7 +1344,14 @@ class FeatureHost:
             generation = self._turn_generations.pop(turn, None)
             if (event.code == "ok" and proposal and proposal["ended"] and proposal["intent"] is not None
                     and generation == self.modes.generation):
-                self.execute(proposal["intent"], request_id="model_" + uuid5(self._namespace, turn).hex,
+                spoken_photo = (self.runtime.camera_supervised
+                    and proposal.get("human_photo_request") is True
+                    and proposal["intent"].name == "take_photo")
+                # Only the trusted, current-turn local command check promotes
+                # this one photo to a human request. Other model camera intents
+                # still hit camera_human_action_required in execute().
+                prefix = "spoken_photo_" if spoken_photo else "model_"
+                self.execute(proposal["intent"], request_id=prefix + uuid5(self._namespace, turn).hex,
                              expected_generation=generation)
         for event in self.games.poll():
             if (event.mode_generation == self.modes.generation and self.modes.mode == "game"
