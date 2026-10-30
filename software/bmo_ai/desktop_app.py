@@ -17,10 +17,19 @@ from .features.runtime import RuntimePolicy
 from .features.server import FeatureServer
 from .integration_profile import integration_config, effective_config
 from .screen_profiles import SCREEN_PROFILES
+from .launch_profile import playable_games_enabled
+
+
+class DesktopParser(argparse.ArgumentParser):
+    def parse_args(self, args=None, namespace=None):
+        parsed = super().parse_args(args, namespace)
+        parsed.playable_games = playable_games_enabled(parsed.playable_games,
+                                                       character_life=parsed.character_life)
+        return parsed
 
 
 def parser():
-    p = argparse.ArgumentParser(description=__doc__)
+    p = DesktopParser(description=__doc__)
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--simulate", action="store_true")
     mode.add_argument("--live", action="store_true")
@@ -29,7 +38,8 @@ def parser():
                    help="auto selects optional system Qt when present; Chromium remains the explicit fallback")
     p.add_argument("--developer", action="store_true", help="enable /developer and hidden Ctrl+Alt+D")
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
-    p.add_argument('--playable-games', action='store_true', help='enable the verified bundled original games in this app')
+    p.add_argument('--playable-games', action=argparse.BooleanOptionalAction, default=None,
+                   help='reviewed bundled games: enabled in Character Life; --no-playable-games explicitly disables them')
     p.add_argument("--video-directory", type=Path, help="private local video storage; Character Life records verified silent H264/MP4 when camera video is opted in")
     p.add_argument("--music-directory", type=Path, help="explicit reviewed private WAV library; live playback additionally needs --music-supervised")
     p.add_argument("--music-supervised", action="store_true", help="explicit opt-in to requested local WAV playback; requires --live and --music-directory")
@@ -146,6 +156,9 @@ def public_plan(args):
                          "live_enabled": args.camera_video_supervised, "automatic_capture": False},
         "music_library": {"selected": args.music_directory is not None,
                           "live_playback_enabled": args.music_supervised, "automatic_import": False},
+        "games": {"enabled": args.playable_games,
+                  "profile": "character_life" if args.character_life else "desktop",
+                  "bundle_validation": "NOT_CHECKED", "automatic_download": False},
         "usb_gamepad": {"enabled": args.usb_gamepad, "physical_verified": False,
                         "conversation_input": False, "motor_input": False},
         "pi_kiosk_verified": "NOT_RUN"}
@@ -251,8 +264,9 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 install_settings["ptt_microphone"] = True
             if args.usb_gamepad:
                 install_settings["usb_gamepad"] = True
-            if args.playable_games:
-                install_settings['playable_games'] = True
+            # Persist the resolved profile, including an explicit disable.
+            if args.character_life or args.playable_games:
+                install_settings['playable_games'] = args.playable_games
             if args.desktop_install_target != 'desktop-and-applications':
                 install_settings['install_target'] = args.desktop_install_target
             if args.music_directory is not None:

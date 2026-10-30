@@ -87,13 +87,17 @@ def spawn(command,**options):
             token=schema['properties']['request']['properties']['turn_token']['enum'][0]
             semantic=dict(turn_token=token,kind='none',disposition='none',emotion='none',
                 subtitle_mode='unchanged',confirmation_token=None)
-            message=request['input'][-1]['content'];intent=None
+            message=request['input'][-1]['content'];intent=None;plan=None
             if message in ('BMO, could you follow my face?','내 얼굴을 따라 봐 줘.'):
                 semantic.update(kind='tracking',disposition='execute')
                 intent=dict(name='start_face_tracking',target=None)
             elif message=='Stop tracking me, please.':
                 semantic.update(kind='tracking',disposition='execute')
                 intent=dict(name='stop_face_tracking',target=None)
+            elif message=='Stop following my face and record a five-second video.':
+                semantic.update(kind='compound',disposition='execute')
+                plan=dict(version=1,steps=[dict(name='stop_face_tracking',target=None,media_mode=None),
+                    dict(name='start_video',target='seconds_5',media_mode=None)])
             elif message=='Would you record a little video for me?':
                 semantic.update(kind='video',disposition='execute')
                 intent=dict(name='start_video',target='seconds_10')
@@ -103,6 +107,7 @@ def spawn(command,**options):
             reply=dict(version=4,speech=speech,emotion='neutral',gesture='none',intent=intent,
                 reaction='none',character=dict(delivery_id='calm',intensity='low',gaze_id='none',source='dialogue'),
                 request=semantic,captions=dict(en=speech,ko='좋아. 해 보자.'),photo_success=None)
+            if plan is not None:reply.update(version=5,plan=plan)
             from types import SimpleNamespace
             return SimpleNamespace(status='completed',incomplete_details=None,error=None,output_text=json.dumps(reply))
 ''')
@@ -392,6 +397,44 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 question('Stop tracking me, please.')
                 wait(lambda state:not state['camera']['tracking'])
                 checks.append('review GP8 returns once, detaches decoder, restores prior requested tracking and explicit stop disables only tracking')
+
+                # One injected interpretation from the real FeatureClient,
+                # followed by actual product HTTP/canvas/Enter/click transitions.
+                # This is transport/lifecycle proof, not live English approval.
+                question('BMO, could you follow my face?')
+                wait(lambda state:state['camera']['tracking_requested'])
+                before_compound=fixture.features()['test_fixture']
+                question('Stop following my face and record a five-second video.')
+                compound_countdown=wait(lambda state:state['mode']=='video' and state['video_phase']=='countdown')
+                wait_ui_mode('video')
+                assert not compound_countdown['camera']['tracking_requested']
+                plan=compound_countdown['action_plan']
+                assert [step['name'] for step in plan['steps']]==['stop_face_tracking','start_video']
+                assert plan['index']==1 and len(plan['results'])==1
+                assert plan['results'][0]['completed'] and plan['results'][0]['status'] in ('simulated','succeeded')
+                assert compound_countdown['test_fixture']['brain']==before_compound['brain']+1
+                assert compound_countdown['test_fixture']['synthesis']==before_compound['synthesis']+1
+                fixture.set_clock(10.5)
+                wait(lambda state:state['video_phase']=='recording')
+                page.wait_for_function("()=>BMODesktop.features?.video_phase==='recording'")
+                page.wait_for_timeout(650)
+                page.keyboard.down('Enter');page.keyboard.down('Enter')
+                compound_review=wait(lambda state:state['video_phase']=='review' and state['action_plan']['status']=='succeeded')
+                page.wait_for_function("()=>BMODesktop.features?.video_phase==='review'")
+                page.keyboard.up('Enter')
+                page.wait_for_function("()=>document.querySelector('#video-review-player').readyState>=2")
+                assert player.evaluate('video=>video.videoWidth===640&&video.videoHeight===360&&!video.error')
+                assert compound_review['video']['completed'] and compound_review['video']['playable']
+                assert len(compound_review['action_plan']['results'])==2
+                page.locator('#foreground-back').click()
+                compound_returned=wait(lambda state:state['mode']=='conversation')
+                wait_ui_mode('conversation')
+                assert not compound_returned['camera']['tracking_requested']
+                assert not compound_returned['camera']['tracking']
+                assert player.evaluate("video=>video.paused&&!video.hasAttribute('src')")
+                assert compound_returned['test_fixture']['brain']==before_compound['brain']+1
+                assert compound_returned['test_fixture']['mic_sources']==before_compound['mic_sources']
+                checks.append('one bounded current-turn GPT plan stops tracking before video snapshot; real countdown/Enter stop/MP4 decode/click Back preserve explicit tracking OFF and never leak keyup into PTT')
 
                 panel('video-menu');page.locator('#video-consent').check();page.locator('#video-start').click()
                 wait(lambda state:state['video_phase']=='countdown')

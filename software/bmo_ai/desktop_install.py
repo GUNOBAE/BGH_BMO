@@ -15,6 +15,8 @@ import secrets
 import shlex
 import stat
 
+from .launch_profile import playable_games_enabled
+
 
 ICON_SHA256 = "140b9bbefeaabdc3d7a1c7718faf082c395ebd0caa553e62e74c584c283a73f1"
 _CANDIDATE_LAUNCHER_SOURCE_SHA256 = "dc41fe16e510d2789ce5d2e3c252abfb7c0b2bf439eb705b19d2b5cce3547b19"
@@ -180,7 +182,12 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
                    frontend="auto", usb_gamepad=False, music_directory=None,
                    music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None, playable_games=False, install_target="desktop-and-applications"):
+                   character_options=None, playable_games=None, install_target="desktop-and-applications"):
+    try:
+        playable_games = playable_games_enabled(playable_games,
+            character_life=bool(character_options and character_options.get("character_life")))
+    except (ValueError, AttributeError):
+        raise DesktopInstallError("desktop_invalid_config") from None
     if (any(type(value) is not bool for value in (simulate, ptt_microphone, usb_gamepad, music_supervised, startup_chime,
                                                        camera_supervised, camera_video_supervised, playable_games))
             or type(frontend) is not str or frontend not in ("auto", "native", "chromium")
@@ -245,6 +252,8 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
         command.append("--usb-gamepad")
     if playable_games:
         command.append("--playable-games")
+    elif candidate:
+        command.append("--no-playable-games")
     if music_directory is not None:
         command.extend(("--music-directory", str(_path(music_directory))))
     if music_supervised:
@@ -307,7 +316,7 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
                          frontend="auto", usb_gamepad=False, music_directory=None,
                          music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None, playable_games=False, install_target="desktop-and-applications"):
+                   character_options=None, playable_games=None, install_target="desktop-and-applications"):
     _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
         camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options, playable_games,
@@ -326,7 +335,7 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
             "files_written": 0, "autostart": False, "services_changed": False,
             "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
             "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
-            "playable_games_opt_in": playable_games,
+            "playable_games_opt_in": "--playable-games" in command,
             "install_target": install_target,
             "launcher_kind": "private_candidate_wrapper" if character_options and character_options.get("character_life") and install_target == "applications-only" else "repository_launcher",
             "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
@@ -348,7 +357,7 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                     frontend="auto", usb_gamepad=False, music_directory=None,
                     music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None, playable_games=False, install_target="desktop-and-applications"):
+                   character_options=None, playable_games=None, install_target="desktop-and-applications"):
     if type(install) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     if not install:
@@ -415,7 +424,7 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                 "autostart": False, "services_changed": False,
                 "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
             "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
-            "playable_games_opt_in": playable_games,
+            "playable_games_opt_in": "--playable-games" in command,
             "install_target": install_target,
             "launcher_kind": "private_candidate_wrapper" if character_options and character_options.get("character_life") and install_target == "applications-only" else "repository_launcher",
             "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,

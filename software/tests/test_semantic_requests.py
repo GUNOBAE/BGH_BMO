@@ -62,7 +62,7 @@ class SemanticRequestsTests(unittest.TestCase):
         request=provider.requests[0]
         self.assertEqual((request['model'],request['reasoning'],request['max_output_tokens']),
                          ('gpt-6-luna',{'effort':'low'},320))
-        self.assertEqual(request['text']['format']['name'],'bmo_feature_reply_v4')
+        self.assertEqual(request['text']['format']['name'],'bmo_feature_reply_v5')
         self.assertFalse(request['store'])
         self.assertEqual(brain.history[-1]['content'],spoken)
         return view.last_reply,view.last_resolution,provider

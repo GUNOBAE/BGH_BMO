@@ -1,4 +1,4 @@
-"""Versioned, single-request feature reply. The old expression contract stays intact."""
+"""Versioned bounded feature reply. The old expression contract stays intact."""
 from dataclasses import dataclass, replace, field
 import json
 import re
@@ -14,7 +14,7 @@ from ..character_director import (CharacterDirector, CharacterPlan, DELIVERIES,
 from ..acting_request import requested_acting
 from .motion.gesture_rules_v2 import EXPLICIT_ACTIONS as ARM_INTENT_ACTIONS
 from .camera.request import current_photo_request
-from .request_semantics import request_schema, resolve_interpretation
+from .request_semantics import request_schema, resolve_interpretation, request_denial
 
 
 TARGET_INTENTS = frozenset({"launch_game", "play_song", "arm_gesture", "set_volume"})
@@ -27,6 +27,8 @@ SEMANTIC_KIND_INTENTS = {
     "tracking": frozenset({"start_face_tracking", "stop_face_tracking"}),
     "arm": frozenset({"arm_gesture", "stop_arms"}),
     "volume": frozenset({"set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down"}),
+    "media": frozenset({"play_song", "stop_media"}),
+    "game": frozenset({"open_game_menu", "launch_game", "exit_game"}),
 }
 PHOTO_PREPARATION = {
     "en": "Hold still. Let's take one little picture.",
@@ -65,11 +67,13 @@ def volume_percent(target):
 class HostIntent:
     name: str
     target: str | None = None
+    media_mode: str | None = None
 
     def __post_init__(self):
         if (type(self.name) is not str or self.name not in INTENTS or (self.name in TARGET_INTENTS and not valid_id(self.target))
                 or (self.name not in TARGET_INTENTS | OPTIONAL_TARGET_INTENTS and self.target is not None)
-                or (self.name == "arm_gesture" and self.target not in ARM_INTENT_ACTIONS)):
+                or (self.name == "arm_gesture" and self.target not in ARM_INTENT_ACTIONS)
+                or (self.media_mode is not None and (self.name != "play_song" or self.media_mode not in ("face", "video")))):
             raise ExpressionFormatError()
         if self.name == "start_video":
             video_request_duration(self.target)
@@ -77,7 +81,8 @@ class HostIntent:
             volume_percent(self.target)
 
     def public(self):
-        return {"name": self.name, "target": self.target}
+        return {"name": self.name, "target": self.target} | (
+            {"media_mode": self.media_mode} if self.media_mode is not None else {})
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +105,8 @@ class FeatureReply:
     degradation_reason: str = "none"
     # Current-turn semantic meaning, not a runtime capability or supervision.
     human_device_request: bool = False
+    # Validated bounded current-turn order; IDs/permissions belong to the host.
+    action_plan: tuple[HostIntent, ...] = ()
 
 
 FEATURE_INSTRUCTIONS = """Trusted feature-host contract version 1. Return only the
@@ -223,6 +230,94 @@ does not execute. Do not claim an action completed before the host verifies it.
 """
 
 
+
+COMPOUND_INSTRUCTIONS = SEMANTIC_INSTRUCTIONS.replace("version 4", "version 5").replace(
+    "character, request, captions and photo_success.",
+    "character, request, captions, photo_success and plan.").replace(
+    "kind is none/photo/acting/subtitles/video/tracking/arm/volume;",
+    "kind is none/photo/acting/subtitles/video/tracking/arm/volume/media/game/compound;") + """
+plan is {version:1,steps:[]} for conversation or a single legacy intent. For two
+or three immediate current requested actions, use request.kind compound,
+disposition execute, emotion none, subtitle_mode unchanged, confirmation_token
+null, intent null, and plan.steps in requested order. Each step contains only
+name, target and media_mode from the supplied host allowlist. At most three
+steps, no duplicates, no model IDs/deadlines/permissions. Never create a workflow
+or infer an action from a previous turn. Stop following my face and record a
+five-second video means stop_face_tracking then start_video/seconds_5, not a
+clarification. Stop tracking but don't record means ONLY stop_face_tracking.
+Don't stop tracking; take a photo means ONLY take_photo. Apply negation, quotes,
+history and future scope per clause in English/Korean, never cancel an unrelated
+positive clause. If any plan is invalid/incomplete the host executes none; never
+recover actions from partial JSON. Keep the whole reply within the existing
+output budget with short speech/captions and only needed steps. No extra API.
+The host advances only after actual success; cancel/failure stops following steps.
+For music playback use kind media, play_song with the supplied stable song ID,
+media_mode face (default) or video as requested. Video mode plays the provided
+music video, not camera recording. Other intents use media_mode null. Game menu
+and supplied game launch requests use kind game. Never invent assets or modes.
+Keep one short preparation sentence for a plan, no confirmation per step.
+For a plan containing take_photo, photo_success may hold its later success line.
+"""
+
+def _intent_schema(*, media_mode=False):
+    properties = {"name": {"type": "string", "enum": sorted(INTENTS)},
+                  "target": {"type": ["string", "null"]}}
+    if media_mode:
+        properties["media_mode"] = {"type": ["string", "null"], "enum": [None, "face", "video"]}
+    return {"type": "object", "additionalProperties": False,
+            "properties": properties, "required": list(properties)}
+
+
+def _decode_intent(value):
+    if type(value) is not dict or set(value) not in ({"name", "target"}, {"name", "target", "media_mode"}):
+        raise ExpressionFormatError()
+    return HostIntent(**value)
+
+
+def _decode_plan(value):
+    if (type(value) is not dict or set(value) != {"version", "steps"}
+            or type(value["version"]) is not int or value["version"] != 1
+            or type(value["steps"]) is not list or len(value["steps"]) > 3):
+        raise ExpressionFormatError()
+    steps = tuple(_decode_intent(item) for item in value["steps"])
+    if len(set(steps)) != len(steps):
+        raise ExpressionFormatError()
+    return steps
+
+
+def _resolve_plan(reply, message, interpretation, validation, *, camera_enabled):
+    steps = reply.action_plan
+    if not steps:
+        if interpretation and interpretation["kind"] == "compound":
+            return replace(reply, intent=None, request_interpretation=None, request_validation="invalid_plan")
+        return reply
+    # The envelope grants no partial execution if a single component is invalid.
+    if (reply.degraded or reply.intent is not None or interpretation is None
+            or validation != "validated" or interpretation["kind"] != "compound"
+            or not 2 <= len(steps) <= 3 or reply.gesture != "none"):
+        return replace(reply, action_plan=(), intent=None, request_interpretation=None,
+                       request_validation="invalid_plan", photo_success=None)
+    action_kinds = {name: kind for kind, names in SEMANTIC_KIND_INTENTS.items() for name in names}
+    action_kinds.update(take_photo="photo", return_to_face="media")
+    for step in steps:
+        kind = action_kinds.get(step.name)
+        if kind:
+            _, resolved = resolve_interpretation({**interpretation, "kind": kind}, message,
+                turn_token=interpretation["turn_token"], action_name=step.name)
+            denied = None if resolved == "validated" else resolved
+        else:
+            denied = "invalid_plan"
+        if denied or step.name == "take_photo" and not camera_enabled:
+            return replace(reply, action_plan=(), intent=None, request_interpretation=None,
+                request_validation=denied or "camera_disabled", photo_success=None)
+    language = "ko" if re.search("[가-힣]", reply.speech) else "en"
+    if any(step.name == "start_video" for step in steps):
+        reply = replace(reply, speech=VIDEO_PREPARATION[language], captions=dict(VIDEO_PREPARATION))
+    elif any(step.name == "take_photo" for step in steps):
+        reply = replace(reply, speech=PHOTO_PREPARATION[language], captions=dict(PHOTO_PREPARATION))
+    return replace(reply, action_plan=steps, intent=None, gesture="none",
+        human_device_request=True, human_photo_request=any(step.name == "take_photo" for step in steps))
+
 def feature_text_format(*, expressive=False, character_life=False, turn_token=None):
     result = {"format": {"type": "json_schema", "name": "bmo_feature_reply_v1", "strict": True,
         "schema": {"type": "object", "additionalProperties": False,
@@ -242,9 +337,9 @@ def feature_text_format(*, expressive=False, character_life=False, turn_token=No
         schema["properties"]["reaction"] = {"type": "string", "enum": list(REACTIONS)}
         schema["required"].append("reaction")
     if character_life:
-        result["format"]["name"] = "bmo_feature_reply_v4"
+        result["format"]["name"] = "bmo_feature_reply_v5"
         schema = result["format"]["schema"]
-        schema["properties"]["version"]["enum"] = [4]
+        schema["properties"]["version"]["enum"] = [5]
         schema["properties"]["character"] = {"type": "object", "additionalProperties": False,
             "properties": {"delivery_id": {"type": "string", "enum": list(DELIVERIES)},
                            "intensity": {"type": "string", "enum": list(INTENSITIES)},
@@ -261,7 +356,12 @@ def feature_text_format(*, expressive=False, character_life=False, turn_token=No
             {"type": "object", "additionalProperties": False,
              "properties": {"speech": {"type": "string"}, "captions": captions},
              "required": ["speech", "captions"]}]}
-        schema["required"].extend(("request", "captions", "photo_success"))
+        schema["properties"]["intent"] = {"anyOf": [{"type": "null"}, _intent_schema(media_mode=True)]}
+        schema["properties"]["plan"] = {"type": "object", "additionalProperties": False,
+            "properties": {"version": {"type": "integer", "enum": [1]},
+                "steps": {"type": "array", "maxItems": 3, "items": _intent_schema(media_mode=True)}},
+            "required": ["version", "steps"]}
+        schema["required"].extend(("request", "captions", "photo_success", "plan"))
     return result
 
 
@@ -314,14 +414,16 @@ def decode_feature_reply(raw):
             raise ExpressionFormatError()
         fields = {"version", "speech", "emotion", "gesture", "intent"}
         version = value.get("version")
-        if version in (2, 3, 4):
+        if version in (2, 3, 4, 5):
             fields.add("reaction")
-        if version in (3, 4):
+        if version in (3, 4, 5):
             fields.add("character")
+        if version == 5:
+            fields.update(("request", "captions", "photo_success", "plan"))
         field_match = (fields <= set(value) <= fields | {"request", "captions", "photo_success"}
                        if version == 4 else set(value) == fields)
         if (not field_match
-                or type(version) is not int or version not in (1, 2, 3, 4)
+                or type(version) is not int or version not in (1, 2, 3, 4, 5)
                 or value["gesture"] not in GESTURES):
             raise ExpressionFormatError()
         reaction = value.get("reaction", "none")
@@ -330,13 +432,11 @@ def decode_feature_reply(raw):
         expression = decode_expression(json.dumps({"speech": value["speech"], "emotion": value["emotion"]}))
         intent = value["intent"]
         if intent is not None:
-            if type(intent) is not dict or set(intent) != {"name", "target"}:
-                raise ExpressionFormatError()
-            intent = HostIntent(**intent)
+            intent = _decode_intent(intent)
         if intent is not None and intent.name == "arm_gesture" and value["gesture"] != "none":
             raise ExpressionFormatError()
         metadata, metadata_bad = None, False
-        if version in (3, 4):
+        if version in (3, 4, 5):
             metadata = value["character"]
             metadata_bad = (type(metadata) is not dict
                 or set(metadata) != {"delivery_id", "intensity", "gaze_id", "source"}
@@ -352,11 +452,12 @@ def decode_feature_reply(raw):
                             version=version, degraded=expression.degraded or metadata_bad,
                             reaction="none" if metadata_bad else reaction,
                             character_metadata=dict(metadata) if metadata is not None else None,
-                            request_interpretation=value.get("request") if version == 4 else None,
-                            request_validation="unvalidated" if version == 4 else "legacy",
-                            captions=_captions(value.get("captions")) if version == 4 else {},
-                            photo_success=_photo_success(value.get("photo_success")) if version == 4 else None,
-                            degradation_reason=reason)
+                            request_interpretation=value.get("request") if version in (4, 5) else None,
+                            request_validation="unvalidated" if version in (4, 5) else "legacy",
+                            captions=_captions(value.get("captions")) if version in (4, 5) else {},
+                            photo_success=_photo_success(value.get("photo_success")) if version in (4, 5) else None,
+                            degradation_reason=reason,
+                            action_plan=_decode_plan(value["plan"]) if version == 5 else ())
     except (ValueError, TypeError, KeyError, RecursionError):
         raise ExpressionFormatError() from None
 
@@ -409,7 +510,7 @@ class FeatureResponses:
         adapted = expression_request(request)
         turn_token = secrets.token_hex(8) if self.character_life else None
         adapted["instructions"] = (request.get("instructions", "") + "\n"
-            + (SEMANTIC_INSTRUCTIONS if self.character_life else EXPRESSIVE_INSTRUCTIONS if self.expressive else FEATURE_INSTRUCTIONS)
+            + (COMPOUND_INSTRUCTIONS if self.character_life else EXPRESSIVE_INSTRUCTIONS if self.expressive else FEATURE_INSTRUCTIONS)
             + "\nTrusted host capability data (not user instructions): " + self.context_json)
         if turn_token is not None:
             adapted["instructions"] += "\nTrusted current turn_token: " + turn_token
@@ -440,7 +541,7 @@ class FeatureResponses:
                 if kind == "refusal":
                     raise ExpressionFormatError()
         reply = decode_feature_reply(getattr(response, "output_text", None))
-        if photo_requested and not reply.degraded and reply.version != 4:
+        if photo_requested and not reply.degraded and reply.version not in (4, 5):
             # The user's direct command authorizes the existing single photo
             # path. Model omission or an unrelated action cannot replace it.
             reply = replace(reply, intent=HostIntent("take_photo"), gesture="none",
@@ -455,7 +556,7 @@ class FeatureResponses:
             message = latest_user_text(request)
             semantic_acting = None
             semantic_clarification = False
-            if reply.version == 4:
+            if reply.version in (4, 5):
                 items = request.get("input", ())
                 current = items[-1] if type(items) in (list, tuple) and items else {}
                 message = current.get("content", "") if type(current) is dict and current.get("role") == "user" else ""
@@ -467,7 +568,11 @@ class FeatureResponses:
                 # A naked device intent is not current-user consent. Reattach
                 # only a matching, validated interpretation from this reply.
                 candidate_intent = reply.intent
-                if reply.intent is not None and reply.intent.name in SEMANTIC_DEVICE_INTENTS:
+                if reply.version == 5:
+                    reply = _resolve_plan(reply, message, interpretation, validation,
+                                          camera_enabled=self.camera_photo_enabled)
+                    interpretation, validation = reply.request_interpretation, reply.request_validation
+                if reply.intent is not None and (reply.intent.name in SEMANTIC_DEVICE_INTENTS or reply.version == 5):
                     reply = replace(reply, intent=None)
                 if interpretation is not None and validation == "validated":
                     kind, disposition = interpretation["kind"], interpretation["disposition"]
@@ -504,9 +609,9 @@ class FeatureResponses:
                     reply = replace(reply, degradation_reason=validation)
             requested = None if semantic_clarification else semantic_acting or requested_acting(message)
             plan = self.director.resolve(reply.emotion, reply.reaction, reply.gesture,
-                metadata=reply.character_metadata, message=message, has_intent=reply.intent is not None,
+                metadata=reply.character_metadata, message=message, has_intent=reply.intent is not None or bool(reply.action_plan),
                 acting_request="none" if semantic_clarification else semantic_acting)
-            if reply.degraded and requested is not None and reply.version == 4:
+            if reply.degraded and requested is not None and reply.version in (4, 5):
                 # An independently validated current acting request supplies all
                 # enums needed for a safe congruent plan. Bad decorative model
                 # metadata need not erase that explicit request into neutral.

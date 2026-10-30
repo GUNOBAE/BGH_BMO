@@ -45,7 +45,7 @@ def child_source():
             assert request['model']=='gpt-6-luna' and request['reasoning']=={'effort':'low'}
             assert request['max_output_tokens']==320
             schema=request['text']['format']['schema']
-            assert request['text']['format']['name']=='bmo_feature_reply_v4'
+            assert request['text']['format']['name']=='bmo_feature_reply_v5'
             token=schema['properties']['request']['properties']['turn_token']['enum'][0]
             message=request['input'][-1]['content']
             semantic=dict(turn_token=token,kind='none',disposition='none',emotion='none',

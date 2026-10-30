@@ -137,7 +137,7 @@ class SemanticDeviceFlowsTests(unittest.TestCase):
         request = schema['properties']['request']
         self.assertEqual(set(request['properties']),
             {'turn_token', 'kind', 'disposition', 'emotion', 'subtitle_mode', 'confirmation_token'})
-        self.assertEqual(schema['properties']['version']['enum'], [4])
+        self.assertEqual(schema['properties']['version']['enum'], [5])
         self.assertIn('video', request['properties']['kind']['enum'])
         self.assertNotIn('approved', request['properties'])
 

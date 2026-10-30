@@ -117,7 +117,7 @@ class FeatureSimulatedClient:
             "version": 1, "speech": "We can try a little simulated adventure.",
             "emotion": "happy", "gesture": "none", "intent": None}
         structured = request.get("text", {}).get("format", {}).get("name") in (
-            "bmo_feature_reply_v1", "bmo_feature_reply_v2", "bmo_feature_reply_v3", "bmo_feature_reply_v4")
+            "bmo_feature_reply_v1", "bmo_feature_reply_v2", "bmo_feature_reply_v3", "bmo_feature_reply_v4", "bmo_feature_reply_v5")
         text = json.dumps(reply) if structured else reply["speech"]
         return SimpleNamespace(status="completed", incomplete_details=None, error=None, output_text=text)
 
@@ -237,6 +237,7 @@ class FeatureHost(ProductVideoFlow):
         photos.mkdir(mode=0o700)
         if type(playable_games) is not bool or playable_games and games is not None:
             raise FeatureError('invalid_game_configuration')
+        self._playable_games_requested = playable_games
         self._games_setup_error = None
         self._packaged_games = None
         if playable_games:
@@ -305,6 +306,8 @@ class FeatureHost(ProductVideoFlow):
         self._public = {}
         self._state_sequence = 0
         self._turn_generations, self._proposals = {}, {}
+        from .compound import CompoundActions
+        self.compound = CompoundActions(self)
         self._voice_lease = self._game_lease = self._music_lease = None
         self._voice_control_request = None
         self._voice_cleanup = {}
@@ -552,7 +555,8 @@ class FeatureHost(ProductVideoFlow):
             getattr(reply, "character_plan", None),
             getattr(reply, "human_photo_request", False) is True,
             getattr(reply, 'photo_success', None), getattr(reply, 'request_interpretation', None),
-            getattr(reply, 'human_device_request', False) is True), self.clock()))
+            getattr(reply, 'human_device_request', False) is True,
+            getattr(reply, 'action_plan', ())), self.clock()))
         if getattr(reply, 'human_photo_request', False) and callable(getattr(self.session.voice, 'queue_event', None)):
             self.session.voice.queue_event('photo_ready')
 
@@ -935,6 +939,9 @@ class FeatureHost(ProductVideoFlow):
     def _queue_local_event(self, event):
         # These optional effects never generate a replacement clip, grant a
         # device action, or replay an event after another mode/turn has won.
+        if (self.compound.active is not None
+                and self.compound.active['index'] < len(self.compound.active['steps'])-1):
+            return False  # One preparation reply; no intermediate voice pileup.
         if not self._photo_feedback_enabled or not self._voice_pack_public.get('approved', 0) or self.volume.snapshot()['effective_level'] <= 0:
             return False
         try:
@@ -1343,6 +1350,7 @@ class FeatureHost(ProductVideoFlow):
                         return self._await_voice_cleanup(request, "stop")
                     raise FeatureError("cleanup_failed")
             elif action == "repeat":
+                self.compound.cancel("plan_repeat_retired")
                 if self._ptt_cleanup_fault:
                     raise FeatureError("pcm_cleanup_failed")
                 if self.modes.mode == 'video' and self._video_phase != 'review' or self.video.snapshot()["recording"]:
@@ -1506,6 +1514,7 @@ class FeatureHost(ProductVideoFlow):
     def _begin_conversation(self, *, message=None, input_provider=None):
         if self._closed or self._photo_job is not None or self.session.busy or self._ptt_cleanup_fault or self.video.snapshot()["recording"]:
             return False
+        self.compound.cancel('plan_new_turn')
         self._local_events.clear()
         if self._voice_provider_snapshot().get('blocked') or self._cloud_provider_snapshot()['blocked'] or self.modes.mode == 'video':
             return False
@@ -1733,6 +1742,7 @@ class FeatureHost(ProductVideoFlow):
         return False
 
     def cancel_conversation(self):
+        self.compound.cancel()
         self._local_events.clear()
         discard = getattr(self.session.voice, 'discard_queued_event', None)
         if callable(discard):
@@ -1893,7 +1903,8 @@ class FeatureHost(ProductVideoFlow):
                                          "human_photo_request": len(data) > 3 and data[3] is True,
                                          "photo_success": data[4] if len(data) > 4 else None,
                                          "request_interpretation": data[5] if len(data) > 5 else None,
-                                         "human_device_request": len(data) > 6 and data[6] is True}
+                                         "human_device_request": len(data) > 6 and data[6] is True,
+                                         "action_plan": data[7] if len(data) > 7 else ()}
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
                 fresh = 0 <= self.clock() - at <= .5
@@ -2003,7 +2014,12 @@ class FeatureHost(ProductVideoFlow):
                 if type(interpreted) is dict and interpreted.get('kind') == 'photo' and interpreted.get('disposition') == 'clarify':
                     self._pending_confirmation = dict(kind='photo', token=uuid4().hex[:16],
                         expires=self.clock()+45., generation=generation)
-            if (event.code == "ok" and proposal and proposal["ended"] and proposal["intent"] is not None
+            if (event.code == 'ok' and proposal and proposal['ended']
+                    and proposal.get('action_plan') and proposal.get('human_device_request') is True
+                    and generation == self.modes.generation and self.modes.mode == 'conversation'):
+                self.compound.begin(turn, proposal['action_plan'], generation=generation,
+                                    photo_success=proposal.get('photo_success'))
+            if (event.code == "ok" and proposal and proposal["ended"] and not proposal.get('action_plan') and proposal["intent"] is not None
                     and generation == self.modes.generation):
                 spoken_photo = ((self.runtime.simulate or self.runtime.camera_supervised)
                     and proposal.get("human_photo_request") is True
@@ -2109,6 +2125,7 @@ class FeatureHost(ProductVideoFlow):
         if self._last_shell_seen is not None and self.clock() - self._last_shell_seen > 3.0:
             self.stop()
             self._last_shell_seen = None
+        self.compound.tick()
         self._tick_idle_gaze()
         self._tick_local_events()
         self._refresh()
@@ -2143,6 +2160,11 @@ class FeatureHost(ProductVideoFlow):
             "conversation_busy": self.session.busy, "emotion": face["emotion"],
             "phase": face["phase"], "gaze": self.gaze.resolve(phase=face["phase"], generation=self.modes.generation),
             "games": {"catalog": [item.public() for item in self.games.catalog()], **self.games.snapshot()},
+            "games_readiness": dict(enabled=self._playable_games_requested,
+                status='READY' if self._packaged_games else 'BLOCKED',
+                code=self._games_setup_error or ('games_ready' if self._packaged_games else 'games_disabled'),
+                catalog_count=len(self.games.catalog()), validation='verified_bundle' if self._packaged_games else 'not_ready'),
+            'action_plan': self.compound.snapshot(),
             "media": {"catalog": [item.public() for item in self.media.catalog()], **self.media.snapshot(),
                 'setup_error': self._music_setup_error},
             "camera": camera, "camera_video": self.video.snapshot(), "photo": self._photo_result,
