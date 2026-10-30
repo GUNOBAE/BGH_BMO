@@ -12,10 +12,13 @@ import math
 import os
 from pathlib import Path
 import secrets
+import shlex
 import stat
 
 
 ICON_SHA256 = "140b9bbefeaabdc3d7a1c7718faf082c395ebd0caa553e62e74c584c283a73f1"
+_CANDIDATE_LAUNCHER_SOURCE_SHA256 = "dc41fe16e510d2789ce5d2e3c252abfb7c0b2bf439eb705b19d2b5cce3547b19"
+INSTALL_TARGETS = ("desktop-and-applications", "applications-only")
 _ICON = Path(__file__).parent / "desktop_assets" / "bmo-generic.svg"
 _MESSAGES = {
     "desktop_invalid_config": "Desktop installation configuration is invalid.",
@@ -53,17 +56,20 @@ def _character_arguments(options, *, simulate, ptt_microphone):
     """Persist only explicit character opt-ins; never keys or arbitrary flags."""
     if options is None:
         return []
-    booleans = ("character_life", "ptt_trace", "plain_voice", "idle_voice", "wake_word")
+    booleans = ("character_life", "ptt_trace", "plain_voice", "idle_voice", "wake_word",
+                "silent_start", "no_feedback_voice")
     choices = {"ptt_vad_profile": ("baseline", "balanced", "quick"),
                "ptt_vad_mode": ("rms", "webrtc"),
                "presence_mode": ("normal", "quiet", "sleep", "off")}
-    paths = ("voice_bank_directory", "wake_model_manifest")
-    numbers = ("wake_question_wait",)
+    paths = ("voice_bank_directory", "voice_pack_directory", "wake_model_manifest")
+    numbers = ("wake_question_wait", "request_cooldown", "session_request_limit",
+               "estimated_request_cost", "estimated_session_cost_limit")
     if (type(options) is not dict
             or set(options) - {*booleans, *choices, *paths, *numbers}
             or any(type(options[key]) is not bool for key in booleans if key in options)
             or any(type(options[key]) is not str or options[key] not in values
                    for key, values in choices.items() if key in options)
+            or any(options[key] is None for key in numbers if key in options)
             or "wake_question_wait" in options and (type(options["wake_question_wait"]) not in (int,float)
                 or not math.isfinite(options["wake_question_wait"]) or not 1 <= options["wake_question_wait"] <= 10
                 or options.get("wake_word") is not True)
@@ -71,11 +77,24 @@ def _character_arguments(options, *, simulate, ptt_microphone):
             or options.get("wake_word") is True and not (ptt_microphone or simulate)
             or "wake_model_manifest" in options and (options.get("wake_word") is not True or simulate)):
         raise DesktopInstallError("desktop_invalid_config")
+    if any(key in options for key in numbers if key != 'wake_question_wait'):
+        # Reuse the admission contract without consuming a request or probing
+        # a provider. Optional coefficients remain estimates, never billing.
+        from .request_budget import RequestBudget
+        try:
+            RequestBudget(cooldown=options.get('request_cooldown', 0),
+                max_requests=options.get('session_request_limit'),
+                cost_per_request=options.get('estimated_request_cost'),
+                max_estimated_cost=options.get('estimated_session_cost_limit'))
+        except Exception:
+            raise DesktopInstallError('desktop_invalid_config') from None
     normalized_paths = {key: _path(options[key]) for key in paths if key in options}
     result = []
     # This stable order is independent of dictionary insertion order.
     for key in ("character_life", "ptt_trace", "ptt_vad_profile", "ptt_vad_mode", "plain_voice",
-                "voice_bank_directory", "idle_voice", "presence_mode", "wake_word", "wake_model_manifest", "wake_question_wait"):
+                "voice_bank_directory", "voice_pack_directory", "idle_voice", "presence_mode", "wake_word", "wake_model_manifest", "wake_question_wait",
+                "silent_start", "no_feedback_voice", "request_cooldown", "session_request_limit",
+                "estimated_request_cost", "estimated_session_cost_limit"):
         if key not in options:
             continue
         flag = "--" + key.replace("_", "-")
@@ -161,10 +180,11 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
                    frontend="auto", usb_gamepad=False, music_directory=None,
                    music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None):
+                   character_options=None, playable_games=False, install_target="desktop-and-applications"):
     if (any(type(value) is not bool for value in (simulate, ptt_microphone, usb_gamepad, music_supervised, startup_chime,
-                                                       camera_supervised, camera_video_supervised))
+                                                       camera_supervised, camera_video_supervised, playable_games))
             or type(frontend) is not str or frontend not in ("auto", "native", "chromium")
+            or type(install_target) is not str or install_target not in INSTALL_TARGETS
             or music_supervised and (simulate or music_directory is None)
             or camera_supervised and (simulate or photo_directory is None)
             or photo_directory is not None and not camera_supervised
@@ -189,11 +209,33 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
     if hashlib.sha256(icon).hexdigest() != ICON_SHA256:
         raise DesktopInstallError("desktop_icon_invalid")
     launcher = project / "launch-desktop"
+    candidate = bool(character_options and character_options.get("character_life"))
+    private_candidate = candidate and install_target == "applications-only"
+    wrapper = None
     try:
-        launcher_verified = _source(launcher, limit=1024 * 1024, executable=True)
+        if private_candidate:
+            # The reviewed source is read as data and hash-checked; this path
+            # never executes or copies a group-writable source shell script.
+            # Normal executable-source guards remain unchanged. The generated
+            # private entry below selects the same interpreter/module/options.
+            source = _source(launcher, limit=65536)
+            launcher_verified = hashlib.sha256(source).hexdigest() == _CANDIDATE_LAUNCHER_SOURCE_SHA256
+            launcher = data / "bmo-desktop" / "BMO-Candidate-launcher"
+            text = ("#!/bin/sh\nset -eu\n"
+                "bmo_candidate_dir=" + shlex.quote(str(project)) + "\n"
+                'bmo_candidate_python=${BMO_PYTHON:-"$bmo_candidate_dir/.venv-device/bin/python"}\n'
+                'if [ ! -x "$bmo_candidate_python" ]; then\n'
+                "  printf '%s\\n' 'BMO Candidate needs its .venv-device/bin/python or explicit BMO_PYTHON.' >&2\n"
+                "  exit 2\nfi\n"
+                'cd "$bmo_candidate_dir/software"\n'
+                'exec "$bmo_candidate_python" -B -m bmo_ai.desktop_app "$@"\n')
+            wrapper = text.encode()
+        else:
+            launcher_verified = _source(launcher, limit=1024 * 1024, executable=True)
     except DesktopInstallError:
         launcher_verified = False
-    icon_path = data / "icons" / "hicolor" / "scalable" / "apps" / "bmo-desktop.svg"
+    entry_name = "BMO-Candidate.desktop" if candidate else "BMO.desktop"
+    icon_path = data / "icons" / "hicolor" / "scalable" / "apps" / ("bmo-candidate.svg" if candidate else "bmo-desktop.svg")
     command = [str(launcher), "--simulate" if simulate else "--live"]
     if frontend != "auto":
         command.extend(("--frontend", frontend))
@@ -201,6 +243,8 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
         command.append("--ptt-microphone")
     if usb_gamepad:
         command.append("--usb-gamepad")
+    if playable_games:
+        command.append("--playable-games")
     if music_directory is not None:
         command.extend(("--music-directory", str(_path(music_directory))))
     if music_supervised:
@@ -214,14 +258,19 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
     if camera_video_supervised:
         command.append("--camera-video-supervised")
     command.extend(character_arguments)
-    template = ("[Desktop Entry]\nType=Application\nName=BMO\n"
+    template = ("[Desktop Entry]\nType=Application\nName=" + ("BMO Candidate" if candidate else "BMO") + "\n"
                 "Comment=Start the BMO desktop app manually\n"
                 "Exec=" + " ".join('"' + value + '"' for value in command) + "\n"
                 "Path=" + str(project) + "\nIcon=" + str(icon_path) + "\nTerminal=false\n"
                 "StartupNotify=false\nCategories=Game;Utility;\nX-GNOME-Autostart-enabled=false\n")
-    targets = ((desktop / "BMO.desktop", template.encode("utf-8"), 0o700),
-               (data / "applications" / "BMO.desktop", template.encode("utf-8"), 0o600),
-               (icon_path, icon, 0o600))
+    targets = []
+    if install_target == "desktop-and-applications":
+        targets.append((desktop / entry_name, template.encode("utf-8"), 0o700))
+    targets.extend(((data / "applications" / entry_name, template.encode("utf-8"), 0o600),
+                    (icon_path, icon, 0o600)))
+    if wrapper is not None:
+        targets.append((launcher, wrapper, 0o700))
+    targets = tuple(targets)
     if len({path for path, _, _ in targets}) != len(targets):
         raise DesktopInstallError("desktop_invalid_config")
     return project, home, data, command, template, targets, bool(launcher_verified)
@@ -258,10 +307,11 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
                          frontend="auto", usb_gamepad=False, music_directory=None,
                          music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None):
+                   character_options=None, playable_games=False, install_target="desktop-and-applications"):
     _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
-        camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options)
+        camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options, playable_games,
+        install_target)
     rows = []
     for path, raw, mode in targets:
         directory = _directory(path.parent, home=user_home)
@@ -276,6 +326,9 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
             "files_written": 0, "autostart": False, "services_changed": False,
             "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
             "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
+            "playable_games_opt_in": playable_games,
+            "install_target": install_target,
+            "launcher_kind": "private_candidate_wrapper" if character_options and character_options.get("character_life") and install_target == "applications-only" else "repository_launcher",
             "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
             "camera_opt_in": camera_supervised, "camera_video_opt_in": camera_video_supervised,
             "activation": "NOT_RUN", "desktop_trust": "NOT_RUN"}
@@ -295,7 +348,7 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                     frontend="auto", usb_gamepad=False, music_directory=None,
                     music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None):
+                   character_options=None, playable_games=False, install_target="desktop-and-applications"):
     if type(install) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     if not install:
@@ -305,10 +358,12 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                                     music_supervised=music_supervised, startup_chime=startup_chime,
                                     camera_supervised=camera_supervised, photo_directory=photo_directory,
                                     camera_video_supervised=camera_video_supervised, video_directory=video_directory,
-                                    character_options=character_options)
+                                    character_options=character_options, playable_games=playable_games,
+                                    install_target=install_target)
     _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
-        camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options)
+        camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options, playable_games,
+        install_target)
     if not verified:
         raise DesktopInstallError("desktop_launcher_pending")
     created, descriptors, stages, published = [], [], [], []
@@ -360,6 +415,9 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                 "autostart": False, "services_changed": False,
                 "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
             "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
+            "playable_games_opt_in": playable_games,
+            "install_target": install_target,
+            "launcher_kind": "private_candidate_wrapper" if character_options and character_options.get("character_life") and install_target == "applications-only" else "repository_launcher",
             "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
             "camera_opt_in": camera_supervised, "camera_video_opt_in": camera_video_supervised,
                 "activation": "NOT_RUN", "desktop_trust": "NOT_RUN"}
@@ -403,6 +461,8 @@ def main(argv=None):
     parser.add_argument("--ptt-microphone", action="store_true", help="explicitly persist button-only finite microphone admission in the new icon")
     parser.add_argument("--frontend", choices=("auto", "native", "chromium"), default="auto")
     parser.add_argument("--usb-gamepad", action="store_true")
+    parser.add_argument("--playable-games", action="store_true")
+    parser.add_argument("--desktop-install-target", choices=INSTALL_TARGETS, default="desktop-and-applications")
     parser.add_argument("--music-directory", type=Path)
     parser.add_argument("--music-supervised", action="store_true")
     parser.add_argument("--no-startup-chime", action="store_true")
@@ -416,6 +476,8 @@ def main(argv=None):
         report = install_desktop(project_root=args.project_root, simulate=args.simulate,
                                  install=args.install_desktop, ptt_microphone=args.ptt_microphone,
                                  frontend=args.frontend, usb_gamepad=args.usb_gamepad,
+                                 playable_games=args.playable_games,
+                                 install_target=args.desktop_install_target,
                                  music_directory=args.music_directory, music_supervised=args.music_supervised,
                                  startup_chime=not args.no_startup_chime,
                                  camera_supervised=args.camera_supervised, photo_directory=args.photo_directory,

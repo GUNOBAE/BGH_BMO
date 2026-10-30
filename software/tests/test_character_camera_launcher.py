@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import unittest
 
-from bmo_ai.desktop_install import desktop_install_plan
+from bmo_ai.desktop_install import desktop_install_plan, install_desktop
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -62,7 +62,7 @@ class CharacterCameraLauncherTests(unittest.TestCase):
         self.assertIn(".venv-device/bin/python", result.stderr)
         self.assertEqual(result.stdout, "")
 
-    def desktop_plan(self, *, character=True):
+    def desktop_plan(self, *, character=True, install_target="desktop-and-applications"):
         project = self.root / "BMO candidate"
         project.mkdir()
         (project / "software").mkdir()
@@ -78,11 +78,13 @@ class CharacterCameraLauncherTests(unittest.TestCase):
             binary.chmod(0o700)
         home = Path(self.env["HOME"])
         home.mkdir(mode=0o700)
-        settings = dict(project_root=project, home=home, environ={"HOME": str(home)})
+        settings = dict(project_root=project, home=home, environ={"HOME": str(home)},
+                        install_target=install_target)
         if character:
             settings.update(frontend="chromium", ptt_microphone=True,
                 character_options=dict(character_life=True, wake_word=True,
                     wake_model_manifest=home / "private-model/manifest.json", wake_question_wait=3.))
+        self.plan_settings = settings
         return desktop_install_plan(**settings)
 
     def run_desktop_plan(self, plan, *, explicit=False):
@@ -109,6 +111,20 @@ class CharacterCameraLauncherTests(unittest.TestCase):
         result = self.run_desktop_plan(self.desktop_plan(character=False))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["python"], "legacy")
+
+    def test_applications_only_private_candidate_runs_same_interpreter_and_settings(self):
+        plan = self.desktop_plan(install_target="applications-only")
+        source = self.plan_settings['project_root'] / 'launch-desktop'
+        source.chmod(0o775)
+        install_desktop(**self.plan_settings, install=True)
+        result = self.run_desktop_plan(plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = json.loads(result.stdout)
+        self.assertEqual(captured['python'], 'device')
+        self.assertEqual(captured['cwd'], str(self.plan_settings['project_root'] / 'software'))
+        for option in ('--character-life', '--ptt-microphone', '--wake-word', '--wake-model-manifest'):
+            self.assertIn(option, captured['argv'])
+        self.assertEqual(source.stat().st_mode & 0o777, 0o775)
 
     def test_explicit_interpreter_wins_and_missing_candidate_never_uses_legacy(self):
         plan = self.desktop_plan()

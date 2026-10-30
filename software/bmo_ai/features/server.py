@@ -3,6 +3,7 @@ import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
+import os
 from pathlib import Path
 import re
 import secrets
@@ -47,6 +48,7 @@ class FeatureServer:
                     .replace('aria-label="BMO 시작 준비"', 'aria-label="Getting BMO ready"'))
             self._resources["/"] = ("text/html; charset=utf-8", product_page.encode())
             for name, mime in (("desktop.js", "text/javascript; charset=utf-8"),
+                               ('playable.js', 'text/javascript; charset=utf-8'),
                                ("desktop.css", "text/css; charset=utf-8")):
                 self._resources["/" + name] = (mime, product.joinpath(name).read_bytes())
             if developer:
@@ -93,12 +95,13 @@ class FeatureServer:
                     raise ValueError("invalid preview headers")
                 if isinstance(body, dict):
                     body, mime = json.dumps(body, allow_nan=False).encode(), "application/json"
+                media_policy = "'self'" if getattr(owner.desktop, 'character_life', False) or getattr(owner.host, 'character_life', False) else "'none'"
                 self.send_response(status)
                 for key, value in {"Content-Type": mime, "Content-Length": str(len(body)),
                     "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
                     "Cross-Origin-Resource-Policy": "same-origin",
                     "Referrer-Policy": "no-referrer", "X-Frame-Options": "SAMEORIGIN",
-                    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'none'; connect-src 'self'; frame-src 'self' about:; frame-ancestors 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"}.items():
+                    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src "+media_policy+"; connect-src 'self'; frame-src 'self' about:; frame-ancestors 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"}.items():
                     self.send_header(key, value)
                 for key, value in extra_headers.items():
                     self.send_header(key, value)
@@ -108,6 +111,64 @@ class FeatureServer:
                         self.wfile.write(body)
                 except OSError:
                     pass
+
+            def _video(self, video_id):
+                opened = owner.host.open_video(video_id) if callable(getattr(owner.host, 'open_video', None)) else None
+                if opened is None:
+                    # Legacy developer fixtures retain their old byte route.
+                    payload = owner.host.video_bytes(video_id)
+                    self._send(200, payload, 'application/octet-stream') if payload else self._send(404)
+                    return
+                fd, total, metadata = opened
+                try:
+                    start, end, status = 0, total-1, 200
+                    ranges = self.headers.get_all('Range', [])
+                    invalid = len(ranges) > 1
+                    if ranges and not invalid:
+                        match = re.fullmatch(r'bytes=([0-9]{0,16})-([0-9]{0,16})', ranges[0])
+                        invalid = match is None or not any(match.groups())
+                        if not invalid:
+                            left, right = match.groups()
+                            if left:
+                                start = int(left)
+                                end = min(end, int(right)) if right else end
+                            elif int(right) > 0:
+                                start = max(0, total-int(right))
+                            else:
+                                invalid = True
+                            invalid = invalid or start > end or start >= total
+                            status = 206
+                    if invalid:
+                        self.send_response(416)
+                        self.send_header('Content-Range', 'bytes */'+str(total))
+                        self.send_header('Content-Length', '0')
+                        self.send_header('Cache-Control', 'no-store')
+                        self.end_headers()
+                        return
+                    self.send_response(status)
+                    headers = {'Content-Type': 'video/mp4', 'Content-Length': str(end-start+1),
+                        'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store',
+                        'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin',
+                        'Referrer-Policy': 'no-referrer',
+                        'Content-Disposition': 'inline; filename="'+video_id+'.mp4"'}
+                    if status == 206:
+                        headers['Content-Range'] = f'bytes {start}-{end}/{total}'
+                    for name, value in headers.items():
+                        self.send_header(name, value)
+                    self.end_headers()
+                    if self.command != 'HEAD':
+                        os.lseek(fd, start, os.SEEK_SET)
+                        remaining = end-start+1
+                        while remaining:
+                            chunk = os.read(fd, min(65536, remaining))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                except OSError:
+                    pass
+                finally:
+                    os.close(fd)
 
             def do_GET(self):
                 if not self._origin():
@@ -170,11 +231,18 @@ class FeatureServer:
                         self._send(200, image, "image/png") if image else self._send(404)
                     elif path.startswith("/api/video/"):
                         video_id = path.removeprefix("/api/video/")
-                        payload = owner.host.video_bytes(video_id) if re.fullmatch(r"video_[0-9a-f]{32}", video_id) else None
-                        self._send(200, payload, "application/octet-stream") if payload else self._send(404)
+                        if re.fullmatch(r'video_[0-9a-f]{32}', video_id) and not request_url.query:
+                            self._video(video_id)
+                        else:
+                            self._send(404)
                     elif path in owner._resources:
                         mime, body = owner._resources[path]
                         self._send(200, body, mime)
+                    elif path.startswith('/games/'):
+                        getter = getattr(owner.host, 'game_resources', None)
+                        resources = getter() if callable(getter) else {}
+                        item = resources.get(path) if not request_url.query else None
+                        self._send(200, item[1], item[0]) if item else self._send(404)
                     else:
                         self._send(404)
                 except Exception:

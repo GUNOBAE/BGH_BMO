@@ -17,11 +17,48 @@ from .camera.request import current_photo_request
 from .request_semantics import request_schema, resolve_interpretation
 
 
-TARGET_INTENTS = frozenset({"launch_game", "play_song", "arm_gesture"})
+TARGET_INTENTS = frozenset({"launch_game", "play_song", "arm_gesture", "set_volume"})
+OPTIONAL_TARGET_INTENTS = frozenset({"start_video"})
+SEMANTIC_DEVICE_INTENTS = frozenset({"take_photo", "start_video", "stop_video",
+    "start_face_tracking", "stop_face_tracking", "arm_gesture", "stop_arms",
+    "set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down"})
+SEMANTIC_KIND_INTENTS = {
+    "video": frozenset({"start_video", "stop_video"}),
+    "tracking": frozenset({"start_face_tracking", "stop_face_tracking"}),
+    "arm": frozenset({"arm_gesture", "stop_arms"}),
+    "volume": frozenset({"set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down"}),
+}
 PHOTO_PREPARATION = {
     "en": "Hold still. Let's take one little picture.",
     "ko": "잠깐만 가만히 있어줘. 사진 한 장 찍어보자.",
 }
+VIDEO_PREPARATION = {
+    "en": "Ready? Let's make a little movie.",
+    "ko": "준비됐지? 짧은 영상을 찍어보자.",
+}
+
+
+def video_request_duration(target=None):
+    """Bounded duration meaning only; never starts or authorizes a recorder.
+
+    Retain the requested value so the UI can say when it was clamped rather
+    than quietly claiming that a longer requested clip was recorded in full.
+    """
+    if target is None:
+        requested = 30
+    elif type(target) is str and re.fullmatch(r"seconds_(?:0|[1-9][0-9]{0,5})", target):
+        requested = int(target[8:])
+    else:
+        raise ExpressionFormatError()
+    duration = min(60, max(1, requested))
+    return {"requested_seconds": requested, "duration_seconds": duration,
+            "duration_clamped": requested != duration}
+
+
+def volume_percent(target):
+    if type(target) is not str or re.fullmatch(r"level_(?:0|[1-9][0-9]?|100)", target) is None:
+        raise ExpressionFormatError()
+    return int(target[6:])
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,9 +68,13 @@ class HostIntent:
 
     def __post_init__(self):
         if (type(self.name) is not str or self.name not in INTENTS or (self.name in TARGET_INTENTS and not valid_id(self.target))
-                or (self.name not in TARGET_INTENTS and self.target is not None)
+                or (self.name not in TARGET_INTENTS | OPTIONAL_TARGET_INTENTS and self.target is not None)
                 or (self.name == "arm_gesture" and self.target not in ARM_INTENT_ACTIONS)):
             raise ExpressionFormatError()
+        if self.name == "start_video":
+            video_request_duration(self.target)
+        if self.name == "set_volume":
+            volume_percent(self.target)
 
     def public(self):
         return {"name": self.name, "target": self.target}
@@ -57,6 +98,8 @@ class FeatureReply:
     captions: dict = field(default_factory=dict)
     photo_success: dict | None = None
     degradation_reason: str = "none"
+    # Current-turn semantic meaning, not a runtime capability or supervision.
+    human_device_request: bool = False
 
 
 FEATURE_INSTRUCTIONS = """Trusted feature-host contract version 1. Return only the
@@ -125,7 +168,7 @@ Support natural English/Korean variants, vocatives, punctuation and imperfect
 grammar. Never demand a memorized command or just correct grammar when meaning
 is clear. request is your bounded interpretation, NOT permission or proof that
 hardware executed. Copy the exact current turn_token supplied by the host.
-kind is none/photo/acting/subtitles; disposition is none/execute/clarify. Use
+kind is none/photo/acting/subtitles/video/tracking/arm/volume; disposition is none/execute/clarify. Use
 none/none for ordinary conversation. For harmless requested acting, use kind
 acting, execute, its requested emotion and matching theatrical delivery/face.
 Do the little scene in a short playful protest, not just "I am angry" or "Grr".
@@ -154,6 +197,29 @@ current speech is a brief preparation line (at most eight words), never a claim
 of success. No photo analysis, quality, identity or feeling claim is allowed.
 All other requests use photo_success null. Keep the entire structured response
 short enough for the existing budget; no extra repair/classification request.
+
+For immediate video requests use kind video with start_video intent, target null
+for default30 seconds or seconds_N for the requested integer seconds. Preserve N
+so the host can visibly clamp to1..60; do not claim recording or saving already
+happened. The current line is preparation; recording starts after the host's
+visible preview and five-second countdown. stop_video is only a current explicit
+stop request, never a plan/history/capability question. Video is silent by default.
+For camera eye-following requests use kind tracking and start_face_tracking or
+stop_face_tracking with null target. Look at me / Follow my face and their Korean
+meanings ask for local face-position tracking, not identity recognition or photos.
+For explicit arm requests use kind arm, arm_gesture and one supplied B1 named
+target, or stop_arms/null. Left and right are BMO's own sides. Supported targets
+are wave, celebrate, shrug, raise_left_arm, raise_right_arm, both_up, both_down.
+Do not invent a one-arm-down, arbitrary angle or firmware action. Unsupported
+movement is conversation, not another guessed gesture. These actions require the
+host's existing supervision; a model interpretation never enables motors.
+For volume requests use kind volume and set_volume/level_N (integer0..100),
+mute_audio/null, unmute_audio/null, volume_up/null or volume_down/null. Zero is
+silent. Keep voice/model/provenance unchanged; never regenerate audio for volume.
+For these four kinds use emotion none, subtitle_mode unchanged and null
+confirmation_token. An execute interpretation and its matching intent must agree.
+No device intent for quoted, negated, hypothetical or old requests; clarification
+does not execute. Do not claim an action completed before the host verifies it.
 """
 
 
@@ -394,15 +460,20 @@ class FeatureResponses:
                 current = items[-1] if type(items) in (list, tuple) and items else {}
                 message = current.get("content", "") if type(current) is dict and current.get("role") == "user" else ""
                 interpretation, validation = resolve_interpretation(reply.request_interpretation,
-                    message, turn_token=turn_token, pending_confirmation=self.context.get("pending_confirmation"))
+                    message, turn_token=turn_token, pending_confirmation=self.context.get("pending_confirmation"),
+                    action_name=reply.intent.name if reply.intent is not None else None)
                 reply = replace(reply, request_interpretation=interpretation,
                     request_validation=validation)
-                # A naked model camera intent is not current-user consent.
-                if reply.intent is not None and reply.intent.name in ("take_photo", "start_face_tracking", "stop_face_tracking"):
+                # A naked device intent is not current-user consent. Reattach
+                # only a matching, validated interpretation from this reply.
+                candidate_intent = reply.intent
+                if reply.intent is not None and reply.intent.name in SEMANTIC_DEVICE_INTENTS:
                     reply = replace(reply, intent=None)
                 if interpretation is not None and validation == "validated":
                     kind, disposition = interpretation["kind"], interpretation["disposition"]
                     semantic_clarification = disposition == "clarify"
+                    if kind != "none":
+                        reply = replace(reply, intent=None)
                     if kind == "acting" and disposition == "execute":
                         semantic_acting = interpretation["emotion"]
                         reply = replace(reply, intent=None)
@@ -417,6 +488,16 @@ class FeatureResponses:
                             gesture="none", human_photo_request=True)
                     elif kind == "subtitles":
                         reply = replace(reply, intent=None, gesture="none")
+                    elif (kind in SEMANTIC_KIND_INTENTS and disposition == "execute"
+                          and candidate_intent is not None
+                          and candidate_intent.name in SEMANTIC_KIND_INTENTS[kind]
+                          and not reply.degraded):
+                        reply = replace(reply, intent=candidate_intent, gesture="none",
+                                        human_device_request=True)
+                        if candidate_intent.name == "start_video":
+                            language = "ko" if re.search("[가-힣]", reply.speech) else "en"
+                            reply = replace(reply, speech=VIDEO_PREPARATION[language],
+                                            captions=dict(VIDEO_PREPARATION))
                 if not reply.human_photo_request:
                     reply = replace(reply, photo_success=None)
                 if validation not in ("none", "validated") and reply.degradation_reason == "none":
@@ -475,4 +556,5 @@ class FeatureClient:
             raise ExpressionFormatError() from None
         self.responses.context_json = raw
         self.responses.context = dict(context)
-        self.responses.camera_photo_enabled = context.get("camera") in ("explicit_current_user_photo_only", "synthetic_only")
+        self.responses.camera_photo_enabled = context.get("camera") in (
+            "explicit_current_user_photo_only", 'explicit_current_user_requests', "synthetic_only")

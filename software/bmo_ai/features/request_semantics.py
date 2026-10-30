@@ -7,7 +7,7 @@ reject clear non-requests; they are not a sentence allowlist or a classifier.
 import re
 
 
-KINDS = ("none", "photo", "acting", "subtitles")
+KINDS = ("none", "photo", "acting", "subtitles", "video", "tracking", "arm", "volume")
 DISPOSITIONS = ("none", "execute", "clarify")
 ACTING_EMOTIONS = ("none", "happy", "sad", "angry", "crying")
 SUBTITLE_MODES = ("unchanged", "off", "on", "en", "ko")
@@ -17,6 +17,12 @@ _AFFIRMATIVE = re.compile(r"\s*(?:yes|yeah|yep|sure|okay|ok|please do|go ahead|d
 _PHOTO_TOPIC = re.compile(r"\b(?:photo|photos|picture|pictures|photograph|snapshot|snap|capture|camera)\b|사진|촬영|찍", re.I)
 _ACTING_TOPIC = re.compile(r"\b(?:angry|anger|mad|sad|sadness|happy|cry|crying|act|pretend|expression|face)\b|화|슬프|슬픈|기뻐|울|연기", re.I)
 _SUBTITLE_TOPIC = re.compile(r"\b(?:caption|captions|subtitle|subtitles)\b|자막", re.I)
+_DEVICE_TOPICS = {
+    "video": re.compile(r"\b(?:video|record|recording|film|movie|clip)\b|영상|녹화|동영상", re.I),
+    "tracking": re.compile(r"\b(?:look|follow|track|tracking|face|eyes)\b|추적|따라|쳐다|바라|시선", re.I),
+    "arm": re.compile(r"\b(?:arm|arms|wave|shrug|celebrate|moving|motion)\b|팔|흔들|손|움직", re.I),
+    "volume": re.compile(r"\b(?:volume|sound|louder|loud|quieter|quiet|mute|unmute|audio)\b|볼륨|소리|음량|음소거|조용", re.I),
+}
 _QUOTES = re.compile(r'`[^`]*`|"[^"\n]*"|“[^”\n]*”|(?<!\w)\'[^\'\n]*\'(?!\w)')
 
 
@@ -54,10 +60,12 @@ def valid_interpretation(value):
         return False
     if kind == "subtitles":
         return value["subtitle_mode"] != "unchanged" and value["confirmation_token"] is None
+    if kind in _DEVICE_TOPICS:
+        return value["subtitle_mode"] == "unchanged" and value["confirmation_token"] is None
     return value["subtitle_mode"] == "unchanged"
 
 
-def request_denial(message, kind, *, subtitle_mode="unchanged"):
+def request_denial(message, kind, *, subtitle_mode="unchanged", action_name=None):
     """Reject obvious negation/reporting, without granting from a phrase match."""
     if type(message) is not str or not message.strip() or len(message) > 8000:
         return "no_current_user"
@@ -78,22 +86,38 @@ def request_denial(message, kind, *, subtitle_mode="unchanged"):
         negative = r"\b(?:don't|do not|never|stop|cancel)\b[^.!?;\n]{0,45}\b(?:photo|picture|camera|take|snap|capture|photograph)\b|(?:찍지\s*마|촬영하지\s*마|사진[^.!?;\n]{0,20}(?:싫|취소|말고))"
     elif kind == "acting":
         negative = r"\b(?:don't|do not|never|stop)\b[^.!?;\n]{0,45}\b(?:angry|mad|cry|crying|sad|happy|act|pretend)\b|(?:화내지\s*마|울지\s*마|슬퍼하지\s*마|(?:연기|화난|우는|슬픈)[^.!?;\n]{0,25}(?:하지|보지)\s*마)"
-    else:
+    elif kind == "subtitles":
         # "Don't show subtitles" can itself mean OFF; do not reject that.
         desired = "off" if subtitle_mode == "off" else "on"
         negative = (r"\b(?:don't|do not|never)\b[^.!?;\n]{0,35}\b(?:turn|switch)\b[^.!?;\n]{0,30}\b" + desired + r"\b"
                     + (r"|(?:자막[^.!?;\n]{0,20}끄지\s*마)" if desired == "off" else r"|(?:자막[^.!?;\n]{0,20}켜지\s*마)"))
+    elif kind in _DEVICE_TOPICS:
+        if re.search(r"\b(?:do you (?:support|have)|are you able to)\b|(?:기능(?:이|은|을)|할\s*수\s*있(?:어|니))\s*[?.!]*$", unquoted, re.I):
+            return "capability_question"
+        # Negative stop/mute is not the same action as a stop/mute request.
+        # These checks only deny clear conflicts; the current model meaning is
+        # still required and grants no runtime device permission.
+        if action_name in ("stop_face_tracking", "stop_video", "stop_arms"):
+            negative = r"\b(?:don't|do not|never)\s+(?:stop|cancel|end)\b|(?:멈추지|중지하지|끄지)\s*마"
+        elif action_name == "mute_audio":
+            negative = r"\b(?:don't|do not|never)\s+mute\b|음소거(?:하지|하진)\s*마"
+        elif action_name == "unmute_audio":
+            negative = r"\b(?:don't|do not|never)\s+unmute\b|음소거[^.!?;\n]{0,15}풀지\s*마"
+        else:
+            negative = r"\b(?:don't|do not|never|cancel)\b[^.!?;\n]{0,60}|(?:하지\s*마|하지마|찍지\s*마|따라오지\s*마|올리지\s*마|내리지\s*마|바꾸지\s*마)"
+    else:
+        return "invalid_request"
     return "negated_request" if re.search(negative, unquoted, re.I) else None
 
 
-def resolve_interpretation(value, message, *, turn_token, pending_confirmation=None):
+def resolve_interpretation(value, message, *, turn_token, pending_confirmation=None, action_name=None):
     if not valid_interpretation(value):
         return None, "invalid_request"
     if value["turn_token"] != turn_token:
         return None, "stale_request"
     if value["kind"] == "none":
         return dict(value), "none"
-    denied = request_denial(message, value["kind"], subtitle_mode=value["subtitle_mode"])
+    denied = request_denial(message, value["kind"], subtitle_mode=value["subtitle_mode"], action_name=action_name)
     if denied:
         return None, denied
     pending = pending_confirmation if type(pending_confirmation) is dict else {}
@@ -103,8 +127,14 @@ def resolve_interpretation(value, message, *, turn_token, pending_confirmation=N
     # A new explicit request such as "Okay, take a picture" is not a bare
     # confirmation. These topic words do not grant an action; the validated
     # semantic response still has to request it and host permissions apply.
-    topic = {"photo": _PHOTO_TOPIC, "acting": _ACTING_TOPIC, "subtitles": _SUBTITLE_TOPIC}[value["kind"]]
+    topic = {"photo": _PHOTO_TOPIC, "acting": _ACTING_TOPIC, "subtitles": _SUBTITLE_TOPIC,
+             **_DEVICE_TOPICS}[value["kind"]]
     affirmative = bool(_AFFIRMATIVE.match(message)) and not topic.search(message)
+    if value["kind"] in _DEVICE_TOPICS:
+        # Topic words are not a positive command allowlist. Natural commands
+        # such as "Okay, make it quieter" or "Yes, lift the left one" can be
+        # understood by the same response even without the literal noun.
+        affirmative = bool(re.fullmatch(r"\s*(?:yes|yeah|yep|sure|okay|ok|네|예|응|좋아|그래)(?:\s*,?\s*please)?\s*[,.!?]*", message, re.I))
     if confirmation is not None or affirmative:
         if (value["kind"] != "photo" or value["disposition"] != "execute"
                 or pending.get("kind") != "photo" or pending.get("token") != confirmation

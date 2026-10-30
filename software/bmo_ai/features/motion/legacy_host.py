@@ -437,6 +437,20 @@ class LegacyMotionFeature:
         transport = ("CLOSED" if self.link.closed else "UNKNOWN" if self.link.unknown else
                      "STOPPED" if self.link.stopped else
                      "ACKNOWLEDGED" if self.link.boot is not None else "NOT_CONNECTED")
+        blocked = []
+        if self.link.last_response_code == 'DISABLED':
+            blocked.append('arm_board_disabled')
+        if self.last_error == 'physical_supervision_required':
+            blocked.append('arm_operator_condition_missing')
+        if closed:
+            blocked.append('arm_closed')
+        elif stopped:
+            blocked.append('arm_stopped')
+        if unknown and not blocked:
+            blocked.append('arm_transport_error')
+        operation = ('closed' if closed else 'stopped' if stopped else 'fault' if unknown
+                     else 'queued' if self.pending is not None else 'active'
+                     if self.active_until is not None else 'idle')
         return {"simulated": False, "real_enabled": True,
                 "readiness": "BLOCKED" if closed or stopped else "READY" if usable else "UNVERIFIED",
                 "reason_code": reason,
@@ -444,6 +458,10 @@ class LegacyMotionFeature:
                 "queued": int(self.pending is not None),
                 "active": self.pending is not None or self.active_until is not None,
                 "stopped": self.stopped, "closed": self.closed,
+                "supported_gestures": sorted(NAMED_GESTURES), "side_reference": "bmo_own",
+                "blocked_reasons": blocked, "operation": operation,
+                "cancel_semantics": "hold_current_commanded_position",
+                "stop_semantics": "latch_until_session_restart_not_power_cut",
                 "position_verified": False, "physical_verified": False,
                 "preflight": {"status": "BLOCKED" if closed or stopped or unknown else "CONFIGURED",
                               "scope": "software_adapter",

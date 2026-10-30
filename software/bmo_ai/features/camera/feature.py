@@ -46,6 +46,11 @@ class CameraFeature:
                               served=0, dropped_replaced=0)
         self._lock, self._photo_lock = RLock(), Lock()
         self._tracking = self._preview = self._photo_active = self._closed = False
+        # A user's tracking choice survives a temporary photo/video borrower.
+        # It is deliberately separate from effective detector consumption.
+        self._tracking_requested = False
+        self._tracking_suspensions = set()
+        self._consumers = set()
         self._generation = self._revision = 0
         self._photo_id = None
         self._photo_cancel = Event()
@@ -80,21 +85,82 @@ class CameraFeature:
     def set_preview(self, enabled, *, generation):
         return self._set_option('preview', enabled, generation)
 
-    def _set_option(self, name, enabled, generation):
-        if type(enabled) is not bool:
-            raise FeatureError('invalid_camera_option')
+    def _wanted_locked(self):
+        return self._tracking_requested or self._preview or self._photo_active or bool(self._consumers)
+
+    @staticmethod
+    def _consumer_name(consumer):
+        if type(consumer) is not str or consumer not in ('photo', 'video'):
+            raise FeatureError('invalid_camera_consumer')
+
+    def acquire_consumer(self, consumer, *, generation):
+        """Keep this camera's producer alive; never create a second SDK owner."""
+        return self._set_consumer(consumer, True, generation=generation)
+
+    def release_consumer(self, consumer, *, generation):
+        return self._set_consumer(consumer, False, generation=generation)
+
+    def _set_consumer(self, consumer, enabled, *, generation):
+        self._consumer_name(consumer)
         with self._lock:
             self._generation_check(generation)
             if enabled and self._producer_retirement_unknown:
                 raise FeatureError('camera_preview_stop_failed')
-            setattr(self, '_' + name, enabled)
+            if enabled:
+                self._consumers.add(consumer)
+            else:
+                self._consumers.discard(consumer)
+            wanted, revision = self._wanted_locked(), self._revision
+        return self._reconcile_stream(wanted, revision)
+
+    def suspend_tracking(self, consumer, *, generation):
+        return self._suspend_tracking(consumer, True, generation=generation)
+
+    def resume_tracking(self, consumer, *, generation):
+        return self._suspend_tracking(consumer, False, generation=generation)
+
+    def _suspend_tracking(self, consumer, suspended, *, generation):
+        self._consumer_name(consumer)
+        with self._lock:
+            self._generation_check(generation)
+            if suspended:
+                self._tracking_suspensions.add(consumer)
+            else:
+                self._tracking_suspensions.discard(consumer)
+            self._tracking = self._tracking_requested and not self._tracking_suspensions
+            # Never use a previous subject/frame as a newly acquired target.
+            self.tracker.reset()
+            self._tracking_frame_id = None
+            self._last_poll = None
+            self._emit(GazeTarget(self._generation, None, None, self.clock(), None, None, 'off'))
+            wanted, revision = self._wanted_locked(), self._revision
+        return self._reconcile_stream(wanted, revision)
+
+    def _set_option(self, name, enabled, generation):
+        if type(enabled) is not bool:
+            raise FeatureError('invalid_camera_option')
+        if name == 'tracking' and enabled and isinstance(self.detector, NullDetector):
+            raise FeatureError('face_detector_unavailable')
+        with self._lock:
+            self._generation_check(generation)
+            if enabled and self._producer_retirement_unknown:
+                raise FeatureError('camera_preview_stop_failed')
+            if name == 'tracking':
+                self._tracking_requested = enabled
+                self._tracking = enabled and not self._tracking_suspensions
+            else:
+                self._preview = enabled
             self._error = None
-            wanted, revision = self._tracking or self._preview or self._photo_active, self._revision
+            wanted, revision = self._wanted_locked(), self._revision
             if name == 'tracking' and not enabled:
                 self.tracker.reset()
+                self._tracking_frame_id = None
                 self._emit(GazeTarget(self._generation, None, None, self.clock(), None, None, 'off'))
-            if name == 'preview' and not enabled:
+            if not wanted:
                 self._frame = None
+        return self._reconcile_stream(wanted, revision)
+
+    def _reconcile_stream(self, wanted, revision):
         try:
             if self.asynchronous_preview and not self._pause_producer():
                 raise FeatureError('camera_preview_stop_failed')
@@ -144,7 +210,9 @@ class CameraFeature:
                     self._producer_retirement_unknown = True
                     self._revision += 1
                     self._photo_cancel.set()
-                    self._tracking = self._preview = False
+                    self._tracking = self._tracking_requested = self._preview = False
+                    self._tracking_suspensions.clear()
+                    self._consumers.clear()
                     self._frame = None
                     self.tracker.reset()
                     self._emit(GazeTarget(self._generation, None, None, self.clock(), None, None, 'off'))
@@ -156,7 +224,7 @@ class CameraFeature:
             return
         with self._producer_control:
             with self._lock:
-                if (self._closed or self._photo_active or not (self._preview or self._tracking)
+                if (self._closed or self._photo_active or not self._wanted_locked()
                         or not self.broker.opened or self._producer_retirement_unknown):
                     return
                 if self._producer_thread is not None and self._producer_thread.is_alive():
@@ -202,7 +270,9 @@ class CameraFeature:
                 if failed:
                     self._revision += 1
                     self._photo_cancel.set()
-                    self._tracking = self._preview = False
+                    self._tracking = self._tracking_requested = self._preview = False
+                    self._tracking_suspensions.clear()
+                    self._consumers.clear()
                     self._frame = None
                     self._error = 'camera_capture_failed'
                     self.tracker.reset()
@@ -219,7 +289,7 @@ class CameraFeature:
     def _poll_latest(self, now):
         """Tracking samples the producer's one-slot cache, never the sensor."""
         with self._lock:
-            if self._closed or not (self._tracking or self._preview):
+            if self._closed or not self._wanted_locked():
                 return self.snapshot()
             if self._photo_active or self._last_poll is not None and now - self._last_poll < self._interval:
                 if self._tracking:
@@ -255,7 +325,7 @@ class CameraFeature:
         if self.asynchronous_preview:
             return self._poll_latest(now)
         with self._lock:
-            if self._closed or not (self._tracking or self._preview):
+            if self._closed or not self._wanted_locked():
                 return self.snapshot()
             if self._photo_active or self._last_poll is not None and now - self._last_poll < self._interval:
                 if self._tracking:
@@ -283,7 +353,7 @@ class CameraFeature:
                 if revision != self._revision or self._closed:
                     return self.snapshot()
                 if frame is not None:
-                    self._frame = frame if self._preview else None
+                    self._frame = frame
                 elif self._frame is not None and now - self._frame.captured_at > self.tracker.config.max_age:
                     self._frame = None
                 if self._tracking:
@@ -302,6 +372,13 @@ class CameraFeature:
                             worker_alive=self._producer_thread is not None and self._producer_thread.is_alive(),
                             physical_fps='NOT_MEASURED')
             return dict(on=self.broker.opened, tracking=self._tracking, preview=self._preview,
+                        tracking_requested=self._tracking_requested,
+                        tracking_suspended=sorted(self._tracking_suspensions),
+                        tracking_available=not isinstance(self.detector, NullDetector),
+                        tracking_rate_hz=1 / self._interval,
+                        tracking_transform=dict(mirror=self.tracker.config.mirror,
+                                                rotation=self.tracker.config.rotation),
+                        consumers=sorted(self._consumers),
                         photo_active=self._photo_active, generation=self._generation,
                         stream_generation=self.broker.stream_generation, target=self._target.public(),
                         preview_available=available, preview_mime=mime,
@@ -330,6 +407,22 @@ class CameraFeature:
             return dict(id=identity, payload=frame.payload,
                         mime='image/jpeg' if frame.format == 'jpeg' else 'image/png',
                         captured_at=frame.captured_at, age_ms=max(0, (self.clock() - frame.captured_at) * 1000))
+
+    def cached_frame(self, after=None):
+        """Latest immutable frame for an admitted in-process consumer.
+
+        This performs no device read/decode and does not require the user's
+        preview panel to be visible. A recorder shares this one-slot cache.
+        """
+        with self._lock:
+            frame = self._frame
+            now = self.clock()
+            if (frame is None or self._closed or not self.broker.opened
+                    or frame.captured_at > now + .05
+                    or now - frame.captured_at > self.tracker.config.max_age
+                    or self._frame_id(frame) == after):
+                return None
+            return frame
 
     def focus_snapshot(self):
         return self.broker.focus_snapshot()
@@ -449,10 +542,12 @@ class CameraFeature:
         finally:
             with self._lock:
                 self._photo_active, self._photo_id = False, None
-                wanted = (self._tracking or self._preview) and revision == self._revision and not self._closed
+                wanted = self._wanted_locked() and revision == self._revision and not self._closed
                 if wanted and not self.broker.opened:
                     # A failed real capture must not revive a closed sensor.
-                    self._tracking = self._preview = False
+                    self._tracking = self._tracking_requested = self._preview = False
+                    self._tracking_suspensions.clear()
+                    self._consumers.clear()
                     self._frame = None
                     self.tracker.reset()
                     self._emit(GazeTarget(self._generation, None, None, self.clock(), None, None, 'off'))
@@ -475,7 +570,9 @@ class CameraFeature:
         with self._lock:
             self._revision += 1
             self._photo_cancel.set()
-            self._tracking = self._preview = False
+            self._tracking = self._tracking_requested = self._preview = False
+            self._tracking_suspensions.clear()
+            self._consumers.clear()
             self._frame = self._last_poll = None
             self.tracker.reset()
             self._emit(GazeTarget(self._generation, None, None, self.clock(), None, None, 'off'))

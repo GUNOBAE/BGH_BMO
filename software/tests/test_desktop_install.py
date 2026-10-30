@@ -65,6 +65,82 @@ class DesktopInstallTests(unittest.TestCase):
         self.assertIn('"--simulate"', report["template"])
         self.assertFalse(self.desktop.parent.exists())
 
+    def test_character_candidate_has_separate_name_paths_and_pinned_profile_options(self):
+        self.install()
+        before = {path: (path.read_bytes(), path.stat().st_ino)
+                  for path in (self.desktop, self.app, self.icon)}
+        pack = self.home / '.local/share/bmo/voice-pack-v8'
+        settings = dict(character_options={"character_life": True, "voice_pack_directory": pack}, playable_games=True,
+                        frontend="chromium", ptt_microphone=True)
+        dry = installer.install_desktop(**self.options(**settings))
+        self.assertEqual(dry["files_written"], 0)
+        self.assertIn("Name=BMO Candidate\n", dry["template"])
+        self.assertIn("--playable-games", dry["command"])
+        self.assertIn("--character-life", dry["command"])
+        self.assertEqual(dry['command'][dry['command'].index('--voice-pack-directory')+1], str(pack))
+        self.assertTrue(dry["playable_games_opt_in"])
+        self.assertEqual(Path(dry["targets"][0]["path"]).name, "BMO-Candidate.desktop")
+        installed = self.install(**settings)
+        self.assertEqual(installed["files_written"], 3)
+        self.assertTrue((self.home / "Desktop/BMO-Candidate.desktop").is_file())
+        self.assertTrue((self.home / ".local/share/icons/hicolor/scalable/apps/bmo-candidate.svg").is_file())
+        self.assertEqual(before, {path: (path.read_bytes(), path.stat().st_ino) for path in before})
+
+    def test_applications_only_candidate_uses_private_verified_wrapper_without_chmod_or_desktop_write(self):
+        original_launcher = Path(__file__).resolve().parents[2] / "launch-desktop"
+        self.launcher.write_bytes(original_launcher.read_bytes())
+        self.launcher.chmod(0o775)
+        self.desktop.parent.mkdir(mode=0o775)
+        self.desktop.parent.chmod(0o775)
+        self.desktop.write_text("existing operating entry\n")
+        self.desktop.chmod(0o700)
+        before = (self.desktop.read_bytes(), self.desktop.stat().st_ino,
+                  self.desktop.parent.stat().st_mode, self.launcher.read_bytes(), self.launcher.stat().st_mode)
+        settings = dict(character_options={"character_life": True}, playable_games=True,
+                        install_target="applications-only", frontend="chromium", ptt_microphone=True)
+        dry = installer.install_desktop(**self.options(**settings))
+        self.assertTrue(dry["launcher_verified"])
+        self.assertEqual(dry["launcher_kind"], "private_candidate_wrapper")
+        self.assertFalse(any(Path(row["path"]).is_relative_to(self.desktop.parent) for row in dry["targets"]))
+        wrapper = self.home / ".local/share/bmo-desktop/BMO-Candidate-launcher"
+        self.assertEqual(dry["command"][0], str(wrapper))
+        self.assertFalse(wrapper.exists())
+        report = self.install(**settings)
+        self.assertEqual((report["status"], report["files_written"]), ("INSTALLED", 3))
+        self.assertEqual(stat.S_IMODE(wrapper.stat().st_mode), 0o700)
+        self.assertIn(".venv-device/bin/python", wrapper.read_text())
+        self.assertIn('exec "$bmo_candidate_python" -B -m bmo_ai.desktop_app "$@"', wrapper.read_text())
+        self.assertEqual(before, (self.desktop.read_bytes(), self.desktop.stat().st_ino,
+                                  self.desktop.parent.stat().st_mode, self.launcher.read_bytes(), self.launcher.stat().st_mode))
+        with self.assertRaises(DesktopInstallError):
+            installer.desktop_install_plan(**self.options(character_options={"character_life": True}))
+
+    def test_private_wrapper_requires_reviewed_launcher_bytes_and_never_executes_modified_source(self):
+        self.launcher.chmod(0o775)
+        settings = dict(character_options={"character_life": True}, install_target="applications-only")
+        plan = installer.install_desktop(**self.options(**settings))
+        self.assertFalse(plan["launcher_verified"])
+        with self.assertRaises(DesktopInstallError) as caught:
+            self.install(**settings)
+        self.assertEqual(caught.exception.code, "desktop_launcher_pending")
+        self.assertFalse((self.home / ".local/share/bmo-desktop/BMO-Candidate-launcher").exists())
+
+    def test_explicit_quiet_start_and_configured_admission_limits_are_persisted_without_secrets(self):
+        options = dict(character_life=True, silent_start=True, no_feedback_voice=True,
+                       request_cooldown=2.5, session_request_limit=20,
+                       estimated_request_cost=.1, estimated_session_cost_limit=2.)
+        plan = installer.desktop_install_plan(**self.options(character_options=options))
+        for flag in ('--silent-start', '--no-feedback-voice'):
+            self.assertIn(flag, plan['command'])
+        for key in ('request_cooldown', 'session_request_limit', 'estimated_request_cost', 'estimated_session_cost_limit'):
+            self.assertEqual(plan['command'][plan['command'].index('--'+key.replace('_','-'))+1], str(options[key]))
+        self.assertNotIn('synthetic_private', json.dumps(plan))
+        for changes in ({'request_cooldown': float('nan')}, {'session_request_limit': 0},
+                        {'session_request_limit': True}, {'estimated_request_cost': -1},
+                        {'estimated_request_cost': None}):
+            with self.subTest(changes=changes), self.assertRaises(DesktopInstallError):
+                installer.desktop_install_plan(**self.options(character_options={**options, **changes}))
+
     def test_explicit_install_creates_only_owned_entries_and_hash_pinned_generic_icon(self):
         report = self.install()
         self.assertEqual((report["status"], report["files_written"]), ("INSTALLED", 3))

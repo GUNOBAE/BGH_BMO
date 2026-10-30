@@ -80,14 +80,15 @@ def public_code(code, default="startup_failed"):
 class DesktopRuntime:
     def __init__(self, *, clock=time.monotonic, simulate=False, developer=False,
                  startup_timeout=15., greeting_timeout=30., disconnect_timeout=5., require_face_presented=False,
-                 character_life=False, presence_mode="off"):
+                 character_life=False, presence_mode="off", silent_start=False):
         if any(type(value) not in (float, int) or not 0 < value <= 120 for value in
                (startup_timeout, greeting_timeout, disconnect_timeout)):
             raise FeatureError("invalid_desktop_timeout")
         self.clock, self.simulate, self.developer = clock, simulate, developer
-        if type(character_life) is not bool or presence_mode not in ("normal", "quiet", "sleep", "off"):
+        if type(character_life) is not bool or type(silent_start) is not bool or presence_mode not in ("normal", "quiet", "sleep", "off"):
             raise FeatureError("invalid_character_configuration")
         self.character_life = character_life
+        self.silent_start = silent_start
         self._presence = None
         if character_life:
             from .character_presence import PresenceScheduler
@@ -272,6 +273,11 @@ class DesktopRuntime:
             return self.host.snapshot()
         return {"version": 1, "simulation": self.simulate, "engine_ready": False}
 
+    def game_resources(self):
+        """Only admitted immutable packaged assets, never a browser path read."""
+        resources = getattr(self.host, "game_resources", None)
+        return resources() if callable(resources) else {}
+
     def preview_frame(self, after=None):
         return self.host.preview_frame(after=after) if self.host else None
 
@@ -284,7 +290,15 @@ class DesktopRuntime:
     def video_bytes(self, video_id):
         return self.host.video_bytes(video_id) if self.host is not None else None
 
+    def open_video(self, video_id):
+        return self.host.open_video(video_id) if self.host is not None else None
+
     def queue_command(self, nonce, command):
+        if isinstance(command, HostControl) and command.action == 'volume' and self.host is not None:
+            if command.value['muted'] or command.value['level'] == 0:
+                with self._lock:
+                    self._output_mute_requested = True
+            return self.host.queue_command(nonce, command)
         if (isinstance(command, HostControl) and command.action in ("stop", "cancel")):
             with self._lock:
                 self._cancel.set()
@@ -419,8 +433,13 @@ class DesktopRuntime:
         if self.character_life:
             with self._lock:
                 requested, self._requested_presence_mode = self._requested_presence_mode, None
+                mute_output = getattr(self, '_output_mute_requested', False)
+                self._output_mute_requested = False
                 wake_off = getattr(self, "_wake_off_requested", False)
                 self._wake_off_requested = False
+            if mute_output:
+                self.cancel_greeting()
+                self._presence.cancel()
             if requested is not None:
                 self._presence.set_mode(requested)
                 if requested != "normal" and self._cutscene_category == "idle":
@@ -475,7 +494,11 @@ class DesktopRuntime:
             self.fail("face_ready_timeout")
         if self._ready and presented and not self._auto_attempted and self._phase != "error":
             self._auto_attempted = True
-            self._start_greeting()
+            if self.silent_start:
+                self._greeting_suppressed = True
+                self._state('ready', 'greeting_cancelled')
+            else:
+                self._start_greeting()
         if (self._ready and self._greeting_suppressed and self._worker is None
                 and self._phase != "error" and self._code != "greeting_completed"):
             self._state("ready", "greeting_cancelled")
@@ -546,12 +569,13 @@ class DesktopRuntime:
             snapshot = self.host.session.snapshot()
             plan = snapshot.get("character") or {}
             with self._lock:
-                if not self._input_waiting and self._presence.due(emotion=snapshot["emotion"], phase=snapshot["phase"],
+                if (not self._input_waiting and self.host.volume.snapshot()['effective_level'] > 0
+                        and self._presence.due(emotion=snapshot["emotion"], phase=snapshot["phase"],
                         activity_mode=self.host.modes.mode, conversation_busy=self.host.session.busy,
                         audio_busy=self.host.audio.owner is not None,
                         game_active=self.host.modes.mode in ("game", "game_menu"),
                         video_active=self.host.video.snapshot()["recording"],
-                        sensitive=bool(plan.get("sensitive_context"))):
+                        sensitive=bool(plan.get("sensitive_context")))):
                     if callable(getattr(self.greeting, "play_idle", None)):
                         self._start_greeting("idle")
                     else:

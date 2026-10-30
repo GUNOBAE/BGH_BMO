@@ -5,14 +5,15 @@ from types import MappingProxyType
 from typing import Mapping
 
 
-MODES = frozenset({"conversation", "game_menu", "game", "photo", "music"})
+MODES = frozenset({"conversation", "game_menu", "game", "photo", "video", "music"})
 STATUSES = frozenset({"accepted", "running", "succeeded", "failed", "cancelled",
                       "rejected", "unknown", "unsupported", "simulated"})
 READINESS = frozenset({"READY", "ASSET_PENDING", "RUNTIME_MISSING", "UNSUPPORTED", "UNVERIFIED"})
 GESTURES = frozenset({"none", "wave", "celebrate", "shrug"})
 INTENTS = frozenset({"open_game_menu", "launch_game", "exit_game", "return_to_face",
                      "play_song", "stop_media", "take_photo", "start_face_tracking",
-                     "stop_face_tracking", "arm_gesture"})
+                     "stop_face_tracking", "arm_gesture", "stop_arms", "start_video", "stop_video",
+                     "set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down"})
 
 
 def valid_id(value):

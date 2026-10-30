@@ -278,6 +278,10 @@ def check_saved_frame_target_loss(path, *, detector=None):
         now[0] = 100.+tracker.config.max_age+tracker.config.loss_grace+.1
         expired = tracker.expire(now[0], generation=1)
         FeatureHost._camera_target(host_view, expired)
+        returning = gaze.resolve(phase='idle', generation=1)
+        # Target ownership expires immediately; only its bounded 350 ms eye
+        # return remains. Advance this software clock, never sleep or reopen.
+        now[0] += .36
         default = gaze.resolve(phase='idle', generation=1)
         centered = (default['owner'] == 'idle' and default['x'] == 0. and default['y'] == 0.)
         passed = seeded.status == 'tracking' and initial['owner'] == 'camera' and expired.status == 'lost' and centered
@@ -285,6 +289,7 @@ def check_saved_frame_target_loss(path, *, detector=None):
             code='saved_frame_software_target_loss_verified' if passed else 'saved_frame_target_loss_failed',
             seeded_status=seeded.status, initial_gaze=initial, missing_status=missing.status,
             expired_status=expired.status, expired_target_x=expired.x, expired_target_y=expired.y,
+            loss_return_gaze=returning, center_return_seconds=.35,
             final_gaze=default, centered=centered, has_camera_owner=default['owner'] == 'camera')
     except FeatureError as error:
         return dict(report, status='BLOCKED', code=error.code)

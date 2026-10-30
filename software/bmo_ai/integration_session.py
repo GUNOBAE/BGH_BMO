@@ -138,12 +138,28 @@ class RepeatApp(ConversationApp):
 
 class FeedbackApp(ConversationApp):
     """Host-verified outcome on the same worker/player, without a brain call."""
+    cached_event = None
     def voice_input(self):
         self._check_cancelled()
         return self.voice.message
     def answer(self, message):
         self._check_cancelled()
         return message
+
+    def playback(self, answer):
+        if self.cached_event is None:
+            return super().playback(answer)
+        try:
+            self._check_cancelled()
+            def started():
+                self._check_cancelled()
+                self._state(FaceState.SPEAKING)
+                self._check_cancelled()
+            play = getattr(self.voice, 'play_event', None)
+            if not callable(play) or not play(self.cached_event, on_playback_start=started):
+                raise AudioPlaybackError('No individually approved event audio is available.', 'no_cached_event')
+        finally:
+            self.idle()
 
 
 class IntegrationSession:
@@ -169,6 +185,7 @@ class IntegrationSession:
         self._cleanup_done, self._cleanup_failed = Event(), False
         self._repeat = False
         self._feedback = None
+        self._feedback_event = None
         self._subtitle_mode, self._subtitle_previous = "off", "en"
         self._pending_subtitle_mode = None
         self._subtitle_generation = 0
@@ -292,6 +309,18 @@ class IntegrationSession:
         if not clean_caption(speech):
             return False
         return self._start_turn(message=speech, feedback=caption_pair(speech, captions))
+
+    def start_cached_event(self, event):
+        """Same worker and audio lifecycle, approved cache only, no brain/TTS.
+
+        The Host admits a current observed event and owns AudioFocus. A missing
+        asset reports no_cached_event rather than a silent successful action.
+        This utility playback does not replace the last dialogue repeat WAV.
+        """
+        from .voice_pack import EVENT_CANDIDATES
+        if event not in EVENT_CANDIDATES:
+            return False
+        return self._start_turn(message='Local voice event.', feedback={}, feedback_event=event)
 
     def confirmation_playback_event(self, kind, *, utterance_id, cues=()):
         """Scoped input ACK lip cues, without promoting a dialogue expression.
@@ -558,6 +587,8 @@ class IntegrationSession:
         app = FeedbackApp if self._feedback is not None else RepeatApp if self._repeat else IntegrationApp
         instance = app(self.brain, self.client, self.config,
                        face=SessionFace(), voice=self.voice, cancel_check=check)
+        if self._feedback_event is not None and isinstance(instance, FeedbackApp):
+            instance.cached_event = self._feedback_event
         if not self._repeat and self._feedback is None:
             instance.stage_reply = stage_reply
             instance.input_provider = self._turn_input
@@ -586,12 +617,13 @@ class IntegrationSession:
             return False
         return self._start_turn(repeat=True)
 
-    def _start_turn(self, *, message=None, repeat=False, input_provider=None, feedback=None):
+    def _start_turn(self, *, message=None, repeat=False, input_provider=None, feedback=None, feedback_event=None):
         if self._closed or self.worker.busy:
             return False
         self._repeat = repeat
         self._turn_subtitle_generation = self._subtitle_generation
         self._feedback = feedback
+        self._feedback_event = feedback_event
         self._active_captions = {}
         self._turn_input = input_provider
         with self._lock:

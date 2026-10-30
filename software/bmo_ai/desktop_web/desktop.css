@@ -21,3 +21,14 @@ body[data-photo-screen="true"] #subtitles{left:18px;right:190px;bottom:14px}
 #ptt-state{position:fixed;bottom:6px;right:8px;padding:3px 7px;background:#12363bc9;border-radius:4px;font-size:12px;z-index:2;pointer-events:none}
 #video-indicator{position:fixed;top:6px;right:8px;padding:4px 8px;background:#6d2424eb;border-radius:4px;font-size:13px;z-index:4;pointer-events:none}
 #camera-image{display:block;max-width:240px;max-height:160px}#video-dialog label{display:block;font-size:15px}#video-download{color:#9cffe3;display:block}
+#video-view{position:relative;min-height:0;overflow:hidden;display:grid;place-items:center}
+#video-preview-image,#video-review-player{display:block;width:100%;height:100%;min-height:0;object-fit:contain;grid-area:1/1}
+#video-countdown{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);font-size:112px;line-height:1;font-weight:800;color:#fff;text-shadow:0 3px 12px #000,0 0 4px #000;pointer-events:none}
+#video-actions{display:flex;gap:5px;align-items:center}#video-actions button{font-size:16px;margin:0;padding:8px}#video-review-download{font-size:14px;color:#9cffe3}
+#volume-controls{display:flex;align-items:center;gap:8px;margin:10px 5px;font-size:16px}#master-volume{width:160px}#master-volume-value{min-width:44px;font-variant-numeric:tabular-nums}
+#arms-status,#arms-result,#voice-readiness{max-width:580px;font-size:16px}#arms-gestures{display:flex;flex-wrap:wrap;max-width:600px}
+#voice-list{max-width:600px;font-size:15px}#voice-list select{font:inherit;max-width:320px;background:#20494e;color:inherit;padding:6px}
+.voice-candidate{border-top:1px solid #527b73;padding:8px 0}.voice-variant{padding:4px 0}.voice-variant p{font-size:12px;overflow-wrap:anywhere}.voice-variant label{display:block;font-size:14px}.voice-variant button{font-size:14px}
+#game-surface{position:fixed;inset:0;background:#0b2835;z-index:2;display:grid;grid-template-rows:minmax(0,1fr) 62px;justify-items:center;padding:6px;gap:4px}
+#game-canvas{display:block;width:min(100%,calc((100vh - 80px)*1.6667));height:100%;max-height:100%;object-fit:contain;image-rendering:pixelated}
+#game-toolbar{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;font-size:15px}#game-toolbar button{font-size:15px;margin:0;padding:8px}

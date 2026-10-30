@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from bmo_ai.features.camera.live import LivePicamera2Backend
+from bmo_ai.features.camera.backends import FixtureDetector
 from bmo_ai.features.camera.live_codec import validate_rgb_avi
 from bmo_ai.features.camera.live_video import LIVE_CONTRACT, LiveVideoRecorder
 from bmo_ai.features.contracts import FeatureError
@@ -37,8 +38,12 @@ class SupervisedCameraHostTests(unittest.TestCase):
         self.enterContext(patch.object(LivePicamera2Backend,'_close_uncertain',False))
         self.enterContext(patch('bmo_ai.features.camera.live.probe_camera_capability',return_value={
             'backend':'picamera2','available':True,'code':'camera_backend_available',
-            'modules':{},'opened':False,'physical_tested':False,'tracking_available':False,
+            'modules':{},'opened':False,'physical_tested':False,'tracking_available':True,
             'activation':'explicit_supervised_opt_in'}))
+        # Tracking lifecycle uses an explicit local position double. Missing
+        # OpenCV/NullDetector is a capability failure, never working tracking.
+        self.enterContext(patch('bmo_ai.features.camera.live.OpenCVFaceDetector',
+            side_effect=lambda **_kwargs: FixtureDetector(boxes=())))
         for target in ('subprocess.Popen','socket.socket.connect','socket.socket.connect_ex',
                        'bmo_ai.audio.record_wav','bmo_ai.audio.transcribe',
                        'bmo_ai.fish_tts.synthesize_wav','bmo_ai.local_piper.synthesize_wav',

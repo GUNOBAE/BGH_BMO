@@ -428,5 +428,19 @@ class BankPlayer:
             self.voice._speaking.release(); self.voice._idle.set()
 
     def cancel(self): self._cancelled.set()
+
+    def play_event(self, event, *, emit, cancel_check=None, on_playback_start=None):
+        """Use an imported approved pack without any live-synthesis fallback."""
+        if self._closed.is_set():
+            raise VoiceBankError('voice_bank_closed')
+        self._cancelled.clear()
+        def check():
+            if self._closed.is_set() or self._cancelled.is_set():
+                raise TurnCancelled()
+            self.voice._check(cancel_check)
+        completed = self.voice.play_event(event, emit=emit, cancel_check=check,
+                                         on_playback_start=on_playback_start)
+        return dict(completed=completed, source='organized_voice_pack', generated=False)
+
     def close(self):
         self._closed.set(); self.cancel(); return self.voice.close()

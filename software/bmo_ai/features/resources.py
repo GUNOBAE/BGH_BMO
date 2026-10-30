@@ -177,6 +177,7 @@ class GazeArbiter:
     def __init__(self, *, clock=time.monotonic):
         self.clock = clock
         self._offers = {}
+        self._camera_return = None
 
     def offer(self, owner, x, y, *, generation, expires_at):
         if (owner not in ("manual", "camera", "reaction", "dialogue", "idle")
@@ -185,12 +186,20 @@ class GazeArbiter:
             raise FeatureError("invalid_gaze")
         self._offers[owner] = GazeOffer(owner, max(-1., min(1., x)), max(-1., min(1., y)),
                                         float(expires_at), generation)
+        if owner == 'camera':
+            self._camera_return = None
 
-    def clear(self, owner=None):
+    def clear(self, owner=None, *, smooth=False, generation=None):
         if owner is None:
             self._offers.clear()
+            self._camera_return = None
         else:
-            self._offers.pop(owner, None)
+            prior = self._offers.pop(owner, None)
+            if owner == 'camera':
+                if smooth and prior is not None and generation == prior.generation:
+                    self._camera_return = (prior, self.clock())
+                elif not smooth:
+                    self._camera_return = None
 
     def resolve(self, *, phase, generation):
         valid = {name: value for name, value in self._offers.items()
@@ -200,6 +209,20 @@ class GazeArbiter:
             return {"owner": "native", "apply": False, "x": 0., "y": 0.}
         if selected is None:
             selected = ((valid.get("dialogue") if phase == "speaking" else None)
-                        or valid.get("camera") or valid.get("reaction") or valid.get("idle"))
+                        or valid.get("camera"))
+        # Target loss releases its local subject immediately, then gives only
+        # the eyes a short bounded return. Native listening/thinking and an
+        # explicit/manual gaze keep priority; no emotion or mouth is touched.
+        if selected is None and self._camera_return is not None:
+            prior, started = self._camera_return
+            elapsed = self.clock() - started
+            if prior.generation == generation and 0 <= elapsed < .35:
+                progress = elapsed / .35
+                remaining = 1 - progress * progress * (3 - 2 * progress)
+                return {"owner": "camera", "apply": True,
+                        "x": prior.x * remaining, "y": prior.y * remaining}
+            self._camera_return = None
+        if selected is None:
+            selected = valid.get("reaction") or valid.get("idle")
         return ({"owner": selected.owner, "apply": True, "x": selected.x, "y": selected.y}
                 if selected else {"owner": "idle", "apply": True, "x": 0., "y": 0.})

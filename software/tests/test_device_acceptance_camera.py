@@ -13,7 +13,7 @@ from bmo_ai.device_acceptance.camera import (CameraAcceptanceError, _SdkEvidence
     check_saved_frame_target_loss, run_camera_acceptance)
 from bmo_ai.features.camera.live import LivePicamera2Backend
 from bmo_ai.features.camera.codec import png_bytes
-from bmo_ai.features.camera.backends import OpenCVFaceDetector, _haar_cascade_path
+from bmo_ai.features.camera.backends import FixtureDetector, OpenCVFaceDetector, _haar_cascade_path
 from bmo_ai.features.camera.models import Frame
 from bmo_ai.features.camera.store import PhotoStore
 from bmo_ai.features.contracts import FeatureError
@@ -28,8 +28,12 @@ class CameraAcceptanceTests(unittest.TestCase):
         self.enterContext(patch.object(LivePicamera2Backend, "_close_uncertain", False))
         self.enterContext(patch("bmo_ai.features.camera.live.probe_camera_capability", return_value={
             "backend": "picamera2", "available": True, "code": "camera_backend_available",
-            "modules": {}, "opened": False, "physical_tested": False, "tracking_available": False,
+            "modules": {}, "opened": False, "physical_tested": False, "tracking_available": True,
             "activation": "explicit_supervised_opt_in"}))
+        # The offline component fixture has a detector that truthfully returns
+        # no boxes. It must not label an unavailable NullDetector as tracking.
+        self.enterContext(patch('bmo_ai.features.camera.live.OpenCVFaceDetector',
+            side_effect=lambda **_kwargs: FixtureDetector(boxes=())))
         for target in ("subprocess.Popen", "socket.socket.connect", "socket.socket.connect_ex",
                 "bmo_ai.cloud.create_client", "bmo_ai.private_credentials.resolve_credentials",
                 "bmo_ai.fish_tts.synthesize_wav", "bmo_ai.local_piper.synthesize_wav",
@@ -190,7 +194,7 @@ class CameraAcceptanceTests(unittest.TestCase):
         self.assertEqual(len(list((root/'videos').glob('*.avi'))), 1)
 
     def test_blocked_tracking_still_runs_one_video_and_persists_failure_details(self):
-        with patch('bmo_ai.features.camera.backends.NullDetector.detect', side_effect=FeatureError('face_detector_failed')):
+        with patch('bmo_ai.features.camera.backends.FixtureDetector.detect', side_effect=FeatureError('face_detector_failed')):
             report = self.run_fixture()
         self.assertEqual(report['status'], 'OFFLINE_PARTIAL', report)
         self.assertEqual(report['tracking'], 'BLOCKED')
@@ -228,6 +232,8 @@ class CameraAcceptanceTests(unittest.TestCase):
         self.assertTrue(report['detector_injected']);self.assertEqual(report['seed_source'], 'SOFTWARE_SEED_NOT_REAL_DETECTION')
         self.assertEqual((report['seeded_status'], report['missing_status'], report['expired_status']), ('tracking', 'grace', 'lost'))
         self.assertEqual(report['final_gaze'], {'owner': 'idle', 'apply': True, 'x': 0., 'y': 0.})
+        self.assertEqual(report['loss_return_gaze']['owner'], 'camera')
+        self.assertEqual(report['center_return_seconds'], .35)
         self.assertTrue(report['centered']);self.assertFalse(report['has_camera_owner'])
         self.assertFalse(report['actual_timing_measured']);self.assertFalse(report['physical_tracking_accepted'])
         self.assertEqual((report['camera_opens'], report['cloud_calls'], report['motion_commands'], report['files_written']), (0, 0, 0, 0))

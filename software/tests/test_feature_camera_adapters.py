@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from bmo_ai.features.camera import (CameraFeature, DemoBackend, Frame, OpenCVFaceDetector,
+from bmo_ai.features.camera import (CameraFeature, DemoBackend, FixtureDetector, Frame, OpenCVFaceDetector,
                                   PhotoStore, Picamera2Backend, png_bytes, validate_png)
 from bmo_ai.features.camera.broker import CameraBroker
 from bmo_ai.features.contracts import FeatureError
@@ -312,6 +312,7 @@ class AdapterTests(unittest.TestCase):
     def test_broker_propagates_cancel_to_sdk_and_feature_cannot_restore_dead_sensor(self):
         with tempfile.TemporaryDirectory() as directory:
             feature = CameraFeature(backend_factory=lambda: self.backend, clock=self.clock,
+                                   detector=FixtureDetector(boxes=()),
                                    store=PhotoStore(Path(directory) / 'photos'))
             self.addCleanup(feature.close)
             feature.set_tracking(True, generation=1)

@@ -12,6 +12,7 @@ cd "$bmo_character_dir/software"
 exec "$bmo_character_python" -B -m bmo_ai.desktop_app \
     --live --frontend chromium --screen-profile r10 \
     --character-life --ptt-microphone --ptt-vad-mode webrtc --ptt-trace \
+    --playable-games \
     --camera-supervised --photo-directory "$HOME/.local/share/bmo/photos" \
     --camera-video-supervised --video-directory "$HOME/.local/share/bmo/videos" \
     "$@"

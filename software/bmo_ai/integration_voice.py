@@ -11,6 +11,7 @@ import os
 from dataclasses import replace
 from pathlib import Path
 import struct
+import shutil
 import sys
 import time
 from threading import Event, Lock
@@ -24,6 +25,7 @@ from .expressive_voice import ExpressivePolicy
 from .integration_face import wav_cues
 from .pronunciation import spoken_bmo_name
 from .safe_playback import attenuated_copy, validate_gain
+from .master_volume import MasterVolume
 
 
 def _player_environment():
@@ -67,7 +69,7 @@ class IntegrationVoice:
     def __init__(self, config, client, *, emit, cancel_check=None, simulate=False,
                  fish_synthesizer=None, piper_synthesizer=None, player=None,
                  fish_api_key=None, expressive=False, character_life=False,
-                 on_timing=None, timing_clock=time.monotonic):
+                 on_timing=None, timing_clock=time.monotonic, volume=None):
         self.config = config
         self.client = client
         self.emit = emit
@@ -91,6 +93,67 @@ class IntegrationVoice:
         self.character_bank = None
         self.on_timing, self.timing_clock = on_timing, timing_clock
         self._expressive_policy = ExpressivePolicy()
+        self.volume = volume if isinstance(volume, MasterVolume) else MasterVolume(config.fish_gain)
+        self._provider_guard = Lock()
+        self._provider_code, self._provider_retry_at = None, None
+        self.event_pack = None
+        self._event_guard = Lock()
+        self._queued_event = None
+
+    def queue_event(self, event, request_id=None):
+        """Queue one current host event for the next owned utterance only.
+
+        The host remains responsible for actual-result admission. Pack absence
+        or missing per-SHA approval falls back to that utterance's existing TTS,
+        never to another clip/event or an automatic generation operation.
+        """
+        from .voice_pack import EVENT_CANDIDATES
+        if event not in EVENT_CANDIDATES or request_id is not None and (type(request_id) is not str or not 0 < len(request_id) <= 128):
+            raise audio.AudioValidationError('Choose a supported voice event.', 'voice_pack_event_invalid')
+        with self._event_guard:
+            self._queued_event = (event, request_id)
+
+    def discard_queued_event(self):
+        with self._event_guard:
+            self._queued_event = None
+
+    def _take_event_asset(self, check):
+        from .voice_bank import VoiceBankError
+        with self._event_guard:
+            queued, self._queued_event = self._queued_event, None
+        if queued is None or self.event_pack is None:
+            return None
+        try:
+            return self.event_pack.load_event(queued[0], cancel_check=check)
+        except VoiceBankError:
+            return None
+
+    def provider_snapshot(self):
+        """Safe capability only; never validates or reveals a credential value."""
+        with self._provider_guard:
+            code, retry_at = self._provider_code, self._provider_retry_at
+        remaining = max(0., retry_at-time.monotonic()) if retry_at is not None else None
+        blocked = code in ('fish_authentication', 'fish_balance', 'fish_permission', 'fish_model') or bool(remaining)
+        alsa_codes = ('audio_timeout', 'device_unavailable', 'tool_unavailable', 'audio_process_failed',
+                      'audio_storage_failed', 'audio_cleanup_failed', 'audio_volume_failed', 'alsa_playback_failed')
+        return dict(provider='alsa' if code in alsa_codes else 'fish', code=code or 'ready', blocked=blocked,
+                    retry_after_seconds=round(remaining, 2) if remaining is not None else None,
+                    recheck='explicit_reset_or_restart', automatic_retry=False)
+
+    def reset_provider_error(self):
+        """Explicit local re-admission after configuration/restart; no API call."""
+        with self._provider_guard:
+            self._provider_code, self._provider_retry_at = None, None
+        return self.provider_snapshot()
+
+    def _provider_failure(self, code, *, source='fish'):
+        known = frozenset(('fish_authentication', 'fish_balance', 'fish_permission', 'fish_model',
+            'fish_rate_limit', 'fish_connection', 'fish_timeout', 'fish_server', 'fish_request',
+            'audio_timeout', 'audio_download_timeout', 'device_unavailable', 'tool_unavailable',
+            'audio_process_failed', 'audio_storage_failed', 'audio_cleanup_failed', 'audio_volume_failed'))
+        with self._provider_guard:
+            self._provider_code = code if code in known else 'alsa_playback_failed' if source == 'alsa' else 'fish_request'
+            self._provider_retry_at = time.monotonic()+30. if code == 'fish_rate_limit' else None
 
     def _timing(self, stage, code, **metrics):
         if self.on_timing is not None:
@@ -130,6 +193,8 @@ class IntegrationVoice:
         with self._cache_lock:
             previous, self._cache = self._cache, None
             self._cache_generation += 1
+            with self._event_guard:
+                self._queued_event = None
         if previous is not None:
             audio._discard(previous["path"], suppress=True)
 
@@ -141,6 +206,8 @@ class IntegrationVoice:
         """
         with self._cache_lock:
             self._cache_generation += 1
+            with self._event_guard:
+                self._queued_event = None
             return cancel() if cancel is not None else None
 
     def _check(self, cancellation):
@@ -179,6 +246,9 @@ class IntegrationVoice:
         if self.config.tts_provider != "fish":
             raise audio.AudioValidationError(
                 "The integration voice profile requires Fish Audio.", "invalid_tts_provider")
+        readiness = self.provider_snapshot()
+        if readiness['blocked']:
+            raise audio.AudioSynthesisError('Fish Audio requires operator review before another request.', readiness['code'])
         spoken = spoken_bmo_name(text, self.config.fish_name_mode)
         if delivery is not None:
             spoken = delivery.text
@@ -189,11 +259,14 @@ class IntegrationVoice:
         timing = ({"on_timing": self.on_timing, "clock": self.timing_clock}
                   if self.on_timing is not None and self._fish_synthesizer is None else {})
         try:
-            return Path(synthesize(spoken, model=self.config.fish_model,
+            result = Path(synthesize(spoken, model=self.config.fish_model,
                                    reference_id=self.config.fish_voice_id,
                                    timeout=self.config.timeout, cancel_check=check,
-                                   **credentials, **timing)), "fish", notice
-        except audio.AudioSynthesisError:
+                                   **credentials, **timing))
+            self.reset_provider_error()
+            return result, "fish", notice
+        except audio.AudioSynthesisError as error:
+            self._provider_failure(error.code)
             check()
             if not self.config.offline_voice:
                 raise
@@ -284,7 +357,20 @@ class IntegrationVoice:
             if output is not None:
                 audio._discard(output, suppress=True)
 
-    def speak(self, text, *, on_playback_start=None, _force_piper=False, _notice=False):
+    def play_event(self, event, *, emit=None, cancel_check=None, on_playback_start=None):
+        """Approved-cache-only entry for idle/utility; never falls back to TTS."""
+        previous_emit, previous_check = self.emit, self.cancel_check
+        try:
+            if emit is not None:
+                self.emit = emit
+            if cancel_check is not None:
+                self.cancel_check = cancel_check
+            self.queue_event(event)
+            return self.speak('Local voice event.', on_playback_start=on_playback_start, _event_only=True) is True
+        finally:
+            self.emit, self.cancel_check = previous_emit, previous_check
+
+    def speak(self, text, *, on_playback_start=None, _force_piper=False, _notice=False, _event_only=False):
         if not isinstance(text, str):
             raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
         if not text.strip():
@@ -298,6 +384,8 @@ class IntegrationVoice:
         check = lambda: self._check(cancellation)
         raw = output = None
         reaction_asset = reaction_clip = None
+        event_asset = None
+        playback_baked_gain = self.config.fish_gain
         cached_reaction = False
         delivery = None
         metadata = dict(self.expression_metadata) if type(self.expression_metadata) is dict else {}
@@ -305,19 +393,32 @@ class IntegrationVoice:
         try:
             check()
             validate_gain(self.config.fish_gain)
-            if self.expressive and not _force_piper and not _notice:
+            event_asset = self._take_event_asset(check) if not _force_piper and not _notice else None
+            if _event_only and event_asset is None:
+                return False
+            if event_asset is not None:
+                # Exact source PCM, provenance and clip text; do not pretend a
+                # Drama3 cache came from the live free synthesis configuration.
+                output = audio._new_wav(audio.AudioPlaybackError)
+                shutil.copyfile(event_asset.path, output)
+                source, notice = 'voice_pack', False
+                playback_baked_gain = event_asset.baked_gain
+                metadata = dict(metadata, caption_payload={'en': event_asset.text, 'ko': ''})
+                metadata.pop('character_plan', None)
+            if event_asset is None and self.expressive and not _force_piper and not _notice:
                 delivery = self._expressive_policy.plan(
                     spoken_bmo_name(text, self.config.fish_name_mode),
                     metadata, model=self.config.fish_model)
                 reaction_asset, reaction_clip, delivery = self._cached_reaction(
                     spoken_bmo_name(text, self.config.fish_name_mode), metadata, delivery, check)
-            settings = {} if delivery is None else {"delivery": delivery}
-            raw, source, notice = self._synthesize(text, check, force_piper=_force_piper,
-                                                  notice=_notice, **settings)
-            # A synchronous provider may finish after cancellation. Discard its
-            # late result before any prepared/start event or process creation.
-            check()
-            output = attenuated_copy(raw, self.config.fish_gain)
+            if event_asset is None:
+                settings = {} if delivery is None else {"delivery": delivery}
+                raw, source, notice = self._synthesize(text, check, force_piper=_force_piper,
+                                                      notice=_notice, **settings)
+                # A synchronous provider may finish after cancellation. Discard
+                # late results before any prepared/start event or player spawn.
+                check()
+                output = attenuated_copy(raw, self.config.fish_gain)
             if reaction_asset is not None:
                 joined = (self._compose_reaction(reaction_asset, output, check)
                           if source in ("fish", "synthetic") and not notice else None)
@@ -338,10 +439,14 @@ class IntegrationVoice:
                 expression.update(cached_reaction=cached_reaction,
                                   cached_reaction_id=reaction_clip if cached_reaction else None)
             info = audio._wav_info(output)
-            cues = tuple(dict(cue) for cue in wav_cues(output))
+            cues = event_asset.cues if event_asset is not None else tuple(dict(cue) for cue in wav_cues(output))
+            if event_asset is not None:
+                expression.update(cache_source_model=event_asset.source_model,
+                                  voice_pack_candidate=event_asset.candidate_id)
             if source == "fish":
                 self._timing("fish", "audio_ready")
-            self._play(output, source, info, cues, check, emit, on_playback_start, expression)
+            self._play(output, source, info, cues, check, emit, on_playback_start, expression,
+                       baked_gain=playback_baked_gain)
             check()
             if delivery is not None and source == "fish":
                 self._expressive_policy.completed(delivery)
@@ -355,12 +460,15 @@ class IntegrationVoice:
             previous = None
             with self._cache_lock:
                 check()
-                if generation == self._cache_generation and not self._closed.is_set():
+                if generation == self._cache_generation and not self._closed.is_set() and not _event_only:
                     previous, self._cache = self._cache, dict(
-                        path=output, source=source, info=info, cues=cues, expression=expression)
+                        path=output, source=source, info=info, cues=cues, expression=expression,
+                        baked_gain=playback_baked_gain)
                     output = None
             if previous is not None:
                 audio._discard(previous["path"], suppress=True)
+            if event_asset is not None:
+                return True
         except (TurnCancelled, KeyboardInterrupt):
             emit("cancelled", source=source)
             raise
@@ -370,13 +478,15 @@ class IntegrationVoice:
         finally:
             if reaction_asset is not None:
                 reaction_asset.close()
+            if event_asset is not None:
+                event_asset.close()
             for path in (output, raw):
                 if path is not None:
                     audio._discard(Path(path), suppress=True)
             self._speaking.release()
             self._idle.set()
 
-    def _play(self, output, source, info, cues, check, emit, on_playback_start, expression):
+    def _play(self, output, source, info, cues, check, emit, on_playback_start, expression, *, baked_gain=None):
         """The only player/event path, shared by a new utterance and repeat."""
         check()
         emit("prepared", path=str(output), source=source,
@@ -391,14 +501,20 @@ class IntegrationVoice:
             check()
             emit("started", path=str(output), source=source, **expression)
 
-        if self.simulate:
-            command = [sys.executable, "-c", "import time; time.sleep(0.8)"]
-        else:
-            command = ["aplay", "-q", *audio._device_args(self.config.speaker_device), str(output)]
-        player = self._player or audio._run
-        player(command, timeout=info["duration_seconds"] + 10,
-               error_type=audio.AudioPlaybackError, on_start=started,
-               cancel_check=check, env=_player_environment())
+        with self.volume.prepare(output, baked_gain=self.config.fish_gain if baked_gain is None else baked_gain) as played:
+            check()
+            if self.simulate:
+                command = [sys.executable, "-c", "import time; time.sleep(0.8)"]
+            else:
+                command = ["aplay", "-q", *audio._device_args(self.config.speaker_device), str(played)]
+            player = self._player or audio._run
+            try:
+                player(command, timeout=info["duration_seconds"] + 10,
+                       error_type=audio.AudioPlaybackError, on_start=started,
+                       cancel_check=check, env=_player_environment())
+            except audio.AudioPlaybackError as error:
+                self._provider_failure(error.code, source='alsa')
+                raise
         check()
         emit("ended", source=source)
 
@@ -421,7 +537,8 @@ class IntegrationVoice:
                 return False
             source = cached["source"]
             self._play(cached["path"], source, cached["info"], cached["cues"],
-                       check, emit, on_playback_start, cached["expression"])
+                       check, emit, on_playback_start, cached["expression"],
+                       baked_gain=cached.get('baked_gain', self.config.fish_gain))
             return True
         except (TurnCancelled, KeyboardInterrupt):
             emit("cancelled", source=source)

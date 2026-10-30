@@ -218,6 +218,17 @@ class CachedPresence:
         check = self._enter(cancel_check)
         try:
             check()
+            pack = getattr(getattr(self.bank_player, 'voice', None), 'event_pack', None)
+            if pack is not None:
+                try:
+                    chosen = pack.select_event('idle')
+                except VoiceBankError:
+                    chosen = None
+                if chosen is not None:
+                    result = self.bank_player.play_event('idle', emit=emit, cancel_check=check,
+                                                        on_playback_start=on_playback_start)
+                    if result.get('completed'):
+                        return result
             try:
                 clip = self.bank.select("idle", emotion=emotion, context=context)
                 check()

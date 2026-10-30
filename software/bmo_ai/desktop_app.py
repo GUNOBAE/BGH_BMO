@@ -1,5 +1,6 @@
 """Manual BMO desktop program: existing Python engine + owned Chromium window."""
 import argparse
+from dataclasses import replace
 import fcntl
 import json
 import os
@@ -28,15 +29,25 @@ def parser():
                    help="auto selects optional system Qt when present; Chromium remains the explicit fallback")
     p.add_argument("--developer", action="store_true", help="enable /developer and hidden Ctrl+Alt+D")
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
-    p.add_argument("--video-directory", type=Path, help="user-selected private local synthetic-video storage; live camera video remains denied")
+    p.add_argument('--playable-games', action='store_true', help='enable the verified bundled original games in this app')
+    p.add_argument("--video-directory", type=Path, help="private local video storage; Character Life records verified silent H264/MP4 when camera video is opted in")
     p.add_argument("--music-directory", type=Path, help="explicit reviewed private WAV library; live playback additionally needs --music-supervised")
     p.add_argument("--music-supervised", action="store_true", help="explicit opt-in to requested local WAV playback; requires --live and --music-directory")
     p.add_argument("--usb-gamepad", action="store_true", help="opt-in browser USB gamepad routing in game/menu modes only; never starts PTT or arms")
     p.add_argument("--no-startup-chime", action="store_true", help="skip the original offline boot sound; never changes the approved Aaron greeting")
+    p.add_argument('--silent-start', action='store_true', help='explicit smoke mode: skip startup chime AND cached greeting without changing approved assets')
+    p.add_argument('--no-feedback-voice', action='store_true', help='explicit local camera check: visual preparation/results, no photo/video feedback synthesis or playback')
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--status", action="store_true")
     p.add_argument("--diagnose-startup", action="store_true", help="read-only session metadata, original face SHA and lock check; no launch or repair")
     p.add_argument("--install-desktop", action="store_true", help="explicit user installation, never autostart")
+    p.add_argument('--desktop-install-target', choices=('desktop-and-applications', 'applications-only'),
+        default='desktop-and-applications', help='candidate applications-only avoids changing an existing Desktop')
+    p.add_argument('--voice-pack-directory', type=Path, help='private imported organized v8 voice pack; approval remains per SHA')
+    p.add_argument('--request-cooldown', type=float, default=0, help='optional seconds between admitted conversations; personal default unchanged')
+    p.add_argument('--session-request-limit', type=int, help='optional admitted conversation limit for this process')
+    p.add_argument('--estimated-request-cost', type=float, help='operator supplied accounting coefficient; not provider billing')
+    p.add_argument('--estimated-session-cost-limit', type=float, help='optional estimate cap; requires the operator coefficient')
     p.add_argument("--screen-profile", choices=tuple(SCREEN_PROFILES), default="r10")
     p.add_argument("--face-file", type=Path)
     p.add_argument("--baseline", action="store_true")
@@ -96,9 +107,11 @@ def public_plan(args):
         "screen_profile": args.screen_profile, "screen_sha256": SCREEN_PROFILES[args.screen_profile]["sha256"],
         "window": "windowed" if args.windowed else "kiosk", "developer_enabled": args.developer,
         "frontend": args.frontend, "native_pi_verified": "NOT_RUN",
-        "startup_sound": {"enabled": not args.no_startup_chime,
+        "startup_sound": {"enabled": not args.no_startup_chime and not args.silent_start,
                           "source": "original_local_pcm", "automatic_synthesis": False},
-        "greeting": {"text": GREETING_TEXT, "asset_version": "english-v3", "source": "approved_private_cache", "automatic_synthesis": False},
+        "greeting": {"text": GREETING_TEXT, "asset_version": "english-v3", "source": "approved_private_cache", "automatic_synthesis": False,
+                     'startup_playback': not args.silent_start},
+        'camera_feedback_voice': not args.no_feedback_voice,
         "configuration": effective_config(config, emotion_mode="auto"),
         "credentials_accessed": False, "ports_opened": False, "processes_started": False,
         "desktop_installed": False, "autostart": False, "physical_features_enabled": False,
@@ -221,9 +234,16 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                     character_options["ptt_vad_mode"] = args.ptt_vad_mode
                 if args.wake_question_wait != 5.:
                     character_options["wake_question_wait"] = args.wake_question_wait
-                for key in ("voice_bank_directory", "presence_mode", "wake_model_manifest"):
+                for key in ("voice_bank_directory", 'voice_pack_directory', "presence_mode", "wake_model_manifest"):
                     value = getattr(args, key)
                     if value is not None:
+                        character_options[key] = value
+                for key in ('silent_start', 'no_feedback_voice'):
+                    if getattr(args, key):
+                        character_options[key] = True
+                for key in ('request_cooldown', 'session_request_limit', 'estimated_request_cost', 'estimated_session_cost_limit'):
+                    value = getattr(args, key)
+                    if value is not None and (key != 'request_cooldown' or value != 0):
                         character_options[key] = value
                 install_settings["character_options"] = character_options
             install_settings["frontend"] = args.frontend
@@ -231,6 +251,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 install_settings["ptt_microphone"] = True
             if args.usb_gamepad:
                 install_settings["usb_gamepad"] = True
+            if args.playable_games:
+                install_settings['playable_games'] = True
+            if args.desktop_install_target != 'desktop-and-applications':
+                install_settings['install_target'] = args.desktop_install_target
             if args.music_directory is not None:
                 install_settings["music_directory"] = args.music_directory
             if args.music_supervised:
@@ -303,7 +327,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         app = DesktopRuntime(clock=clock, simulate=args.simulate, developer=args.developer,
                              startup_timeout=args.startup_timeout, greeting_timeout=args.greeting_timeout,
                              require_face_presented=True, character_life=args.character_life,
-                             presence_mode=args.presence_mode or ("normal" if args.idle_voice else "off"))
+                             presence_mode=args.presence_mode or ("normal" if args.idle_voice else "off"),
+                             **({'silent_start': True} if args.silent_start else {}))
         for number in (signal.SIGTERM, signal.SIGINT):
             try:
                 previous_handlers[number] = signal.signal(number, lambda *_: app._exit.set())
@@ -343,6 +368,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "emotion_arms": args.emotion_arms}
             if args.character_life:
                 settings["character_life"] = True
+            if args.no_feedback_voice:
+                settings['photo_feedback'] = False
             if args.one_turn_diagnostic is not None:
                 settings["one_turn_diagnostic"] = args.one_turn_diagnostic
             if args.wake_word:
@@ -356,6 +383,14 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 settings["music_supervised"] = True
             if args.usb_gamepad:
                 settings["usb_gamepad"] = True
+            if args.playable_games:
+                settings['playable_games'] = True
+            if args.voice_pack_directory is not None:
+                settings['voice_pack_directory'] = args.voice_pack_directory
+            for key in ('request_cooldown', 'session_request_limit', 'estimated_request_cost', 'estimated_session_cost_limit'):
+                value = getattr(args, key)
+                if value is not None and (key != 'request_cooldown' or value != 0):
+                    settings[key] = value
             if args.camera_supervised:
                 settings.update(camera_supervised=True, photo_directory=args.photo_directory,
                                 camera_video_supervised=args.camera_video_supervised)
@@ -366,38 +401,80 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             if args.live:
                 from .private_credentials import resolve_credentials
                 from .cloud import create_client
-                credentials = (credential_resolver or (lambda: resolve_credentials(interactive=False)))()
-                client = (client_factory or create_client)(config, api_key=credentials.openai_api_key)
-                settings.update(client=client, fish_api_key=credentials.fish_api_key)
+                from .private_credentials import CredentialError
+                from .cloud import CloudError
+                cloud_setup_error = None
+                try:
+                    credentials = (credential_resolver or (lambda: resolve_credentials(interactive=False)))()
+                    client = (client_factory or create_client)(config, api_key=credentials.openai_api_key)
+                    settings.update(client=client, fish_api_key=credentials.fish_api_key)
+                except (CredentialError, CloudError) as error:
+                    from .unavailable_provider import UnavailableCloudClient
+                    client = UnavailableCloudClient(error.code)
+                    cloud_setup_error = client.code
+                    settings['client'] = client
+            else:
+                cloud_setup_error = None
+            arm_setup_error = None
             if args.arms_supervised:
-                from .features.motion.arm_serial_posix_v2 import OwnedCdcDataPort
-                if args.arm_legacy_bridge:
-                    from .features.motion.legacy_host import (
-                        LegacyArmLink, LegacyMotionFeature, validate_legacy_install)
-                    firmware_root = (Path(__file__).resolve().parents[2]
-                                     / "firmware/staging/bmo_arm_legacy_bridge_v1")
-                    validate_legacy_install(firmware_root, args.arm_reviewed_code_sha)
-                    arm_port = OwnedCdcDataPort().open()
-                    arm_host = LegacyArmLink(arm_port, motor_permission=lambda:
-                        bool(args.arm_power_off_ready and app is not None and app._ready
-                             and not app.exiting and not app.failed))
-                    settings["motion"] = LegacyMotionFeature(arm_host, clock=clock)
-                else:
-                    from .features.motion.arm_serial_posix_v2 import validate_reviewed_install
-                    from .features.motion.arm_host_v2 import ArmHostV2, BoundedCdcExchange
-                    from .features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
-                    from .features.motion.live_feature_v2 import LiveArmMotionFeatureV2
-                    source_core = (Path(__file__).resolve().parents[2]
-                                   / "firmware/staging/bmo_arm_supervised_v1/safe_arm_core.py")
-                    validate_reviewed_install(source_core, args.arm_reviewed_code_sha)
-                    arm_port = OwnedCdcDataPort().open()
-                    arm_host = ArmHostV2(
-                        BoundedCdcExchange(arm_port), profile=LEGACY_REVIEWED_LIMITS,
-                        clock=clock, power_cutoff_confirmed=lambda: args.arm_power_off_ready,
-                        operator_present=lambda: bool(app is not None and app._ready
-                                                      and not app.exiting and not app.failed))
-                    settings["motion"] = LiveArmMotionFeatureV2(arm_host, clock=clock)
+                try:
+                    from .features.motion.arm_serial_posix_v2 import OwnedCdcDataPort
+                    if args.arm_legacy_bridge:
+                        from .features.motion.legacy_host import (
+                            LegacyArmLink, LegacyMotionFeature, validate_legacy_install)
+                        firmware_root = (Path(__file__).resolve().parents[2]
+                                         / "firmware/staging/bmo_arm_legacy_bridge_v1")
+                        validate_legacy_install(firmware_root, args.arm_reviewed_code_sha)
+                        arm_port = OwnedCdcDataPort().open()
+                        arm_host = LegacyArmLink(arm_port, motor_permission=lambda:
+                            bool(args.arm_power_off_ready and app is not None and app._ready
+                                 and not app.exiting and not app.failed))
+                        settings["motion"] = LegacyMotionFeature(arm_host, clock=clock)
+                    else:
+                        from .features.motion.arm_serial_posix_v2 import validate_reviewed_install
+                        from .features.motion.arm_host_v2 import ArmHostV2, BoundedCdcExchange
+                        from .features.motion.gesture_rules_v2 import LEGACY_REVIEWED_LIMITS
+                        from .features.motion.live_feature_v2 import LiveArmMotionFeatureV2
+                        source_core = (Path(__file__).resolve().parents[2]
+                                       / "firmware/staging/bmo_arm_supervised_v1/safe_arm_core.py")
+                        validate_reviewed_install(source_core, args.arm_reviewed_code_sha)
+                        arm_port = OwnedCdcDataPort().open()
+                        arm_host = ArmHostV2(
+                            BoundedCdcExchange(arm_port), profile=LEGACY_REVIEWED_LIMITS,
+                            clock=clock, power_cutoff_confirmed=lambda: args.arm_power_off_ready,
+                            operator_present=lambda: bool(app is not None and app._ready
+                                                          and not app.exiting and not app.failed))
+                        settings["motion"] = LiveArmMotionFeatureV2(arm_host, clock=clock)
+                except Exception as error:
+                    from .features.contracts import FeatureError
+                    from .features.motion.legacy_host import LegacyArmError
+                    from .features.motion.arm_serial_posix_v2 import ArmPortUnavailable
+                    known = {'reviewed_sha_required', 'original_source_mismatch', 'bridge_sha_or_dependency_mismatch',
+                        'bridge_unavailable', 'dedicated_data_disabled', 'invalid_reviewed_template', 'physical_supervision_required',
+                        'arm_reviewed_hash_required', 'arm_firmware_template_unreviewed', 'arm_legacy_mapping_unverified',
+                        'arm_dedicated_data_disabled', 'arm_firmware_hash_mismatch', 'arm_firmware_core_mismatch',
+                        'arm_data_port_busy_or_unavailable', 'arm_data_port_identity_mismatch', 'arm_data_port_unavailable',
+                        'arm_port_already_open', 'arm_unapproved_serial_port'}
+                    code = getattr(error, 'code', None)
+                    code = code if type(code) is str else None
+                    arm_setup_error = (code if isinstance(error, FeatureError) else
+                        code if code in known and code.startswith('arm_') else 'arm_'+code
+                        if isinstance(error, (LegacyArmError, ArmPortUnavailable)) and code in known else 'arm_setup_failed')
+                    if arm_port is not None:
+                        try:
+                            arm_port.close()
+                            arm_port = None
+                        except Exception:
+                            arm_setup_error = 'arm_cleanup_unverified'
+                    settings['runtime'] = replace(settings['runtime'], arms_supervised=False)
+                    settings.pop('motion', None)
             host = host_factory(**settings)
+            if cloud_setup_error:
+                host._cloud_setup_error = cloud_setup_error
+                host._refresh()
+            if arm_setup_error:
+                host._arm_setup_error = arm_setup_error
+                host._refresh()
             app.set_host(host, None)  # Retain ownership even if greeting setup fails.
             stage = "greeting_init"
             if greeting_factory is not None:
@@ -424,6 +501,15 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 bank = VoiceBank(bank_directory, config, simulate=args.simulate)
                 greeting = CachedPresence(bank, BankPlayer(config, bank, simulate=args.simulate), greeting)
                 host.session.voice.character_bank = bank
+                bank_player = getattr(greeting, 'bank_player', None)
+                if bank_player is not None:
+                    bank_player.voice.volume = host.volume
+                    bank_player.voice.event_pack = host.voice_pack
+                fixed_greeting = getattr(greeting, 'greeting_player', None)
+                if fixed_greeting is not None:
+                    fixed_greeting.voice.volume = host.volume
+            elif hasattr(greeting, 'voice'):
+                greeting.voice.volume = host.volume
             app.greeting = greeting
         except Exception as error:
             code = getattr(error, "code", "engine_startup_failed")

@@ -1,5 +1,6 @@
 """Local media admission with a silent fake backend and an empty default list."""
 from collections import deque
+from contextlib import ExitStack
 import hashlib
 import math
 import os
@@ -56,45 +57,127 @@ class FakeMediaBackend:
 class AlsaWavBackend:
     """Opt-in WAV process adapter; disabled until separate volume review.
 
-    No Fish gain is inherited. No pause/seek is advertised. Process start and
+    No Fish gain is inherited. Pause/resume target only the owned child group;
+    no seek is advertised. Process start and
     the monotonic position are approximations, not proof of audible output.
     The verified descriptor is inherited by this owned child, avoiding a second
     path lookup after hashing. Automatic tests never invoke the real player.
     """
     simulated = False
     supported_types = frozenset({"audio/wav"})
-    capabilities = ("stop",)
+    @property
+    def capabilities(self):
+        # The production owned runner implements both operations. Alternate
+        # injected/deployment adapters may explicitly provide only stop; do
+        # not advertise or invoke methods they do not implement.
+        pausable = self._runner is None or all(
+            callable(getattr(self._runner, name, None)) for name in ('pause', 'resume'))
+        return ('stop', 'pause', 'resume') if pausable else ('stop',)
 
-    def __init__(self, *, device=None, enabled=False, volume_reviewed=False, clock=time.monotonic):
+    def __init__(self, *, device=None, enabled=False, volume_reviewed=False, clock=time.monotonic,
+                 volume=None):
         from ...audio import _device_args
         if type(enabled) is not bool or type(volume_reviewed) is not bool:
             raise FeatureError("invalid_media_backend")
         self.device_args = tuple(_device_args(device))
         self.verified, self.clock = enabled and volume_reviewed, clock
         self._runner = self._started = None
+        self._paused_at = None
+        self._paused_seconds = 0.
+        self.volume = volume
+        self._volume_stack = None
+        self._source_handle = None
+        self._position_base = 0.
+        self._terminal = None
 
     def start(self, handle):
+        return self._start(handle)
+
+    def _start(self, handle, *, position=0.):
         if not self.verified:
             raise FeatureError("media_backend_unverified")
         if self._runner is not None:
             raise FeatureError("media_busy")
         from ..games import OwnedProcessRunner
-        self._runner = OwnedProcessRunner(
-            ("aplay", "-q", *self.device_args, f"/proc/self/fd/{handle.fd}"),
-            verified=True, ready_probe=lambda process: True, pass_fds=(handle.fd,))
-        self._runner.start(handle.asset)
-        self._started = self.clock()
+        self._volume_stack = ExitStack()
+        try:
+            descriptor = handle.fd
+            if self.volume is not None:
+                # The verified descriptor is still owned by MediaFeature. A
+                # volume copy may read that descriptor, never re-resolve the
+                # user's asset path after its integrity check.
+                played = self._volume_stack.enter_context(
+                    self.volume.prepare_music_fd(descriptor, start_seconds=position))
+                descriptor = os.open(played, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                self._volume_stack.callback(os.close, descriptor)
+            self._runner = OwnedProcessRunner(
+                ("aplay", "-q", *self.device_args, f"/proc/self/fd/{descriptor}"),
+                verified=True, ready_probe=lambda process: True, pass_fds=(descriptor,))
+            self._runner.start(handle.asset)
+            self._started = self.clock()
+            self._paused_at = None
+            self._paused_seconds = 0.
+            self._source_handle = handle
+            self._position_base = position
+            self._terminal = None
+        except BaseException:
+            self.stop()
+            raise
 
     def position(self):
-        return max(0, self.clock() - self._started) if self._started is not None else 0
+        now = self._paused_at if self._paused_at is not None else self.clock()
+        return self._position_base + max(0, now - self._started - self._paused_seconds) if self._started is not None else 0
+
+    def pause(self):
+        if self._runner is None:
+            raise FeatureError("media_inactive")
+        if self._paused_at is None:
+            self._runner.pause()
+            self._paused_at = self.clock()
+
+    def resume(self):
+        if self._runner is None:
+            raise FeatureError("media_inactive")
+        if self._paused_at is not None:
+            self._runner.resume()
+            self._paused_seconds += max(0, self.clock() - self._paused_at)
+            self._paused_at = None
 
     def poll(self):
-        return self._runner.poll() if self._runner else None
+        return self._terminal or (self._runner.poll() if self._runner else None)
+
+    def volume_changed(self):
+        """Replace only the owned output at its current PCM sample position.
+
+        No provider request, OS mixer mutation or original-file edit occurs.
+        Stop completes before the newly scaled private copy starts, so there
+        is never simultaneous old/new output. Pause remains paused.
+        """
+        if self._runner is None or self.volume is None:
+            return False
+        handle, position = self._source_handle, self.position()
+        paused = self._paused_at is not None
+        self.stop()
+        if handle.duration is not None and position >= handle.duration:
+            self._terminal = "ended"
+            return False
+        self._start(handle, position=position)
+        if paused:
+            self.pause()
+        return True
 
     def stop(self):
         if self._runner is not None:
             self._runner.stop()
             self._runner = self._started = None
+            self._paused_at = None
+            self._paused_seconds = 0.
+        if self._volume_stack is not None:
+            self._volume_stack.close()
+            self._volume_stack = None
+        self._source_handle = None
+        self._position_base = 0.
+        self._terminal = None
 
     close = stop
 

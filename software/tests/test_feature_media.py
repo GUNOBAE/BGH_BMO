@@ -1,11 +1,13 @@
 """Generated local PCM and silent backends; no songs, API or audio devices."""
 from dataclasses import asdict, replace
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+import wave
 from unittest.mock import Mock, patch
 
 from bmo_ai.features.contracts import FeatureError
@@ -245,9 +247,81 @@ class MediaTests(unittest.TestCase):
         self.assertEqual(factory.call_args.args[0][-1], f"/proc/self/fd/{descriptor}")
         self.assertEqual(factory.call_args.kwargs["pass_fds"], (descriptor,))
         self.assertNotIn("gain", factory.call_args.kwargs)
-        self.assertEqual(feature.pause().status, "unsupported")
+        self.now += .2
+        self.assertEqual(feature.pause().status, "succeeded")
+        runner.pause.assert_called_once()
+        paused = backend.position()
+        self.now += 3
+        self.assertEqual(backend.position(), paused)
+        self.assertEqual(feature.resume().status, "succeeded")
+        runner.resume.assert_called_once()
+        self.now += .1
+        self.assertAlmostEqual(backend.position(), paused + .1)
         feature.stop()
         runner.stop.assert_called_once()
+
+    def test_music_master_volume_scales_verified_fd_without_mutating_asset_and_retires_copy(self):
+        from bmo_ai.master_volume import MasterVolume
+        volume = MasterVolume(level=.25)
+        backend = AlsaWavBackend(enabled=True, volume_reviewed=True,
+                                 clock=lambda: self.now, volume=volume)
+        feature = self.feature(backend=backend)
+        source = self.root / self.items[0].path
+        original = source.read_bytes()
+        runner = Mock()
+        runner.poll.return_value = None
+        with patch("bmo_ai.features.games.OwnedProcessRunner", return_value=runner) as factory:
+            self.assertEqual(self.start(feature).status, "running")
+        prepared_fd = factory.call_args.kwargs["pass_fds"][0]
+        self.assertNotEqual(prepared_fd, feature._handle.fd)
+        prepared_path = Path(os.readlink(f"/proc/self/fd/{prepared_fd}"))
+        def peak(raw):
+            with wave.open(io.BytesIO(raw), "rb") as wav:
+                pcm = wav.readframes(wav.getnframes())
+            return max(abs(int.from_bytes(pcm[i:i+2], "little", signed=True))
+                       for i in range(0, len(pcm), 2))
+        self.assertLessEqual(peak(os.pread(prepared_fd, 65536, 0)), peak(original) * .25 + 1)
+        self.assertEqual(source.read_bytes(), original)
+        self.assertTrue(prepared_path.exists())
+        feature.stop()
+        self.assertFalse(prepared_path.exists())
+        with self.assertRaises(OSError):
+            os.fstat(prepared_fd)
+
+    def test_music_volume_and_mute_replace_only_owned_pcm_at_same_position_and_preserve_pause(self):
+        from bmo_ai.master_volume import MasterVolume
+        volume = MasterVolume(level=.25)
+        backend = AlsaWavBackend(enabled=True, volume_reviewed=True,
+                                 clock=lambda: self.now, volume=volume)
+        feature = self.feature(backend=backend)
+        runners = [Mock() for _ in range(3)]
+        for runner in runners:
+            runner.poll.return_value = None
+        with patch("bmo_ai.features.games.OwnedProcessRunner", side_effect=runners) as factory:
+            self.start(feature)
+            self.now = .1
+            volume.set(level=.5)
+            self.assertTrue(backend.volume_changed())
+            runners[0].stop.assert_called_once()
+            self.assertAlmostEqual(backend.position(), .1)
+            fd = factory.call_args.kwargs["pass_fds"][0]
+            with wave.open(io.BytesIO(os.pread(fd, 65536, 0)), "rb") as wav:
+                self.assertEqual(wav.getnframes(), 3200)  # Remaining .4s, not a replay.
+                pcm = wav.readframes(wav.getnframes())
+                self.assertEqual(max(abs(int.from_bytes(pcm[i:i+2], "little", signed=True))
+                                     for i in range(0, len(pcm), 2)), 500)
+            feature.pause()
+            self.now = 2
+            volume.set(muted=True)
+            self.assertTrue(backend.volume_changed())
+            self.assertAlmostEqual(backend.position(), .1)
+            self.assertEqual(feature.snapshot()["state"], "paused")
+            runners[1].stop.assert_called_once()
+            runners[2].pause.assert_called_once()
+            fd = factory.call_args.kwargs["pass_fds"][0]
+            with wave.open(io.BytesIO(os.pread(fd, 65536, 0)), "rb") as wav:
+                self.assertEqual(wav.readframes(wav.getnframes()), bytes(6400))
+        feature.stop()
 
 
 if __name__ == "__main__":

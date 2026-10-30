@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "pack_id": "bmo_original_games_v1",
+  "license": "MIT",
+  "files": {
+    "engines.js": "be9992efb49c481b5d90d1995fcd5188fc9e974d45f75055940b520921fea9f9",
+    "LICENSE.txt": "a5df5b082a788557022bec667851877919c06524ab3103969eb0e566259173be"
+  },
+  "games": [
+    {
+      "id": "bmo_blocks",
+      "title": "Stack Sprout"
+    },
+    {
+      "id": "bmo_maze",
+      "title": "Lantern Labyrinth"
+    },
+    {
+      "id": "bmo_snake",
+      "title": "Vine Run"
+    }
+  ]
+}
