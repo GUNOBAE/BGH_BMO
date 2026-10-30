@@ -119,12 +119,45 @@ def _single_request_denial(message, kind, *, subtitle_mode="unchanged", action_n
 # from words alone: the same one-response semantic interpretation is required.
 _CLAUSE_SPLIT = re.compile(
     r"[;\n.!?]+|\s+(?:and\s+then|and|then|but|however|instead)\s+|[,，]+\s*(?:and|but|then)?\s*"
-    r"|(?:그리고|그런데|하지만|대신|한\s*뒤에?|한\s*후에?)\s*|(?<=고)\s+|(?<=되)\s+|(?<=지만)\s+", re.I)
+    r"|(?:그리고|그런데|하지만|대신|한\s*뒤에?|한\s*후에?)\s*|(?<!라고)(?<!다고)(?<=고)\s+|(?<=되)\s+|(?<=지만)\s+", re.I)
 _TOPIC_BY_KIND = {"photo": _PHOTO_TOPIC, "acting": _ACTING_TOPIC,
                   "subtitles": _SUBTITLE_TOPIC, **_DEVICE_TOPICS}
 _STOP_WORDS = re.compile(r"\b(?:stop|end|cancel|quit|disable)\b|멈|중지|그만|끄|꺼|따라오지\s*마", re.I)
 _STOP_ACTIONS = frozenset({"stop_face_tracking", "stop_video", "stop_arms", "stop_media", "exit_game"})
 _START_ACTIONS = frozenset({"start_face_tracking", "start_video", "arm_gesture", "play_song", "launch_game"})
+_SCOPE_PREFIX = re.compile(
+    r"^\s*(?:(?:please|bmo|beemo|maybe)[,:]?\s+)*(?:"
+    r"yesterday\b|previously\b|last (?:time|week)\b|i (?:said|asked)\b|you (?:said|took)\b"
+    r"|later\b|tomorrow\b|next (?:time|week)\b|not now\b|(?:if|when) (?:i|we)\b"
+    r"|어제|지난번|전에\s*말|나중에|내일|다음에|지금\s*말고)", re.I)
+
+
+def _request_clauses(text):
+    """Keep leading temporal/reporting context across its punctuation comma.
+
+    A comma after 'Tomorrow' or 'I asked' does not turn the following words into
+    a current command. Scope ends at a sentence/semicolon, so a separate current
+    action still has its own rejection context. No clause creates permission.
+    """
+    clauses, prefix, start = [], "", 0
+    for boundary in list(_CLAUSE_SPLIT.finditer(text)) + [None]:
+        end = boundary.start() if boundary is not None else len(text)
+        part = text[start:end].strip()
+        if part:
+            clauses.append((prefix + " " + part).strip())
+            if boundary is not None and boundary.group().lstrip().startswith((',', '，')):
+                # A leading qualifier can include its condition subject. Also
+                # retain modifier-only fragments such as 'as I asked'. A normal
+                # previous action does not supply context for the next one.
+                modifier = _single_request_denial(part, "photo") in ("past_request", "future_request")
+                modifier_only = modifier and not any(topic.search(part) for topic in _TOPIC_BY_KIND.values())
+                if _SCOPE_PREFIX.search(part) or modifier_only:
+                    prefix = (prefix + " " + part).strip()
+        if boundary is not None:
+            if re.search(r"[;\n.!?]", boundary.group()):
+                prefix = ""
+            start = boundary.end()
+    return clauses
 
 
 def request_denial(message, kind, *, subtitle_mode="unchanged", action_name=None):
@@ -145,7 +178,7 @@ def request_denial(message, kind, *, subtitle_mode="unchanged", action_name=None
         return "informational_request"
     if re.match(r"\s*>", text):
         return "quoted_request"
-    clauses = [part.strip() for part in _CLAUSE_SPLIT.split(unquoted) if part.strip()]
+    clauses = _request_clauses(unquoted)
     topic = _TOPIC_BY_KIND.get(kind)
     if topic is not None and topic.search(text) and not topic.search(unquoted):
         return "quoted_request"

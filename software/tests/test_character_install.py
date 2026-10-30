@@ -38,7 +38,7 @@ class CharacterInstallTests(unittest.TestCase):
             plain_voice=True, ptt_vad_profile="balanced", ptt_trace=True, character_life=True)
         before = dict(values)
         report = self.plan(ptt_microphone=True, character_options=values)
-        self.assertEqual(report["command"], [str(self.launcher),"--live","--ptt-microphone",
+        self.assertEqual(report["command"], [str(self.launcher),"--live","--ptt-microphone","--playable-games",
             "--character-life","--ptt-trace","--ptt-vad-profile","balanced","--plain-voice",
             "--voice-bank-directory",str(self.home/"voice bank"),"--idle-voice","--presence-mode","quiet",
             "--wake-word","--wake-model-manifest",str(self.home/"models/wake manifest.json")])
@@ -53,7 +53,7 @@ class CharacterInstallTests(unittest.TestCase):
     def test_false_optional_switches_stay_false_without_becoming_truthy_flags(self):
         report=self.plan(character_options=dict(character_life=True,ptt_trace=False,plain_voice=False,
             idle_voice=False,wake_word=False,ptt_vad_profile="baseline",presence_mode="off"))
-        self.assertEqual(report["command"][2:], ["--character-life","--ptt-vad-profile","baseline","--presence-mode","off"])
+        self.assertEqual(report["command"][2:], ["--playable-games","--character-life","--ptt-vad-profile","baseline","--presence-mode","off"])
 
     def test_install_false_routes_character_configuration_through_same_plan(self):
         options=dict(character_life=True,ptt_trace=True,plain_voice=True)

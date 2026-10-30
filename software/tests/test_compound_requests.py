@@ -93,6 +93,49 @@ class CompoundRequestTests(unittest.TestCase):
                 self.assertFalse(reply.human_device_request)
                 self.assertNotEqual(reply.request_validation, 'validated')
 
+    def test_temporal_and_reporting_prefix_before_comma_never_becomes_current_execution(self):
+        cases = [
+            ('Tomorrow, take a photo.', 'photo', 'take_photo', 'future_request'),
+            ('Tomorrow, BMO, take a photo.', 'photo', 'take_photo', 'future_request'),
+            ('Later, record a video.', 'video', 'start_video', 'future_request'),
+            ('When I return, follow my face.', 'tracking', 'start_face_tracking', 'future_request'),
+            ('If we have time, wave your arms.', 'arm', 'arm_gesture', 'future_request'),
+            ('Yesterday, I asked to take a photo.', 'photo', 'take_photo', 'past_request'),
+            ('As I asked, take a photo.', 'photo', 'take_photo', 'past_request'),
+            ('내일, 사진 찍어줘.', 'photo', 'take_photo', 'future_request'),
+            ('어제, 얼굴 추적을 멈춰 달라고 했어.', 'tracking', 'stop_face_tracking', 'informational_request'),
+            ('추적을 멈춰 달라고 했어.', 'tracking', 'stop_face_tracking', 'informational_request'),
+            ('사진 찍어 달라고 했어.', 'photo', 'take_photo', 'informational_request'),
+        ]
+        for version in (4,5):
+            for text,kind,name,reason in cases:
+                with self.subTest(version=version,text=text):
+                    extra={'plan':{'version':1,'steps':[]}} if version==5 else {}
+                    value=envelope(version=version,kind=kind,disposition='execute',
+                        intent=step(name,'wave' if name=='arm_gesture' else None),**extra)
+                    reply,_=self.ask(text,value)
+                    self.assertIsNone(reply.intent)
+                    self.assertEqual(reply.action_plan,())
+                    self.assertEqual(reply.request_validation,reason)
+                    self.assertFalse(reply.human_device_request)
+                    self.assertFalse(reply.human_photo_request)
+        for text in ('Tomorrow, stop tracking and record a video.',
+                     '내일, 추적을 멈추고 영상을 녹화해 줘.'):
+            reply,_=self.ask(text,compound(step('stop_face_tracking'),step('start_video')))
+            self.assertEqual(reply.action_plan,())
+            self.assertEqual(reply.request_validation,'future_request')
+
+    def test_temporal_prefix_ends_at_independent_sentence_or_semicolon(self):
+        for text,kind,name in [
+            ('Tomorrow, stop tracking; record a video now.','video','start_video'),
+            ('Yesterday, stop tracking. Take a photo now.','photo','take_photo'),
+            ('내일, 추적을 멈춰줘; 지금 사진 찍어줘.','photo','take_photo'),
+        ]:
+            reply,_=self.ask(text,envelope(version=5,kind=kind,disposition='execute',
+                intent=step(name),plan={'version':1,'steps':[]}))
+            self.assertEqual(reply.intent,HostIntent(name))
+            self.assertEqual(reply.request_validation,'validated')
+
     def test_bare_cancel_cannot_become_two_stop_actions_from_a_forged_plan(self):
         for text in ('Cancel.', 'Never mind.', '취소', '잠깐'):
             reply,_=self.ask(text,compound(step('stop_face_tracking'),step('stop_arms')))

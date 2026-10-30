@@ -612,7 +612,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 count=fixture.features()['test_fixture']['photo_captures']
                 for text in ("Don't take a photo.",'Can you take photos?','Tomorrow, take a photo.','Translate "take a photo".'):
                     question(text);finish()
-                    assert fixture.features()['mode']=='conversation'
+                    assert fixture.features()['mode']=='conversation', (text,fixture.features())
                     assert fixture.features()['test_fixture']['photo_captures']==count
                 checks.append('negation, capability, future and translated quotation cannot authorize a photo even with forged model execution metadata')
                 assert page.evaluate('()=>window.__audioCalls')==0
