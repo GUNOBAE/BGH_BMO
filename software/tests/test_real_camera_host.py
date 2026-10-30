@@ -71,10 +71,40 @@ class SupervisedCameraHostTests(unittest.TestCase):
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             self.poll(host)
-            if not host.session.busy:
+            if not host.session.busy and host.audio.owner is None:
                 return
             time.sleep(.002)
         self.fail('dialogue did not finish')
+
+    def present_photo_preview(self, host):
+        # Model the product image-load acknowledgement, not a PID/open sensor.
+        state = self.poll(host)
+        for _ in range(4):
+            if state['camera']['preview_available']:
+                break
+            self.clock.now += .11
+            self.sdk.sensor += 110_000_000
+            state = self.poll(host)
+        self.assertEqual(state['photo_phase'], 'preparing')
+        self.assertIsNone(state['photo_countdown'])
+        self.assertTrue(state['camera']['preview_available'])
+        self.assertIsNotNone(host.preview_bytes())
+        result = host.control(HostControl('photo_preview_ready', {
+            'generation': state['mode_generation'],
+            'request_id': state['photo_request_id'],
+            'preview_token': state['photo_preview_token'],
+        }), 'visible_preview_' + state['photo_request_id'])
+        self.assertNotEqual(result.status, 'rejected')
+        self.assertEqual(host._photo_phase, 'countdown')
+        self.assertAlmostEqual(host._pending_photo['deadline'] - self.clock(), 5.)
+
+    def finish_photo(self, host):
+        self.present_photo_preview(host)
+        self.clock.now += 5.1
+        self.sdk.sensor += 5_100_000_000
+        self.poll(host)
+        self.finish_dialogue(host)
+        return host.snapshot()
 
     def test_spoken_photo_after_reply_uses_one_existing_real_camera_and_repeat_does_not_retake(self):
         host = self.host(video=False)
@@ -83,15 +113,12 @@ class SupervisedCameraHostTests(unittest.TestCase):
         self.assertEqual(host.modes.mode, 'photo')
         self.assertTrue(host._last_result['request_id'].startswith('spoken_photo_'))
         self.factory.assert_called_once()
-        self.clock.now += 3.1
-        # The sensor clock also advances while the countdown runs; otherwise
-        # this already-open SDK double deliberately produces stale frames.
-        self.sdk.sensor += 3_100_000_000
-        state = self.poll(host)
+        state = self.finish_photo(host)
         photo_id = state['photo']['photo_id']
         self.assertEqual(state['photo']['status'], 'succeeded')
         self.assertFalse(state['photo']['simulated'])
-        self.assertEqual(state['mode'], 'conversation')
+        self.assertEqual(state['mode'], 'photo')
+        self.assertEqual(state['photo_phase'], 'photo_review')
         self.assertFalse(state['camera']['on'])
         photos_before = list((self.root/'photos').glob('*.png'))
         previous_turn = host.session.snapshot()['turn_id']
@@ -102,17 +129,22 @@ class SupervisedCameraHostTests(unittest.TestCase):
         self.poll(host)
         self.assertEqual(list((self.root/'photos').glob('*.png')), photos_before)
         self.assertIsNotNone(host.photo_bytes(photo_id))
+        self.assertEqual(host.snapshot()['photo_phase'], 'photo_review')
 
-    def test_korean_spoken_photo_returns_to_dialogue_and_preserves_previous_tracking(self):
+    def test_korean_spoken_photo_review_back_restores_tracking_and_next_dialogue(self):
         host = self.host(video=False)
         host.execute(HostIntent('start_face_tracking'), request_id='human_tracking')
         self.assertTrue(host.start_question('사진 찍어줘.'))
         self.finish_dialogue(host)
         self.assertEqual(host.modes.mode, 'photo')
-        self.clock.now += 3.1
-        self.sdk.sensor += 3_100_000_000
-        state = self.poll(host)
+        state = self.finish_photo(host)
         self.assertEqual(state['photo']['status'], 'succeeded')
+        self.assertEqual(state['mode'], 'photo')
+        self.assertEqual(state['photo_phase'], 'photo_review')
+        self.assertFalse(state['camera']['on'])
+        self.assertFalse(state['camera']['tracking'])
+        self.assertTrue(host.ptt_button())  # GP8 review action returns, never records.
+        state = self.poll(host)
         self.assertEqual(state['mode'], 'conversation')
         self.assertTrue(state['camera']['tracking'])
         self.assertFalse(state['camera']['preview'])
@@ -133,16 +165,22 @@ class SupervisedCameraHostTests(unittest.TestCase):
         self.assertEqual(host._last_result['code'], 'camera_human_action_required')
         self.factory.assert_not_called()
 
-    def test_failed_spoken_capture_returns_to_dialogue_without_a_retry(self):
+    def test_failed_spoken_capture_has_no_success_feedback_and_recovers_without_a_retry(self):
         host = self.host(video=False)
         self.assertTrue(host.start_question('사진 찍어줘.'))
         self.finish_dialogue(host)
+        self.present_photo_preview(host)
+        before_feedback = host.session.worker.turn
         self.sdk.fail = 'still'
-        self.clock.now += 3.1
-        self.sdk.sensor += 3_100_000_000
+        self.clock.now += 5.1
+        self.sdk.sensor += 5_100_000_000
         state = self.poll(host)
         self.assertEqual(state['photo']['status'], 'failed')
-        self.assertEqual(state['mode'], 'conversation')
+        self.assertEqual(state['mode'], 'photo')
+        self.assertEqual(state['photo_phase'], 'failed')
+        self.assertEqual(host.session.worker.turn, before_feedback)
+        host.execute(HostIntent('return_to_face'), request_id='failed_photo_back')
+        self.assertEqual(host.modes.mode, 'conversation')
         self.assertFalse(state['camera']['on'])
         self.clock.now += 4
         self.poll(host)
@@ -183,7 +221,7 @@ class SupervisedCameraHostTests(unittest.TestCase):
         self.finish_dialogue(host)
         self.assertEqual(host.modes.mode, 'photo')
         host.control(HostControl('cancel'), 'spoken_photo_cancel')
-        self.clock.now += 3.1
+        self.clock.now += 5.1
         self.poll(host)
         self.assertEqual(host.modes.mode, 'conversation')
         self.assertFalse(host.camera.snapshot()['on'])
@@ -231,8 +269,7 @@ class SupervisedCameraHostTests(unittest.TestCase):
         result=host.execute(HostIntent('take_photo'),request_id='human_photo')
         self.assertEqual(result.status,'running')
         self.assertFalse(result.simulated)
-        self.clock.now+=3.1
-        state=self.poll(host)
+        state=self.finish_photo(host)
         photo=state['photo']
         self.assertEqual(state['mode'], 'photo')  # Existing UI result/review flow.
         self.assertEqual(photo['status'],'succeeded')
@@ -294,7 +331,6 @@ class SupervisedCameraHostTests(unittest.TestCase):
     def test_sdk_close_unknown_propagates_to_host_cleanup_report(self):
         host=self.host(video=False)
         host.execute(HostIntent('take_photo'),request_id='human_close')
-        self.clock.now+=3.1
         self.poll(host)
         self.sdk.fail='close'
         host.close()

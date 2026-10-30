@@ -261,6 +261,7 @@ class DesktopRuntime:
                         digest = hashlib.sha256(value[key].encode()).hexdigest()[:24]
                         value[key] = f"desktop:{self._presentation_epoch}:{digest}"
             if self._overlay is not None:
+                value['caption'] = dict(mode='off', language='', text='')
                 value.update(self._overlay)
                 value["position"] = (max(0., self.clock() - self._greeting_started)
                                      if self._greeting_started is not None else 0.)

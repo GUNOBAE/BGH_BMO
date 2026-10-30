@@ -4,11 +4,23 @@ const $=id=>document.getElementById(id),frame=$('face'),token=document.querySele
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null,presentationGeneration=0;
 let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0;
 let featureState=null,musicCatalogKey=null,lastFeatureMode=null;
+let photoReviewKeyHeld=false,photoPreviewContext=null,photoPreviewAcknowledged=null,suppressedCaption=null,subtitlePending=null,subtitleRequest=0;
 const inputEvidence={enter_presses:0,keyups:0,repeats_ignored:0,blocked_mode:0,request_sent:0,request_accepted:0,request_rejected:0,cancelled_blur:0,physical_identity:'UNVERIFIED'};
 function bump(name){inputEvidence[name]=Math.min(999999,inputEvidence[name]+1);}
 const messages={credentials_missing:'최초 키 설정이 필요해요. 실행 가이드를 확인해 주세요.',greeting_missing:'시작 인사 캐시가 아직 준비되지 않았어요.',greeting_unapproved:'시작 인사의 청취 승인이 필요해요.',greeting_corrupt:'시작 인사 캐시를 확인해 주세요.',face_ready_timeout:'얼굴 준비 시간이 초과됐어요.',host_startup_timeout:'대화 엔진 준비 시간이 초과됐어요.',greeting_timeout:'시작 인사 재생 정리를 기다리고 있어요.',browser_disconnected:'연결을 다시 확인하고 있어요.'};
 async function post(path,payload){const response=await fetch(path,{method:'POST',keepalive:payload.action==='cancel',headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce:crypto.randomUUID(),payload})});if(!response.ok)throw Error('요청을 완료하지 못했어요.');return response.json();}
-const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(action,value=null)=>post('/api/control',{action,value}),intent=(name,target=null)=>post('/api/intent',{name,target});
+const desktop=(action,value=null)=>post('/api/desktop',{action,value});
+function hideCaption(){$('subtitles').textContent='';$('subtitles').hidden=true;}
+function clearCaption(){const current=window.BMOIntegration?.state;suppressedCaption=current?.utterance_id||null;hideCaption();}
+function control(action,value=null){
+ if(['ptt','question','cancel','stop','reset','repeat'].includes(action))clearCaption();
+ if(action==='subtitles'&&['off','en','ko'].includes(value)){
+  const serial=++subtitleRequest;subtitlePending={mode:value,serial};hideCaption();
+  return post('/api/control',{action,value}).catch(error=>{if(subtitlePending?.serial===serial)subtitlePending=null;throw error;});
+ }
+ return post('/api/control',{action,value});
+}
+function intent(name,target=null){if(name==='return_to_face')clearCaption();return post('/api/intent',{name,target});}
 function error(message){$('notice').hidden=false;$('notice-message').textContent=message;}
 function menu(){cancelPTT();if(!$('menu').open)$('menu').showModal();}
 function isTextInput(target){return !!(target?.isContentEditable||target?.closest?.('input,select,textarea'));}
@@ -88,7 +100,7 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
   wakeHint||({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
  if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){if(!$('game-menu').open)$('game-menu').showModal();$('game-list').replaceChildren();if(!next.games.catalog.length)$('game-list').textContent='게임 자료가 아직 준비되지 않았어요.';for(const item of next.games.catalog){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY';b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}}
  else if($('game-menu').open)$('game-menu').close();
- $('foreground').hidden=!['game','photo'].includes(next.mode);$('foreground-status').textContent=next.mode==='game'?'게임 실행 중':next.photo_countdown!==null?'사진을 준비하고 있어요.':'사진 처리 결과를 확인해 주세요.';
+ $('foreground').hidden=!['game','photo'].includes(next.mode);
  const face=frame.contentWindow?.BMOFace,gaze=next.gaze,phase=window.BMOIntegration?.state?.phase;
  if(face&&gaze){const native=[phase,face.getState().activity].some(p=>['listening','thinking'].includes(p));if(native&&gaze.owner!=='manual')lastGaze=null;
  else if(gaze.apply){const id=JSON.stringify([gaze.owner,gaze.x,gaze.y,next.mode_generation]);if(id!==lastGaze){face.look(gaze.x,gaze.y);face.lookEyes(gaze.x*.15,gaze.y*.15);if(gaze.owner==='reaction')face.blink();lastGaze=id;}}}
@@ -112,9 +124,30 @@ function renderFeatures(next){
  $('video-result').textContent=saved?(liveVideo?'카메라 영상 저장과 검증을 완료했어요.':'모의 영상 저장과 검증을 완료했어요.'):result&&['failed','unknown','rejected'].includes(result.status)?'영상 결과를 확인해 주세요. 자동 재시도하지 않아요.':'';
  $('video-download').hidden=!saved;if(saved)$('video-download').href='/api/video/'+encodeURIComponent(result.video_id);
  $('video-download').textContent=liveVideo?'검증된 카메라 영상 파일':'검증된 모의 영상 파일';
- const photoReady=next.mode==='photo'&&next.photo?.completed===true&&typeof next.photo?.photo_id==='string';
+ const photoScreen=next.mode==='photo',photoPhase=next.photo_phase||'idle';
+ document.body.dataset.photoScreen=String(photoScreen);
+ $('photo-view').hidden=!photoScreen;
+ $('foreground-status').textContent=next.mode==='game'?'게임 실행 중':
+  ({preparing:'Getting the camera ready…',countdown:'Hold still!',photo_review:'Photo saved.',failed:'Couldn’t finish that photo.'})[photoPhase]||'사진을 준비하고 있어요.';
+ const photoReady=photoScreen&&photoPhase==='photo_review'&&next.photo?.completed===true&&typeof next.photo?.photo_id==='string';
  $('photo-result-image').hidden=!photoReady;$('photo-download').hidden=!photoReady;
  if(photoReady){const url='/api/photo/'+encodeURIComponent(next.photo.photo_id);if($('photo-result-image').getAttribute('src')!==url)$('photo-result-image').src=url;$('photo-download').href=url;}
+ const photoLive=photoScreen&&['preparing','countdown'].includes(photoPhase)&&next.camera?.preview_available===true
+  &&typeof next.photo_preview_token==='string'&&typeof next.photo_request_id==='string';
+ const previewImage=$('photo-preview-image');previewImage.hidden=!photoLive;
+ if(photoLive&&typeof next.photo_preview_token==='string'&&typeof next.photo_request_id==='string'){
+  const key=JSON.stringify([next.mode_generation,next.photo_request_id,next.photo_preview_token]);
+  if(!photoPreviewContext||photoPreviewContext.key!==key){
+   photoPreviewContext={key,generation:next.mode_generation,request_id:next.photo_request_id,preview_token:next.photo_preview_token};
+   previewImage.src='/api/preview?photo='+encodeURIComponent(next.photo_preview_token)+'&sequence='+next.sequence;
+  }else if(photoPhase==='countdown')previewImage.src='/api/preview?photo='+encodeURIComponent(next.photo_preview_token)+'&sequence='+next.sequence;
+ }else if(!photoLive){photoPreviewContext=null;previewImage.removeAttribute('src');}
+ if(photoLive&&previewImage.complete&&previewImage.naturalWidth)photoPreviewDisplayed();
+ const seconds=Number.isFinite(next.photo_countdown)?Math.ceil(next.photo_countdown):null;
+ $('photo-countdown').hidden=!(photoScreen&&photoPhase==='countdown'&&seconds>0);
+ $('photo-countdown').textContent=seconds===null?'':String(Math.max(1,Math.min(5,seconds)));
+ if(['off','en','ko'].includes(next.subtitles?.mode))$('subtitle-mode').value=subtitlePending?.mode||next.subtitles.mode;
+ renderCaption();
  const liveCamera=next.capabilities?.camera==='explicit_supervised',cameraAvailable=next.system_diagnostics?.camera?.available===true;
  const cameraReady=next.capabilities?.camera==='mock'||liveCamera&&cameraAvailable;
  $('camera-readiness').textContent=liveCamera?(cameraAvailable?'감독 모드예요. 촬영 버튼을 누를 때 카메라를 열어요.':'현재 Python 환경에 카메라 라이브러리가 없어요. 실행 가이드를 확인해 주세요.'):cameraReady?'합성 사진·미리보기·위치 추적을 검사해요.':'실물 카메라는 사용자 검수 전 사용할 수 없어요.';
@@ -130,14 +163,61 @@ function renderFeatures(next){
  for(const id of ['music-next','music-stop'])$(id).disabled=next.mode!=='music';
  const telemetry=next.system_diagnostics?.telemetry;
  $('system-readiness').textContent=telemetry?.power?.status==='OBSERVED'?('전원 현재 이상: '+(telemetry.power.current_fault?'있음':'없음')+' · 과거 기록: '+(telemetry.power.historical_fault?'있음':'없음')):'온도·전원 실측은 아직 실행하지 않았어요. 자동 설정 변경은 하지 않아요.';
- $('turn-diagnostics').textContent=JSON.stringify(next.turn_diagnostics||{enabled:false},null,2);
+ if($('system-dialog').open){
+  const emotions=new Set(['neutral','happy','sad','surprised','angry','crying']);
+  let faceState={};try{faceState=frame.contentWindow?.BMOFace?.getState()||{};}catch(_){}
+  const selected=[faceState.selectedEmotion,faceState.emotion].find(value=>emotions.has(value));
+  const rendered=[faceState.renderEmotion,faceState.emotion].find(value=>emotions.has(value));
+  const config=next.character_life?.effective_config||{},effective={};
+  for(const name of ['character_life','emotion_mode','chat_model','expressive_voice','reasoning_effort','fish_model','fish_delivery','fish_gain']){
+   if(['string','boolean','number'].includes(typeof config[name]))effective[name]=config[name];
+  }
+  $('turn-diagnostics').textContent=JSON.stringify({...(next.turn_diagnostics||{enabled:false}),
+   expression_trace:next.character_life?.expression_trace||null,effective_config:effective,
+   face_state:{selected_emotion:selected||null,rendered_emotion:rendered||null}},null,2);
+ }
  $('input-evidence').textContent=JSON.stringify(inputEvidence,null,2);
  $('gamepad-readiness').textContent=next.usb_gamepad?.enabled?'USB 패드 입력 사용: 표준 매핑의 게임·게임 목록에만 전달해요. 실제 패드 검수는 별도예요.':'USB 패드는 기본으로 꺼져 있어요. GP8 대화 입력은 그대로 사용할 수 있어요.';
 }
+function renderCaption(){
+ const snapshot=window.BMOIntegration?.state,caption=snapshot?.caption;
+ if(subtitlePending){
+  if(featureState?.subtitles?.mode!==subtitlePending.mode||caption?.mode!==subtitlePending.mode){hideCaption();return;}
+  subtitlePending=null;
+ }
+ const visible=snapshot?.playback==='started'&&snapshot?.phase==='speaking'&&snapshot?.utterance_id!==suppressedCaption
+  &&['en','ko'].includes(caption?.mode)&&['en','ko'].includes(caption?.language)
+  &&typeof caption?.text==='string'&&caption.text.length>0&&caption.text.length<=4096;
+ $('subtitles').textContent=visible?caption.text:'';$('subtitles').hidden=!visible;
+ if(visible)$('subtitles').lang=caption.language;
+}
+function photoPreviewVisible(image){
+ const bounds=image.getBoundingClientRect();
+ return !document.hidden&&image.isConnected&&!image.closest('[hidden]')&&!document.querySelector('dialog[open]')
+  &&bounds.width>0&&bounds.height>0&&bounds.bottom>0&&bounds.right>0&&bounds.top<innerHeight&&bounds.left<innerWidth
+  &&getComputedStyle(image).visibility!=='hidden';
+}
+function photoPreviewDisplayed(){
+ const current=photoPreviewContext,image=$('photo-preview-image');
+ if(!current||photoPreviewAcknowledged===current.key||!image.naturalWidth||!photoPreviewVisible(image)||featureState?.mode!=='photo'
+  ||featureState.photo_phase!=='preparing'||featureState.mode_generation!==current.generation
+  ||featureState.photo_request_id!==current.request_id)return;
+ // A decoded frame must have a visible paint opportunity before the host's
+ // five-second clock starts. Late image loads cannot arm another request.
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{
+  if(closed||!photoPreviewVisible(image)||!image.naturalWidth||photoPreviewContext!==current
+   ||photoPreviewAcknowledged===current.key||featureState?.photo_phase!=='preparing'
+   ||featureState.mode_generation!==current.generation||featureState.photo_request_id!==current.request_id)return;
+  photoPreviewAcknowledged=current.key;
+  control('photo_preview_ready',{generation:current.generation,request_id:current.request_id,preview_token:current.preview_token})
+   .catch(()=>error('카메라 준비를 확인하지 못했어요. 돌아간 뒤 다시 요청해 주세요.'));
+ }));
+}
+$('photo-preview-image').addEventListener('load',photoPreviewDisplayed);
 async function poll(){if(closed||document.hidden)return;const current=epoch;controller=new AbortController();const abort=setTimeout(()=>controller?.abort(),1200);try{
  const r=await fetch('/api/desktop',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error();const next=await r.json();if(current!==epoch||closed)return;
  lastSuccess=performance.now();render(next);await ready();await modes();
-}catch(_){if(performance.now()-lastSuccess>2500){$('splash').hidden=true;error('BMO 연결이 끊겼어요. 창을 닫고 수동으로 다시 실행해 주세요.');}}
+}catch(_){if(performance.now()-lastSuccess>2500){clearCaption();$('splash').hidden=true;error('BMO 연결이 끊겼어요. 창을 닫고 수동으로 다시 실행해 주세요.');}}
 finally{clearTimeout(abort);controller=null;if(!closed&&current===epoch&&!document.hidden)timer=setTimeout(poll,100);}}
 $('notice-menu').onclick=menu;$('resume').onclick=()=>$('menu').close();$('exit').onclick=()=>desktop('exit').catch(()=>{error('BMO가 종료된 상태예요. 창을 닫아 주세요.');window.close();});
 function ptt(){if(!pttEnabled){error('버튼 녹음은 사용자 검수용 마이크 opt-in이 필요해요.');return;}
@@ -148,6 +228,8 @@ function cancelPTT(){window.BMOIntegration?.cancelEntrance('input_cancelled');en
 $('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));$('menu').close();};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
 $('presence-mode').onchange=()=>desktop('presence_mode',$('presence-mode').value).catch(()=>error('대기 음성 설정을 확인해 주세요.'));
+$('subtitle-mode').onchange=()=>control('subtitles',$('subtitle-mode').value).catch(()=>error('자막 설정을 확인해 주세요.'));
+$('system-dialog').addEventListener('close',()=>{$('turn-diagnostics').textContent='';});
 $('wake-off').onclick=()=>desktop('wake_off').catch(()=>error('호출어 종료 상태를 확인해 주세요.'));
 $('games').onclick=()=>{intent('open_game_menu').catch(()=>error('게임 목록을 열지 못했어요.'));$('menu').close();};$('greeting-retry').onclick=()=>desktop('retry_greeting').catch(()=>error('인사 캐시를 확인해 주세요.'));
 function openPanel(id){cancelPTT();$('menu').close();$(id).showModal();if(featureState)renderFeatures(featureState);}
@@ -165,6 +247,11 @@ $('music-stop').onclick=()=>intent('stop_media').catch(()=>error('음악 종료�
 for(const id of ['game-back','foreground-back'])$(id).onclick=()=>intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
 const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',z:'A',b:'B',Enter:'START',Shift:'SELECT',Escape:'ESC'};
 function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){if(!pressed){enterDown=false;bump('keyups');}else if(event.repeat)bump('repeats_ignored');else bump('enter_presses');}
+ if(event.key==='Enter'&&photoReviewKeyHeld){event.preventDefault();event.stopPropagation();if(!pressed)photoReviewKeyHeld=false;return;}
+ if(event.key==='Enter'&&currentMode==='photo'&&['photo_review','failed'].includes(featureState?.photo_phase)
+  &&!document.querySelector('dialog[open]')&&!isTextInput(event.target)){
+  event.preventDefault();event.stopPropagation();if(!pressed||event.repeat)return;photoReviewKeyHeld=true;
+  intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));return;}
  // In the conversation surface Enter belongs to GP8/PTT, even if a closed
  // menu or startup notice left a button focused. Suppress native button clicks
  // on BOTH edges and repeats; dialogs and text editing retain their own keys.
@@ -176,6 +263,7 @@ function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){
   event.preventDefault();event.stopPropagation();
   const covering=document.querySelector('dialog[open]:not(#game-menu)');
   if(covering){if(pressed){cancelPTT();covering.close();}return;}
+  if(currentMode==='photo'){if(pressed)intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));return;}
   if(['game','game_menu'].includes(currentMode)){control('input',{key:'ESC',pressed}).catch(()=>error('게임 종료 상태를 확인해 주세요.'));return;}
   if(pressed){cancelPTT();for(const d of document.querySelectorAll('dialog[open]'))d.close();menu();}return;}
  if(isTextInput(event.target)||event.target?.closest?.('button'))return;
@@ -185,7 +273,7 @@ function blurPTT(event){setTimeout(()=>{
  // Focusing the iframe blurs its parent window. A later move back to a notice
  // button is still inside BMO, even if it happens before this callback runs.
  // Only loss of the whole document's focus cancels trusted input here.
- if(event.isTrusted&&document.hasFocus())return;bump('cancelled_blur');cancelPTT();
+ if(event.isTrusted&&document.hasFocus())return;photoReviewKeyHeld=false;bump('cancelled_blur');cancelPTT();
 },0);}
 window.addEventListener('blur',blurPTT);
 let touchStart=null,inputDocument=null;function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',blurPTT);
@@ -228,7 +316,7 @@ function pollPad(){
 function syncGamepad(next){padSequence=Math.max(padSequence,next?.usb_gamepad?.sequence_floor||0);if(!gamepadAllowed(next)){releasePad(false);return;}if(padTimer===null)padTimer=setTimeout(pollPad,0);}
 window.addEventListener('blur',event=>{setTimeout(()=>{if(event.isTrusted&&document.hasFocus()&&document.activeElement===frame)return;releasePad();},0);});
 window.addEventListener('gamepaddisconnected',()=>releasePad());
-window.addEventListener('pagehide',()=>{releasePad();cancelPTT();closed=true;epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
-document.addEventListener('visibilitychange',()=>{epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){releasePad();cancelPTT();}else{refreshAdapter();poll();}});
+window.addEventListener('pagehide',()=>{clearCaption();photoReviewKeyHeld=false;releasePad();cancelPTT();closed=true;epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
+document.addEventListener('visibilitychange',()=>{clearCaption();epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){photoReviewKeyHeld=false;releasePad();cancelPTT();}else{refreshAdapter();poll();}});
 window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence};poll();
 })();

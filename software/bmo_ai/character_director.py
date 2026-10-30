@@ -104,11 +104,16 @@ class CharacterPlan:
 class CharacterDirector:
     """Resolve one congruent, restrained performance from existing reply metadata."""
     def resolve(self, emotion, reaction="none", gesture="none", *, metadata=None,
-                message="", has_intent=False):
+                message="", has_intent=False, acting_request=None):
         if emotion not in FACE_EMOTIONS or reaction not in REACTION_IDS or gesture not in GESTURE_IDS:
             raise ExpressionFormatError()
         value = metadata if type(metadata) is dict else {}
-        acting, sensitive = requested_acting(message), sensitive_context(message)
+        # V4 supplies a validated interpretation from the same dialogue call.
+        # The local literal matcher remains a fast path, never a miss veto.
+        if acting_request not in (None, "none", "happy", "sad", "angry", "crying"):
+            raise ExpressionFormatError()
+        acting = None if acting_request == "none" else acting_request or requested_acting(message)
+        sensitive = sensitive_context(message)
         source = value.get("source", "dialogue")
         source = source if source in SOURCES else "dialogue"
         # Dialogue providers cannot schedule boot or idle work through a reply.

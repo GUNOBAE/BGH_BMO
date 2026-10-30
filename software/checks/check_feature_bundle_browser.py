@@ -61,7 +61,7 @@ def listen(self):
     counts['listen']+=1;time.sleep(.15)
     return real_listen(self)
 def speak(self,text,**options):
-    assert text=='A short synthetic feature response.','JSON/tag reached speech boundary'
+    assert text in ('A short synthetic feature response.','Ta-da! Pretty good, huh?'),'JSON/tag reached speech boundary'
     counts['synthesis']+=1
     return real_speak(self,text,**options)
 def play(self,*args,**options):
@@ -257,11 +257,12 @@ def run(face_path,chromium,profile='v13.2'):
                     wait(page,'()=>BMOFeatures.state.camera.preview&&document.querySelector("#preview").naturalWidth>0','Synthetic preview did not load')
                     page.locator('#photo-button').click()
                     wait(page,"()=>BMOFeatures.state.mode==='photo'&&BMOFeatures.state.photo_countdown!==null",'Photo countdown did not start')
-                    for _ in range(3):advance(1.1)
+                    for _ in range(5):advance(1.1)
                     wait(page,'()=>BMOFeatures.state.photo?.completed&&document.querySelector("#photo-result").naturalWidth>0','Synthetic photo was not verified/saved')
                     photo=page.evaluate('()=>BMOFeatures.state.photo')
                     assert photo['simulated'] and not photo['executed'] and photo['completion']=='synthetic_saved'
                     with urlopen(url+'api/photo/'+photo['photo_id'],timeout=2) as response:assert response.read(8)==b'\x89PNG\r\n\x1a\n'
+                    wait(page,"()=>BMOFeatures.state.photo_phase==='photo_review'&&!BMOFeatures.state.conversation_busy&&BMOFeatures.state.audio_owner===null",'Photo feedback did not finish in review')
                     page.locator('#face-button').click()
                     wait(page,"()=>BMOFeatures.state.mode==='conversation'&&BMOFeatures.state.camera.tracking&&BMOFeatures.state.camera.preview",'Photo return did not restore prior camera options')
                     page.locator('#camera-off').click()
@@ -302,7 +303,8 @@ def run(face_path,chromium,profile='v13.2'):
                     summaries=[json.loads(line.removeprefix('BUNDLE_RESULT ')) for line in stdout.splitlines() if line.startswith('BUNDLE_RESULT ')]
                     assert len(summaries)==1
                     counts=summaries[0]
-                    assert counts['brain']==counts['listen']==counts['synthesis']==counts['players']==counts['reaped']==2,counts
+                    assert counts['brain']==counts['listen']==2,counts
+                    assert counts['synthesis']==counts['players']==counts['reaped']==3,counts
                     assert counts['game_starts']==2 and counts['game_b']>=2 and counts['photos']==1 and counts['forbidden']==0,counts
                     with_error=False
                     try:urlopen(url+'api/features',timeout=.3)

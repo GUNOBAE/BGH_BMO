@@ -60,7 +60,8 @@ class IntegrationVoice:
 
     Injected synthesizers follow the existing synthesize_wav signatures and
     transfer ownership of their temporary result to this adapter. An injected
-    player follows audio._run's signature. No raw reply text enters emit().
+    player follows audio._run's signature. Private caption_payload is routed only
+    to the session's UI snapshot/cache; event consumers must not log that text.
     """
 
     def __init__(self, config, client, *, emit, cancel_check=None, simulate=False,
@@ -99,7 +100,7 @@ class IntegrationVoice:
                 pass  # An observational sink cannot break owned playback.
 
     def _expression(self, *, notice=False, metadata=None):
-        """Copy only safe expression metadata, never a reply or TTS direction."""
+        """Copy expression enums and the private UI caption pair, never TTS tags."""
         value = self.expression_metadata if metadata is None else metadata
         emotion = value.get("emotion") if type(value) is dict else None
         validation = value.get("emotion_validation") if type(value) is dict else None
@@ -113,6 +114,9 @@ class IntegrationVoice:
                 result["character_plan"] = CharacterPlan.from_public(value["character_plan"]).public()
             except ValueError:
                 pass
+        if not notice and type(value) is dict and type(value.get('caption_payload')) is dict:
+            from .captions import clean_caption
+            result['caption_payload'] = {lang: clean_caption(value['caption_payload'].get(lang)) for lang in ('en', 'ko')}
         return result
 
     @property
@@ -327,7 +331,9 @@ class IntegrationVoice:
                 expression.update(
                     voice_emotion=delivery.emotion if source == "fish" else "neutral",
                     reaction=delivery.reaction if source == "fish" else "none",
-                    voice_style=delivery.mechanism if source == "fish" else source)
+                    voice_style=delivery.mechanism if source == "fish" else source,
+                    tts_mechanism=delivery.mechanism, tts_override_soft=delivery.override_soft,
+                    tts_backend=source, tts_requested_emotion=delivery.emotion)
             if self.character_life and self.character_bank is not None:
                 expression.update(cached_reaction=cached_reaction,
                                   cached_reaction_id=reaction_clip if cached_reaction else None)

@@ -51,7 +51,7 @@ class CharacterExpressionTests(unittest.TestCase):
         self.assertEqual(len(provider.requests), 1)
         actual = provider.requests[0]
         self.assertEqual((actual["model"], actual["reasoning"]), ("gpt-6-luna", {"effort": "low"}))
-        self.assertEqual(actual["text"]["format"]["name"], "bmo_feature_reply_v3")
+        self.assertEqual(actual["text"]["format"]["name"], "bmo_feature_reply_v4")
         self.assertFalse(actual["store"])
         self.assertEqual(brain.history[-1]["content"], reply["speech"])
         return view.last_reply
@@ -96,11 +96,13 @@ class CharacterExpressionTests(unittest.TestCase):
                 if plan.sensitive_context:
                     self.assertEqual((plan.gesture_id, plan.reaction_id, plan.intensity), ("none", "none", "low"))
 
-    def test_v3_schema_keeps_strict_clean_speech_and_allowlist_metadata(self):
+    def test_v4_schema_keeps_strict_clean_speech_and_allowlist_metadata(self):
         schema = feature_text_format(character_life=True)["format"]
         self.assertTrue(schema["strict"])
         self.assertFalse(schema["schema"]["properties"]["character"]["additionalProperties"])
-        self.assertEqual(schema["schema"]["properties"]["version"]["enum"], [3])
+        self.assertEqual(schema["schema"]["properties"]["version"]["enum"], [4])
+        self.assertIn("request", schema["schema"]["required"])
+        self.assertIn("captions", schema["schema"]["required"])
         self.assertEqual(feature_text_format()["format"]["name"], "bmo_feature_reply_v1")
         self.assertEqual(feature_text_format(expressive=True)["format"]["name"], "bmo_feature_reply_v2")
         bad = payload(emotion="happy", delivery="warm")

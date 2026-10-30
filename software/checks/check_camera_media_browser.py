@@ -212,9 +212,13 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     assert state['photo']['simulated'] and not state['photo']['executed']
                     status,png=fixture.request('/api/photo/'+state['photo']['photo_id'])
                     assert status==200 and png.startswith(b'\x89PNG')
+                    state=wait_state(lambda s:s['photo_phase']=='photo_review' and not s['conversation_busy']
+                                     and s['audio_owner'] is None and s['test_fixture']['synthesis']==1)
+                    assert not state['camera']['on']
+                    page.locator('#photo-result-image').wait_for(state='visible')
                     page.locator('#foreground-back').click();wait_state(lambda s:s['mode']=='conversation')
                     assert fixture.features()['emotion']=='sad'
-                    checks.append('requested synthetic preview/tracking/photo use the same broker and outer shell; photo countdown/return preserve emotion')
+                    checks.append('requested synthetic preview/tracking/photo use the same broker; visible preview gates five-second countdown, saved review keeps camera closed, one success-feedback TTS then explicit Back preserves emotion')
 
                     panel('system-menu','system-dialog')
                     assert '실행하지 않았어요' in page.locator('#system-readiness').inner_text()
@@ -223,11 +227,11 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     page.locator('#system-dialog .dialog-close').click()
                     assert page.evaluate('()=>window.__audioCalls')==0
                     audit=fixture.features()['test_fixture']
-                    assert audit['brain']==audit['synthesis']==audit['stt']==0 and audit['greeting_calls']==1
+                    assert audit['brain']==audit['stt']==0 and audit['synthesis']==1 and audit['greeting_calls']==1
                     checks.append('diagnostics distinguish unmeasured power/current-firmware status and never run telemetry, mic, paid API or browser audio')
                     code,counts,error=fixture.finish()
                     assert code==0,error
-                    assert counts['players']==counts['reaped']==1
+                    assert counts['players']==counts['reaped']==2
                     assert counts['browsers']==counts['browser_reaped']==1 and counts['forbidden']==0
                     assert saved.read_bytes()==payload
                     checks.append('normal app exit cleans owned mock processes while keeping the completed selected-directory video unchanged')

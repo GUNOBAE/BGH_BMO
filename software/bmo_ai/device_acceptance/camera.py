@@ -327,7 +327,8 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
         covered=covered, photo_limit=3, video_limit_seconds=video_seconds, photos=[], video=None,
         tracking="NOT_RUN", reopen="NOT_RUN", cancelled_countdown="NOT_RUN",
         native_timeout_guaranteed=False, cleanup={"resources_cleaned": False}, stages=stages,
-        human_image_review="NOT_RUN", public_image_content=False, resume_after_photos=resume_after_photos)
+        human_image_review="NOT_RUN", preview_displayed=False, preview_validation=[],
+        public_image_content=False, resume_after_photos=resume_after_photos)
     host = None
     def deny(kind):
         def blocked(*_args, **_kwargs):
@@ -357,6 +358,30 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
     def stage(name):
         evidence.phase = name
         stages.append(dict(stage=name, at_ms=round((clock()-began)*1000, 3)))
+    def acknowledge_preview(request, label, photo_index=None):
+        # This component tool has no Desktop or display. Validate fresh preview
+        # pixels and acknowledge their consumption without claiming GUI review.
+        def preview_ready():
+            state = host.snapshot()
+            if state.get('photo_phase') == 'failed':
+                raise CameraAcceptanceError((state.get('last_result') or {}).get('code', 'photo_preview_unavailable'))
+            return (state.get('photo_request_id') == request
+                and bool(state.get('photo_preview_token'))
+                and state['camera']['preview_available'])
+        wait_until(preview_ready, 5)
+        preview = host.preview_bytes()
+        width, height = validate_png(preview)
+        state = host.snapshot()
+        stage('preview_validated_'+label)
+        report['preview_validation'].append(dict(photo_index=photo_index, probe=label,
+            decoded=True, width=width, height=height, displayed=False, countdown_seconds=5))
+        require(host.control(HostControl('photo_preview_ready', {
+            'generation': state['mode_generation'], 'request_id': request,
+            'preview_token': state['photo_preview_token']}), 'acceptance_preview_'+label),
+            allowed=('succeeded', 'simulated'))
+        tick()
+        if host.snapshot()['photo_phase'] != 'countdown':
+            raise CameraAcceptanceError('photo_countdown_not_started')
     try:
         if resume_after_photos:
             stage('verify_prior_three_photos')
@@ -369,7 +394,8 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
         voice.listen = deny("voice")
         host = FeatureHost(config=config, client=client, voice=voice, clock=clock,
             runtime=RuntimePolicy(simulate=False), camera_supervised=True,
-            photo_directory=root/"photos", camera_video_supervised=True, video_directory=root/"videos")
+            photo_directory=root/"photos", camera_video_supervised=True, video_directory=root/"videos",
+            photo_feedback=False)
         host.camera.broker.factory.camera_factory = evidence
         host.motion.submit = deny("motion")
         host.video.config = VideoConfig(max_duration=float(video_seconds), fps=2)
@@ -377,6 +403,8 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
             stage("photo_"+str(index+1))
             require(host.execute(HostIntent("take_photo"), request_id="acceptance_photo_"+str(index+1)))
             request = "acceptance_photo_"+str(index+1)
+            acknowledge_preview(request, str(index+1), photo_index=index+1)
+            stage('photo_'+str(index+1))
             wait_until(lambda: (host.snapshot().get("photo") or {}).get("request_id") == request, 11)
             photo = host.snapshot()["photo"]
             if photo["status"] != "succeeded" or not photo["completed"]:
@@ -394,6 +422,8 @@ def run_camera_acceptance(directory, *, allow_camera=False, photo_count=3, video
             stage("cancel_photo_countdown")
             stills_before = evidence.stills
             require(host.execute(HostIntent("take_photo"), request_id="acceptance_cancelled_photo"))
+            acknowledge_preview('acceptance_cancelled_photo', 'cancelled_photo')
+            stage('cancel_photo_countdown')
             host.control(HostControl("cancel"), "acceptance_cancel")
             tick()
             if host.camera.broker.opened or evidence.stills != stills_before:

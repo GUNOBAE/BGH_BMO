@@ -9,6 +9,7 @@
 <dialog id="menu"><h2>BMO</h2><button id="talk">한 번 듣기</button><button id="repeat">다시 듣기</button>
 <button id="stop">정지</button><button id="games">게임 목록</button><button id="greeting-retry">인사 캐시 재시도</button>
 <button id="camera-menu">사진·시선</button><button id="video-menu">별도 영상 녹화</button><button id="music-menu">음악</button><button id="system-menu">준비 상태</button>
+<label id="subtitle-controls">Subtitles <select id="subtitle-mode" aria-label="BMO answer subtitles"><option value="off">Off</option><option value="en">English</option><option value="ko">한국어</option></select></label>
 <div id="presence-controls" hidden><label>대기 음성 <select id="presence-mode"><option value="off">꺼짐</option><option value="normal">드물게 말하기</option><option value="quiet">조용히</option><option value="sleep">쉬기</option></select></label><button id="wake-off">호출어 끄기</button></div>
 <button id="resume">얼굴로 돌아가기</button><button id="exit">종료</button><p id="diagnostic"></p></dialog>
 <dialog id="game-menu"><h2>게임 목록</h2><div id="game-list"></div><button id="game-back">얼굴로 돌아가기</button></dialog>
@@ -16,5 +17,6 @@
 <dialog id="video-dialog"><h2>별도 영상 녹화</h2><p id="video-readiness"></p><p id="video-explanation">음성 녹음과 별개이며 소리를 저장하지 않아요. 현재 실물 카메라는 꺼져 있어요.</p><label><input id="video-consent" type="checkbox">선택한 저장 위치에 모의 영상을 만드는 데 동의해요.</label><button id="video-start" disabled>모의 영상 시작</button><button id="video-stop" disabled>영상 저장·종료</button><p id="video-result" role="status"></p><a id="video-download" hidden download>검증된 모의 영상 파일</a><button class="dialog-close">얼굴로 돌아가기</button></dialog>
 <dialog id="music-dialog"><h2>음악</h2><p id="music-readiness"></p><div id="music-list"></div><button id="music-pause">일시 정지</button><button id="music-resume">이어서</button><button id="music-next">다음</button><button id="music-stop">음악 종료·얼굴 복귀</button><button class="dialog-close">얼굴로 돌아가기</button></dialog>
 <dialog id="system-dialog"><h2>준비 상태</h2><p id="system-readiness"></p><p>현재 실행본의 GP8 수신은 입력 진단에서 확인할 수 있어요. GP7 수동 동작과 원본 팔 보정값은 보존했어요.</p><p id="gamepad-readiness"></p><pre id="turn-diagnostics" aria-label="원문 없는 대화 단계 진단"></pre><pre id="input-evidence" aria-label="Enter 입력 수신 확인"></pre><button class="dialog-close">얼굴로 돌아가기</button></dialog>
-<section id="foreground" hidden><p id="foreground-status"></p><img id="photo-result-image" alt="직접 요청한 촬영 결과" style="max-width:60vw;max-height:60vh" hidden><a id="photo-download" download hidden>사진 저장</a><button id="foreground-back">얼굴로 돌아가기</button></section>
+<section id="foreground" hidden><p id="foreground-status" role="status"></p><div id="photo-view" hidden><img id="photo-preview-image" alt="Live camera preview" hidden><img id="photo-result-image" alt="Saved photo" hidden><span id="photo-countdown" aria-live="polite" hidden></span></div><div id="photo-actions"><a id="photo-download" download hidden>사진 저장</a><button id="foreground-back">Back to BMO</button></div></section>
+<p id="subtitles" aria-live="polite" hidden></p>
 <span id="video-indicator" role="status" hidden></span><span id="ptt-state" role="status" hidden></span><span id="status" hidden></span></body></html>

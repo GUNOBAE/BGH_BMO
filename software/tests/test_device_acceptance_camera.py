@@ -80,6 +80,14 @@ class CameraAcceptanceTests(unittest.TestCase):
         self.assertEqual(report["tracking"], "TARGET_NOT_VISIBLE")
         self.assertEqual((report["cancelled_countdown"], report["reopen"]), ("PASS", "PASS"))
         self.assertEqual(report["sdk"]["still_capture_requests"], 3)
+        self.assertFalse(report['preview_displayed'])
+        previews=report['preview_validation']
+        self.assertEqual([row['photo_index'] for row in previews], [1, 2, 3, None])
+        self.assertTrue(all(row['decoded'] and not row['displayed'] and row['countdown_seconds']==5
+                            for row in previews))
+        self.assertEqual(previews[-1]['probe'], 'cancelled_photo')
+        self.assertEqual(len([row for row in report['stages']
+                              if row['stage'].startswith('preview_validated_')]), 4)
         self.assertEqual(report["sdk"]["created"], report["sdk"]["closed"])
         self.assertTrue(report["cleanup"]["resources_cleaned"])
         self.assertEqual(report["forbidden_calls"], {"api": 0, "voice": 0, "motion": 0})
@@ -154,6 +162,8 @@ class CameraAcceptanceTests(unittest.TestCase):
         report = self.run_fixture(resume_after_photos=True)
         self.assertEqual(report['status'], 'OFFLINE_PASS', report)
         self.assertEqual(report['sdk']['still_capture_requests'], 0)
+        self.assertFalse(report['preview_displayed'])
+        self.assertEqual(report['preview_validation'], [])
         self.assertEqual(report['cancelled_countdown'], 'NOT_RERUN_PRIOR_BATCH_REPORTED_PASS')
         self.assertTrue(all(photo['reused'] for photo in report['photos']))
         self.assertEqual(len(list((root/'videos').glob('*.avi'))), 1)

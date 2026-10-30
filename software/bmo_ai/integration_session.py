@@ -13,6 +13,7 @@ from uuid import uuid4
 from .app import ConversationApp
 from .audio import AudioPlaybackError
 from .conversation import ConversationWorker, TurnCancelled
+from .captions import caption_pair, clean_caption, MODES as CAPTION_MODES
 from .cloud import CloudError
 from .expression_contract import ExpressionClient
 from .hardware import FaceState
@@ -135,12 +136,22 @@ class RepeatApp(ConversationApp):
             self.idle()
 
 
+class FeedbackApp(ConversationApp):
+    """Host-verified outcome on the same worker/player, without a brain call."""
+    def voice_input(self):
+        self._check_cancelled()
+        return self.voice.message
+    def answer(self, message):
+        self._check_cancelled()
+        return message
+
+
 class IntegrationSession:
     def __init__(self, config, client, *, simulate=False, voice=None, brain=None,
                  clock=time.monotonic, timeout=90.0, disconnect_timeout=3.0,
                  emotion_mode="manual", fish_api_key=None, reply_client=None,
                  on_reply=None, on_playback_event=None, diagnostics=None,
-                 expressive_voice=False, character_life=False):
+                 expressive_voice=False, character_life=False, one_turn_diagnostic=None):
         if emotion_mode not in ("auto", "manual"):
             raise ValueError("unknown emotion mode")
         self.config, self.client, self.simulate = config, client, simulate
@@ -148,6 +159,7 @@ class IntegrationSession:
         self.expression_client = ExpressionClient(client) if reply_client is None else reply_client
         self._on_reply, self._on_playback_event = on_reply, on_playback_event
         self.diagnostics = diagnostics
+        self._one_turn_diagnostic = one_turn_diagnostic
         self.brain = brain if brain is not None else policy_brain(
             client, config, expression_client=self.expression_client if emotion_mode == "auto" else None)
         self.clock, self.disconnect_timeout = clock, disconnect_timeout
@@ -156,6 +168,13 @@ class IntegrationSession:
         self._closed = self._active = self._pending_reset = False
         self._cleanup_done, self._cleanup_failed = Event(), False
         self._repeat = False
+        self._feedback = None
+        self._subtitle_mode, self._subtitle_previous = "off", "en"
+        self._pending_subtitle_mode = None
+        self._subtitle_generation = 0
+        self._turn_subtitle_generation = 0
+        self._active_captions = {}
+        self._pending_subtitle_mode = None
         self._turn_input = None
         self._emotion_generation = 0
         self._turn_mode = emotion_mode
@@ -191,6 +210,13 @@ class IntegrationSession:
                             ("session_id", "turn_id", "utterance_id", "sequence",
                              "phase", "emotion", "emotion_mode", "emotion_validation",
                              "playback", "source")} | {"kind": kind})
+        if self._one_turn_diagnostic is not None:
+            trace = dict(self._data.get('expression_trace') or {})
+            trace.update(character_life_enabled=self.character_life, emotion_mode=self._data['emotion_mode'],
+                input_kind='voice' if self._turn_input is not None else 'text')
+            if 'emission_status' not in trace:
+                trace['emission_status'] = self._data['playback']
+            self._one_turn_diagnostic.record_trace(self._data['turn_id'], trace)
 
     def _invalidate_expression(self, *, neutral=False):
         """Invalidate candidates without clearing the last displayed emotion.
@@ -228,6 +254,8 @@ class IntegrationSession:
             self._restore_notice_expression()
         if playback in ("cancelled", "error"):
             self._invalidate_expression()
+        self._active_captions = {}
+        self._pending_subtitle_mode = None
         self._data.update(phase="idle", playback=playback, cues=[], position=0.0,
                           utterance_id=None)
         self._started = None
@@ -237,6 +265,33 @@ class IntegrationSession:
     @property
     def busy(self):
         return self.worker.busy
+
+    def subtitle_snapshot(self):
+        with self._lock:
+            return dict(mode=self._subtitle_mode, previous_language=self._subtitle_previous)
+
+    def set_subtitles(self, mode):
+        with self._lock:
+            if mode not in (*CAPTION_MODES, 'on'):
+                raise ValueError('invalid subtitle mode')
+            self._subtitle_generation += 1
+            self._pending_subtitle_mode = None
+            return self._set_subtitles_locked(mode)
+
+    def _set_subtitles_locked(self, mode):
+        if mode == 'on':
+            mode = self._subtitle_previous
+        if mode not in CAPTION_MODES:
+            raise ValueError('invalid subtitle mode')
+        self._subtitle_mode = mode
+        if mode != 'off':
+            self._subtitle_previous = mode
+        return mode
+
+    def start_feedback(self, speech, captions=None):
+        if not clean_caption(speech):
+            return False
+        return self._start_turn(message=speech, feedback=caption_pair(speech, captions))
 
     def confirmation_playback_event(self, kind, *, utterance_id, cues=()):
         """Scoped input ACK lip cues, without promoting a dialogue expression.
@@ -285,6 +340,11 @@ class IntegrationSession:
                     cues=[dict(cue) for cue in confirmation["cues"]],
                     position=max(0., self.clock() - confirmation["started"])
                         if confirmation["started"] is not None else 0.)
+            mode = self._subtitle_mode
+            visible = (value['playback'] == 'started' and value['phase'] == 'speaking'
+                and confirmation is None)
+            value['caption'] = dict(mode=mode, language=mode if mode != 'off' else '',
+                text=self._active_captions.get(mode, '') if visible and mode != 'off' else '')
             return value
 
     def browser_snapshot(self):
@@ -325,23 +385,24 @@ class IntegrationSession:
 
         def stage_reply(answer):
             check()
-            if mode != "auto":
+            if mode != "auto" and not self.character_life:
                 return
             with self._lock:
                 if (not self._active or turn != self._turn or cancellation.is_set()
                         or generation != self._emotion_generation
-                        or self._data["emotion_mode"] != "auto"):
+                        or self._data["emotion_mode"] != mode):
                     return
                 reply = self.expression_client.last_reply
                 if reply is None or reply.speech != answer:
                     # No raw envelope or unmatched provisional reply reaches TTS.
                     raise CloudError("expression_format", "The reply did not match the expression contract.")
-                value = dict(emotion=reply.emotion,
-                             emotion_validation="degraded" if reply.degraded else "validated")
+                value = dict(emotion=reply.emotion if mode == 'auto' else self._data['emotion'],
+                             emotion_validation=('degraded' if reply.degraded else 'validated') if mode == 'auto' else 'manual')
                 if hasattr(reply, "reaction"):
                     value["reaction"] = reply.reaction
                 if self.character_life and getattr(reply, "character_plan", None) is not None:
-                    value["character_plan"] = reply.character_plan.public()
+                    if mode == 'auto':
+                        value["character_plan"] = reply.character_plan.public()
                     resolution = getattr(self.expression_client, "last_resolution", None)
                     if type(resolution) is dict:
                         # Fixed enums only. A custom reply view cannot smuggle
@@ -354,12 +415,36 @@ class IntegrationSession:
                             validation="degraded" if reply.degraded else "validated",
                             emitted_emotion=None, emission_status="staged", replayed=False,
                             turn=turn, contains_text=False)
+                        reasons = {'none', 'invalid_emotion', 'invalid_character', 'invalid_request',
+                            'stale_request', 'request_denied', 'character_repaired', 'emotion_repaired',
+                            'no_current_user', 'quoted_request', 'informational_request', 'past_request',
+                            'future_request', 'capability_question', 'negated_request', 'confirmation_missing'}
+                        reason = resolution.get('degradation_reason')
+                        trace.update(turn_id=self._data['turn_id'], character_life_enabled=self.character_life,
+                            emotion_mode=mode, input_kind='voice' if self._turn_input is not None else 'text',
+                            degradation_reason=reason if reason in reasons else 'unknown',
+                            manual_override=mode != 'auto',
+                            request_validation=resolution.get('request_validation') if resolution.get('request_validation') in reasons|{'legacy','validated'} else 'unknown',
+                            delivery_id=reply.character_plan.delivery_id,
+                            expressive_voice_enabled=bool(getattr(self.voice, 'expressive', False)),
+                            tts_requested_emotion=None,
+                            tts_mechanism=None, tts_override_soft=None, tts_backend=None)
                         self._data["expression_trace"] = trace
+                interpretation = getattr(reply, 'request_interpretation', None)
+                if (not reply.degraded and type(interpretation) is dict
+                        and interpretation.get('kind') == 'subtitles'
+                        and interpretation.get('disposition') == 'execute'):
+                    if self._turn_subtitle_generation == self._subtitle_generation:
+                        self._pending_subtitle_mode = (interpretation.get('subtitle_mode'), self._subtitle_generation)
+                value['caption_payload'] = caption_pair(answer, getattr(reply, 'captions', None))
                 self._staged_expression = dict(turn=turn, generation=generation, **value)
                 self.voice.expression_metadata = value
                 if self._on_reply is not None:
                     # Feature host callbacks only enqueue bounded metadata. They
                     # never perform resource transitions on the provider thread.
+                    if mode != 'auto':
+                        from dataclasses import replace
+                        reply = replace(reply, gesture='none', character_plan=None)
                     self._on_reply(reply, self._data["turn_id"], self._data["utterance_id"])
             check()
 
@@ -406,8 +491,22 @@ class IntegrationSession:
                                       source=fields.get("source"), position=0.0)
                 elif kind == "started":
                     self._started = self.clock()
+                    if self._pending_subtitle_mode is not None:
+                        selected_mode, selected_generation = self._pending_subtitle_mode
+                        if selected_generation == self._subtitle_generation:
+                            self._set_subtitles_locked(selected_mode)
+                        self._pending_subtitle_mode = None
+                    self._active_captions = dict(fields.get('caption_payload') or {})
                     self._data.update(playback="started", phase="speaking",
                                       source=fields.get("source", self._data["source"]))
+                    trace = self._data.get('expression_trace')
+                    if type(trace) is dict:
+                        mechanisms = {'plain_fallback','fish_s2_allowlist_v1','fish_character_drama3_v1','fish_character_s2_v1'}
+                        trace.update(tts_requested_emotion=fields.get('tts_requested_emotion') if fields.get('tts_requested_emotion') in EMOTIONS else None,
+                            tts_mechanism=fields.get('tts_mechanism') if fields.get('tts_mechanism') in mechanisms else None,
+                            tts_override_soft=fields.get('tts_override_soft') if type(fields.get('tts_override_soft')) is bool else None,
+                            tts_backend=fields.get('tts_backend') if fields.get('tts_backend') in ('fish','synthetic','piper') else None,
+                            emitted_emotion=self._data['emotion'], emission_status='started')
                     if self._current_expression_turn():
                         notice = fields.get("notice") is True
                         self._notice_restore = (
@@ -453,10 +552,13 @@ class IntegrationSession:
             self.voice.expression_metadata = dict(
                 emotion=self._data["emotion"] if mode == "manual" else "neutral",
                 emotion_validation="manual" if mode == "manual" else "none")
-        app = RepeatApp if self._repeat else IntegrationApp
+        if self._feedback is not None:
+            self.voice.expression_metadata.update(caption_payload=dict(self._feedback),
+                emotion=self._data['emotion'], emotion_validation='manual')
+        app = FeedbackApp if self._feedback is not None else RepeatApp if self._repeat else IntegrationApp
         instance = app(self.brain, self.client, self.config,
                        face=SessionFace(), voice=self.voice, cancel_check=check)
-        if not self._repeat:
+        if not self._repeat and self._feedback is None:
             instance.stage_reply = stage_reply
             instance.input_provider = self._turn_input
             if self.diagnostics is not None:
@@ -484,10 +586,13 @@ class IntegrationSession:
             return False
         return self._start_turn(repeat=True)
 
-    def _start_turn(self, *, message=None, repeat=False, input_provider=None):
+    def _start_turn(self, *, message=None, repeat=False, input_provider=None, feedback=None):
         if self._closed or self.worker.busy:
             return False
         self._repeat = repeat
+        self._turn_subtitle_generation = self._subtitle_generation
+        self._feedback = feedback
+        self._active_captions = {}
         self._turn_input = input_provider
         with self._lock:
             self._invalidate_expression()
@@ -508,7 +613,7 @@ class IntegrationSession:
                               phase="idle", playback="idle", position=0.0, cues=[])
             self._record("turn_started")
         self.expression_client.reset()
-        self.brain.client = self.expression_client if self._turn_mode == "auto" else self.client
+        self.brain.client = self.expression_client if self._turn_mode == "auto" or self.character_life else self.client
         if not repeat:
             self.voice.message = message
         return self.worker.start()

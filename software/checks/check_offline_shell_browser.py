@@ -152,16 +152,20 @@ def run(profile='ci-synthetic',face_path=None,chromium='/usr/bin/chromium'):
                     intent('start_face_tracking');control('preview',True)
                     wait(page,'()=>BMOFeatures.state.camera.tracking&&document.querySelector("#preview").naturalWidth>0','Synthetic preview failed')
                     intent('take_photo');wait(page,"()=>BMOFeatures.state.mode==='photo'",'Photo mode failed')
-                    for _ in range(3):advance(1.1)
+                    wait(page,"()=>BMOFeatures.state.photo_phase==='countdown'&&document.querySelector('#preview').complete&&document.querySelector('#preview').naturalWidth>0",'Displayed preview did not start photo countdown')
+                    assert page.evaluate('()=>BMOFeatures.state.photo_countdown')>4
+                    for _ in range(5):advance(1.1)
                     wait(page,'()=>BMOFeatures.state.photo?.completed','Synthetic photo not saved')
                     photo=page.evaluate('()=>BMOFeatures.state.photo')
                     assert photo['simulated'] and not photo['executed'] and photo['completion']=='synthetic_saved'
+                    wait(page,"()=>BMOFeatures.state.photo_phase==='photo_review'&&!BMOFeatures.state.conversation_busy&&BMOFeatures.state.audio_owner===null",'Photo feedback did not finish in review')
+                    assert not page.evaluate('()=>BMOFeatures.state.camera.on')
                     intent('return_to_face');wait(page,"()=>BMOFeatures.state.mode==='conversation'&&BMOFeatures.state.camera.tracking&&BMOFeatures.state.camera.preview",'Photo tracking not restored')
                     intent('stop_face_tracking');wait(page,'()=>!BMOFeatures.state.camera.on','Camera off failed')
                     # Inject an old face snapshot after OFF; retired utterance cannot restart speech.
                     assert page.evaluate("""()=>{const s=BMOIntegration.state;return BMOIntegration.applySnapshot({...s,playback:'started',phase:'speaking',sequence:s.sequence+1,cues:[]})}""") is False
                     assert not page.evaluate('()=>BMOFeatures.state.camera.on')
-                    checks.append('controlled countdown saves one synthetic PNG, restores requested tracking, and OFF/late events cannot reactivate')
+                    checks.append('displayed preview starts five-second countdown; one synthetic PNG and success feedback stay in review, explicit return restores tracking, and OFF/late events cannot reactivate')
 
                     intent('play_song','fixture_song_a');wait(page,"()=>BMOFeatures.state.audio_owner==='music'",'Media focus failed')
                     control('pause');position=page.evaluate('()=>BMOFeatures.state.media.position');advance(1.1)
@@ -190,7 +194,8 @@ def run(profile='ci-synthetic',face_path=None,chromium='/usr/bin/chromium'):
                     assert process.returncode==0,'Owned launcher quit failed'
                     summaries=[json.loads(line.removeprefix('BUNDLE_RESULT ')) for line in stdout.splitlines() if line.startswith('BUNDLE_RESULT ')]
                     assert len(summaries)==1;counts=summaries[0]
-                    assert counts['brain']==counts['listen']==counts['synthesis']==counts['players']==counts['reaped']==2,counts
+                    assert counts['brain']==counts['listen']==2,counts
+                    assert counts['synthesis']==counts['players']==counts['reaped']==3,counts
                     assert counts['photos']==1 and counts['camera_open']==counts['camera_close'] and counts['forbidden']==0,counts
                     try:urlopen(url+'api/features',timeout=.3)
                     except URLError as error:assert isinstance(error.reason,ConnectionRefusedError)

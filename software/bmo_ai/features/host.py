@@ -43,6 +43,12 @@ class HostControl:
             valid = type(self.value) is str and 0 < len(self.value) <= 512
         elif self.action == "emotion":
             valid = type(self.value) is str and self.value in (*EMOTIONS, "auto", "manual")
+        elif self.action == "subtitles":
+            valid = type(self.value) is str and self.value in ('off', 'en', 'ko')
+        elif self.action == "photo_preview_ready":
+            valid = (type(self.value) is dict and set(self.value) == {'generation', 'request_id', 'preview_token'}
+                and type(self.value['generation']) is int and self.value['generation'] >= 0
+                and request_id_ok(self.value['request_id']) and request_id_ok(self.value['preview_token']))
         elif self.action == "preview":
             valid = type(self.value) is bool
         elif self.action == "video_start":
@@ -71,7 +77,7 @@ class FeatureSimulatedClient:
             "version": 1, "speech": "We can try a little simulated adventure.",
             "emotion": "happy", "gesture": "none", "intent": None}
         structured = request.get("text", {}).get("format", {}).get("name") in (
-            "bmo_feature_reply_v1", "bmo_feature_reply_v2", "bmo_feature_reply_v3")
+            "bmo_feature_reply_v1", "bmo_feature_reply_v2", "bmo_feature_reply_v3", "bmo_feature_reply_v4")
         text = json.dumps(reply) if structured else reply["speech"]
         return SimpleNamespace(status="completed", incomplete_details=None, error=None, output_text=text)
 
@@ -90,7 +96,7 @@ class FeatureHost:
                  ptt_speech_safe=False, emotion_arms=False, music_supervised=False,
                  usb_gamepad=False, character_life=False, ptt_vad_profile="baseline",
                  wake_word=False, wake_model_manifest=None, ptt_vad_mode="rms",
-                 wake_question_wait=5.):
+                 wake_question_wait=5., one_turn_diagnostic=None, photo_feedback=True):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -102,6 +108,9 @@ class FeatureHost:
                 or type(wake_question_wait) not in (int, float)
                 or not math.isfinite(wake_question_wait) or not 1 <= wake_question_wait <= 10):
             raise FeatureError("invalid_character_configuration")
+        if type(photo_feedback) is not bool:
+            raise FeatureError('invalid_photo_feedback')
+        self._photo_feedback_enabled = photo_feedback
         self.character_life = character_life
         self.ptt_vad_profile = ptt_vad_profile
         self.ptt_vad_mode = ptt_vad_mode
@@ -236,6 +245,11 @@ class FeatureHost:
         self._playback_lock, self._voice_started_turns = Lock(), set()
         self._active_game_request = self._active_media_request = None
         self._pending_photo = self._photo_result = self._photo_restore = None
+        self._photo_phase = 'idle'
+        self._photo_cancel_epoch = 0
+        self._photo_back_pending = False
+        self._photo_feedback = None
+        self._pending_confirmation = None
         self._last_result = None
         self._result_history = {}
         self._closed = False
@@ -245,6 +259,10 @@ class FeatureHost:
         self._preview = self._photo_png = None
         self._face_sequence = 0
         self._media_cue = None
+        self._one_turn_diagnostic = None
+        if one_turn_diagnostic is not None:
+            from ..one_turn_diagnostic import OneTurnDiagnostic
+            self._one_turn_diagnostic = OneTurnDiagnostic(one_turn_diagnostic)
         self.client = client or FeatureSimulatedClient()
         from ..turn_diagnostics import TurnDiagnostics
         self.turn_diagnostics = TurnDiagnostics(enabled=ptt_trace or character_life, clock=clock)
@@ -255,7 +273,13 @@ class FeatureHost:
                                        **({"character_life": True} if character_life else {})),
             on_reply=self._reply, on_playback_event=self._playback,
             diagnostics=self.turn_diagnostics, expressive_voice=expressive_voice,
+            one_turn_diagnostic=self._one_turn_diagnostic,
             **({"character_life": True} if character_life else {}))
+        if self._one_turn_diagnostic is not None:
+            def observe_turn(value):
+                self._one_turn_diagnostic.record_model(self.session.snapshot()['turn_id'],
+                    value.get('input_text'), value.get('model_reply'))
+            self.session.expression_client.responses.local_turn_observer = observe_turn
         self.modes.register("conversation", enter=self._enter_conversation, leave=self._leave_conversation)
         self.modes.register("game_menu", enter=lambda _: None, leave=lambda: None)
         self.modes.register("game", enter=self._enter_game, leave=self._leave_game)
@@ -264,6 +288,7 @@ class FeatureHost:
         self.inputs = InputRouter(self.modes, stop=self.stop, talk=self._talk_input)
         self.inputs.bind("game_menu", self._menu_input)
         self.inputs.bind("game", self._game_input)
+        self.inputs.bind("photo", self._photo_input)
         from .input.gamepad import BrowserGamepadGate
         self.gamepad = BrowserGamepadGate(self.inputs, enabled=usb_gamepad, clock=clock)
         from .input import InputAdapter, PcmTurnGate, WakeWordGate
@@ -441,7 +466,8 @@ class FeatureHost:
     def _reply(self, reply, turn_id, utterance_id):
         self._put_voice(("reply", turn_id, (reply.gesture, reply.intent,
             getattr(reply, "character_plan", None),
-            getattr(reply, "human_photo_request", False) is True), self.clock()))
+            getattr(reply, "human_photo_request", False) is True,
+            getattr(reply, 'photo_success', None), getattr(reply, 'request_interpretation', None)), self.clock()))
 
     def _playback(self, kind, turn_id, at):
         if kind == "started":
@@ -541,11 +567,69 @@ class FeatureHost:
 
     def _enter_photo(self, context):
         self._photo_restore = context.get("restore", (False, False))
+        self._pending_photo = dict(request_id=context['request_id'], generation=self.modes.generation,
+            deadline=None, prepare_deadline=self.clock()+15., preview_token=None,
+            success=context.get('success'), cancel_epoch=self._photo_cancel_epoch)
         self.camera.set_preview(True, generation=self.modes.generation)
-        self._pending_photo = {"request_id": context["request_id"],
-            "generation": self.modes.generation, "deadline": self.clock() + 3.0,
-            "return_to_conversation": context.get("return_to_conversation", False)}
-        self._photo_result = None
+        self._photo_result = self._photo_png = None
+        self._photo_phase = 'preparing'
+        self._photo_back_pending = False
+
+    def _photo_input(self, key, pressed, now):
+        if pressed and key in ('TALK', 'START', 'B', 'ESC'):
+            return self._return_from_photo()
+        return True
+
+    def _return_from_photo(self):
+        if self.modes.mode != 'photo':
+            return False
+        self._last_ptt_press = self.clock()
+        if self._pending_photo:
+            request = self._pending_photo['request_id']
+            self.camera.cancel_photo(request)
+            self._finish_result(HostResult(request, 'cancelled', 'photo_cancelled'))
+        self._pending_photo = None  # Retire countdown before any cancellation callback.
+        if self.session.busy:
+            self._photo_back_pending = True
+            self.cancel_conversation()
+        else:
+            self._transition('conversation')
+        return True
+
+    def _preview_presented(self, value):
+        pending = self._pending_photo
+        if (not pending or self._photo_phase != 'preparing'
+                or value['generation'] != self.modes.generation
+                or value['request_id'] != pending['request_id']
+                or not pending['preview_token'] or value['preview_token'] != pending['preview_token']
+                or not self.camera.snapshot()['preview_available']):
+            raise FeatureError('stale_photo_preview')
+        pending['deadline'] = self.clock()+5.
+        self._photo_phase = 'countdown'
+
+    def _photo_cancelled(self, pending):
+        with self._records_lock:
+            return (self._closed or pending['generation'] != self.modes.generation
+                or pending['cancel_epoch'] != self._photo_cancel_epoch
+                or bool(self._safety_pending))
+
+    def _start_photo_feedback(self, value, pending=None):
+        if not self._photo_feedback_enabled:
+            return
+        # Linearize feedback reservation with HTTP cancel/Back admission. The
+        # owner poll can be inside synchronous capture when those arrive.
+        with self._records_lock:
+            if (pending is not None and (pending['cancel_epoch'] != self._photo_cancel_epoch
+                    or pending['generation'] != self.modes.generation or self._safety_pending)):
+                return
+            if self.session.busy or self.audio.owner is not None:
+                return
+            if type(value) is not dict:
+                value = dict(speech='Ta-da! Pretty good, huh?', captions={})
+            self._voice_lease = self.audio.acquire('photo_feedback', stop=self.cancel_conversation)
+            if not self.session.start_feedback(value.get('speech'), value.get('captions')):
+                self.audio.release(self._voice_lease)
+                self._voice_lease = None
 
     def _leave_photo(self):
         if self._pending_photo is not None:
@@ -559,6 +643,9 @@ class FeatureHost:
             self.camera.set_tracking(tracking, generation=self.modes.generation)
             self.camera.set_preview(preview, generation=self.modes.generation)
         self._photo_restore = None
+        self._photo_phase = 'idle'
+        self._photo_feedback = None
+        self._photo_back_pending = False
 
     def _remember(self, result):
         self._last_result = result.public()
@@ -627,7 +714,10 @@ class FeatureHost:
                 self._transition("game_menu")
             elif name == "return_to_face":
                 self._cancel_video("video_return_to_face")
-                self._transition("conversation")
+                if self.modes.mode == 'photo':
+                    self._return_from_photo()
+                else:
+                    self._transition("conversation")
             elif name == "play_song":
                 self._transition("music", {"target": intent.target, "request_id": request}, force=True)
             elif name == "stop_media":
@@ -641,7 +731,7 @@ class FeatureHost:
                 restore = (self._photo_restore if self.modes.mode == "photo" else
                            (state.get("tracking", False), state.get("preview", False)))
                 self._transition("photo", {"request_id": request, "restore": restore,
-                    "return_to_conversation": request.startswith("spoken_photo_")}, force=True)
+                    "success": getattr(self, '_next_photo_success', None)}, force=True)
                 result = HostResult(request, "running", "photo_countdown",
                     simulated=self.runtime.simulate, executed=not self.runtime.simulate,
                     completion="not_started" if self.runtime.simulate else "camera_preview")
@@ -703,6 +793,7 @@ class FeatureHost:
                       else "stop" if isinstance(intent, HostControl) and intent.action == "input"
                       and intent.value == {"key": "STOP", "pressed": True} else None)
             if safety is not None:
+                self._photo_cancel_epoch += 1
                 request = self._safety_ids[safety]
                 if safety in self._safety_pending or request in self._voice_cleanup:
                     return dict(self._safety_results[request])
@@ -722,6 +813,9 @@ class FeatureHost:
             try:
                 self._command_sequence += 1
                 self._commands.put_nowait((1, self._command_sequence, request, intent, generation, self._command_epoch))
+                if ((isinstance(intent, HostIntent) and intent.name == 'return_to_face')
+                        or isinstance(intent, HostControl) and intent.action in ('reset', 'ptt')):
+                    self._photo_cancel_epoch += 1
             except Full:
                 raise FeatureError("command_queue_full") from None
             self._records[request] = {"fingerprint": fingerprint, "result": result,
@@ -761,6 +855,10 @@ class FeatureHost:
             elif action == "ptt_cancel":
                 if self._ptt_turn_active:
                     self.cancel_conversation()
+            elif action == 'subtitles':
+                self.session.set_subtitles(value)
+            elif action == 'photo_preview_ready':
+                self._preview_presented(value)
             elif action == "video_start":
                 self.runtime.require("camera_video")
                 if self.modes.mode != "conversation" or self.session.busy or self.audio.owner is not None:
@@ -786,7 +884,7 @@ class FeatureHost:
                 self.cancel_conversation()
                 self._cancel_video("video_cancelled")
                 if self.modes.mode == "photo":
-                    self._transition("conversation")
+                    self._return_from_photo()
                 if self.session.busy:
                     return self._await_voice_cleanup(request, "cancel")
                 if self._ptt_cleanup_fault:
@@ -811,7 +909,8 @@ class FeatureHost:
                     raise FeatureError("video_mode_busy")
                 if self.session.busy or not self.session.voice.has_cache:
                     raise FeatureError("no_cached_voice")
-                self._transition("conversation")
+                if self.modes.mode != 'photo' or self._photo_phase != 'photo_review':
+                    self._transition("conversation")
                 self._voice_lease = self.audio.acquire("conversation", stop=self.cancel_conversation)
                 if not self.session.repeat():
                     self.audio.release(self._voice_lease)
@@ -911,6 +1010,14 @@ class FeatureHost:
     def start_question(self, message="Synthetic feature question."):
         return self._begin_conversation(message=message)
 
+    def _confirmation_context(self):
+        pending = self._pending_confirmation
+        if (pending and pending['generation'] == self.modes.generation
+                and self.clock() < pending['expires']):
+            return dict(kind=pending['kind'], token=pending['token'])
+        self._pending_confirmation = None
+        return None
+
     def _begin_conversation(self, *, message=None, input_provider=None):
         if self._closed or self.session.busy or self._ptt_cleanup_fault or self.video.snapshot()["recording"]:
             return False
@@ -923,7 +1030,11 @@ class FeatureHost:
             "arm": ("mock_ack_position_unverified" if self.runtime.simulate
                     else "explicit_supervised_position_unverified" if self.runtime.arms_supervised
                     else "denied"),
-            "imu": "physical_unverified_no_control"})
+            "imu": "physical_unverified_no_control",
+            "subtitle_mode": self.session.subtitle_snapshot()['mode'],
+            "subtitle_last_language": self.session.subtitle_snapshot()['previous_language'],
+            "pending_confirmation": self._confirmation_context()})
+        self._pending_confirmation = None
         self._voice_lease = self.audio.acquire("conversation", stop=self.cancel_conversation)
         if input_provider is not None:
             self._ptt_lease = self._voice_lease
@@ -946,6 +1057,8 @@ class FeatureHost:
         return True
 
     def _talk_input(self):
+        if self.modes.mode == 'photo':
+            return self._return_from_photo()
         if self.modes.mode != "conversation":
             return False
         return self.ptt_button() if self.microphone is not None else self.start_question()
@@ -1021,6 +1134,8 @@ class FeatureHost:
         HID Enter identity is verified by the human later. No RP2040 pin or
         GP7 binding is changed here. Games keep their existing Enter controls.
         """
+        if self.modes.mode == 'photo':
+            return self._return_from_photo()
         if (self._closed or self.modes.mode != "conversation" or self.microphone is None
                 or self._ptt_cleanup_fault or self.video.snapshot()["recording"]):
             return False
@@ -1122,6 +1237,7 @@ class FeatureHost:
         if self._wake_input_active:
             self._wake_handoff["phase"] = "cancelled"
         self._ptt_handoff_pending = False
+        self._pending_confirmation = None
         with self._records_lock:
             self._command_epoch += 1
         self.pcm.cancel("cancelled")
@@ -1144,7 +1260,10 @@ class FeatureHost:
             self._cancel_video("video_cancelled")
             # A stop also retires commands admitted before it. A late queued
             # launch must not immediately reactivate a stopped resource.
-            self._transition("conversation", force=True)
+            if self.modes.mode == 'photo':
+                self._return_from_photo()
+            else:
+                self._transition("conversation", force=True)
         except FeatureError:
             success = False
         try:
@@ -1261,7 +1380,9 @@ class FeatureHost:
             if kind == "reply":
                 self._proposals[turn] = {"gesture": data[0], "intent": data[1], "ended": False,
                                          "character_plan": data[2] if len(data) > 2 else None,
-                                         "human_photo_request": len(data) > 3 and data[3] is True}
+                                         "human_photo_request": len(data) > 3 and data[3] is True,
+                                         "photo_success": data[4] if len(data) > 4 else None,
+                                         "request_interpretation": data[5] if len(data) > 5 else None}
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
                 fresh = 0 <= self.clock() - at <= .5
@@ -1352,17 +1473,27 @@ class FeatureHost:
                     completion=("simulated" if self.runtime.simulate else "resources_stopped") if done else "unknown"))
             proposal = self._proposals.pop(turn, None)
             generation = self._turn_generations.pop(turn, None)
+            if (event.code == 'ok' and proposal and proposal['ended']
+                    and generation == self.modes.generation and self.modes.mode == 'conversation'):
+                interpreted = proposal.get('request_interpretation')
+                if type(interpreted) is dict and interpreted.get('kind') == 'photo' and interpreted.get('disposition') == 'clarify':
+                    self._pending_confirmation = dict(kind='photo', token=uuid4().hex[:16],
+                        expires=self.clock()+45., generation=generation)
             if (event.code == "ok" and proposal and proposal["ended"] and proposal["intent"] is not None
                     and generation == self.modes.generation):
-                spoken_photo = (self.runtime.camera_supervised
+                spoken_photo = ((self.runtime.simulate or self.runtime.camera_supervised)
                     and proposal.get("human_photo_request") is True
                     and proposal["intent"].name == "take_photo")
                 # Only the trusted, current-turn local command check promotes
                 # this one photo to a human request. Other model camera intents
                 # still hit camera_human_action_required in execute().
                 prefix = "spoken_photo_" if spoken_photo else "model_"
-                self.execute(proposal["intent"], request_id=prefix + uuid5(self._namespace, turn).hex,
-                             expected_generation=generation)
+                self._next_photo_success = proposal.get('photo_success') if spoken_photo else None
+                try:
+                    self.execute(proposal["intent"], request_id=prefix + uuid5(self._namespace, turn).hex,
+                                 expected_generation=generation)
+                finally:
+                    self._next_photo_success = None
         for event in self.games.poll():
             if (event.mode_generation == self.modes.generation and self.modes.mode == "game"
                     and event.request_id == self._active_game_request
@@ -1403,20 +1534,52 @@ class FeatureHost:
                     except Exception:
                         pass  # Old receipt failures never overwrite the new foreground.
         self.imu.poll()  # Health expiry only; IMU events never drive motors here.
-        if self._pending_photo and self.clock() >= self._pending_photo["deadline"]:
-            pending, self._pending_photo = self._pending_photo, None
-            if pending["generation"] == self.modes.generation:
-                photo = self.camera.take_photo(pending["request_id"], generation=pending["generation"])
-                self._photo_result = photo.public()
-                self._photo_png = self.camera.photo_bytes(photo.photo_id) if photo.photo_id else None
-                result = HostResult(photo.request_id, photo.status, photo.code, photo.simulated,
-                                    photo.executed, photo.completed, photo.completion)
-                self._finish_result(result)
-                # A spoken request temporarily borrows the camera while the
-                # dialogue is idle. Release it and resume the same dialogue
-                # after capture; UI photos keep their existing review screen.
-                if pending.get("return_to_conversation"):
-                    self._transition("conversation")
+        pending = self._pending_photo
+        if pending and pending['generation'] == self.modes.generation:
+            camera = self.camera.snapshot()
+            if self._photo_phase == 'preparing':
+                if self._photo_cancelled(pending):
+                    self._pending_photo = None
+                    self._photo_phase = 'failed'
+                    self.camera.off()
+                    self._finish_result(HostResult(pending['request_id'], 'cancelled', 'photo_cancelled'))
+                elif camera['error'] or self.clock() >= pending['prepare_deadline']:
+                    self._pending_photo = None
+                    self._photo_phase = 'failed'
+                    self.camera.off()
+                    self._remember(HostResult(pending['request_id'], 'failed', 'photo_preview_unavailable'))
+                elif camera['preview_available'] and not pending['preview_token']:
+                    pending['preview_token'] = uuid4().hex
+            elif self._photo_phase == 'countdown' and self.clock() >= pending['deadline']:
+                self._pending_photo = None  # A request has exactly one capture attempt.
+                photo = self.camera.take_photo(pending['request_id'], generation=pending['generation'],
+                    cancel_check=lambda: self._photo_cancelled(pending))
+                if self._photo_cancelled(pending):
+                    if pending['generation'] == self.modes.generation:
+                        self.camera.off()
+                        self._photo_phase = 'failed'
+                        self._finish_result(HostResult(pending['request_id'], 'cancelled', 'photo_cancelled'))
+                elif pending['generation'] == self.modes.generation and self.modes.mode == 'photo':
+                    self._photo_result = photo.public()
+                    try:
+                        self._photo_png = self.camera.photo_bytes(photo.photo_id) if photo.photo_id else None
+                    except Exception:
+                        self._photo_png = None
+                    saved = bool(photo.completed and photo.photo_id and self._photo_png)
+                    if photo.completed and not saved:
+                        self._photo_result.update(status='unknown', code='photo_review_unavailable', completed=False)
+                    result = HostResult(photo.request_id,
+                        photo.status if not photo.completed or saved else 'unknown',
+                        photo.code if not photo.completed or saved else 'photo_review_unavailable',
+                        photo.simulated, photo.executed, bool(saved),
+                        photo.completion if not photo.completed or saved else 'unknown')
+                    self._finish_result(result)
+                    self.camera.off()  # Review owns saved pixels, not a live camera.
+                    self._photo_phase = 'photo_review' if saved else 'failed'
+                    if saved:
+                        self._start_photo_feedback(pending.get('success'), pending)
+        if self._photo_back_pending and not self.session.busy:
+            self._transition('conversation')
         if self._last_shell_seen is not None and self.clock() - self._last_shell_seen > 3.0:
             self.stop()
             self._last_shell_seen = None
@@ -1444,13 +1607,23 @@ class FeatureHost:
             "media": {"catalog": [item.public() for item in self.media.catalog()], **self.media.snapshot()},
             "camera": camera, "camera_video": self.video.snapshot(), "photo": self._photo_result,
             "system_diagnostics": self._system_diagnostics,
+            "one_turn_diagnostic": self._one_turn_diagnostic.snapshot() if self._one_turn_diagnostic else None,
             "turn_diagnostics": self.turn_diagnostics.snapshot(),
             "character_life": {"enabled": self.character_life, "ptt_vad_profile": self.ptt_vad_profile,
                                "ptt_vad_mode": self.ptt_vad_mode,
                                "expression_trace": face.get("expression_trace"),
+                               "effective_config": dict(character_life=self.character_life,
+                                   emotion_mode=face['emotion_mode'], chat_model=self.config.chat_model,
+                                   expressive_voice=bool(getattr(self.session.voice, 'expressive', False)),
+                                   reasoning_effort=self.config.reasoning_effort, fish_model=self.config.fish_model,
+                                   fish_delivery=self.config.fish_delivery, fish_gain=self.config.fish_gain),
                                "last_played_plan": self._last_character_plan,
                                "physical_latency": "UNMEASURED"},
-            "photo_countdown": max(0, self._pending_photo["deadline"] - self.clock()) if self._pending_photo else None,
+            "photo_countdown": max(0, self._pending_photo['deadline'] - self.clock()) if self._pending_photo and self._pending_photo['deadline'] is not None else None,
+            "photo_phase": self._photo_phase,
+            "photo_request_id": self._pending_photo['request_id'] if self._pending_photo else None,
+            "photo_preview_token": self._pending_photo['preview_token'] if self._pending_photo else None,
+            "subtitles": self.session.subtitle_snapshot(),
             "motion": self.motion.snapshot(), "imu": self.imu.snapshot(),
             "input": self.input_adapter.snapshot() if self.input_adapter else
                      {"enabled": False, "real_input": "NOT_RUN", "device_opens": 0},
@@ -1567,6 +1740,8 @@ class FeatureHost:
             self._temporary.cleanup()
         except Exception:
             errors.append("cleanup_failed")
+        if self._one_turn_diagnostic is not None:
+            self._one_turn_diagnostic.close()
         self._cleanup_errors = errors
         if errors:
             raise FeatureError("cleanup_failed")

@@ -43,6 +43,8 @@ def parser():
     p.add_argument("--offline-voice", action="store_true")
     p.add_argument("--mic-device", default="plughw:CARD=Device,DEV=0")
     p.add_argument("--ptt-microphone", action="store_true", help="explicit supervised opt-in: HID/keyboard Enter starts finite mic/VAD capture; no idle listening")
+    p.add_argument("--one-turn-diagnostic", type=Path,
+                   help="explicit private one-turn transcript/model record outside Git; session-only, never a general log")
     p.add_argument("--ptt-trace", action="store_true", help="opt-in bounded stage/timing/RMS diagnostics; never PCM, transcript, keys or provider messages")
     p.add_argument("--ptt-ambient-profile", type=Path, help="explicit supervised calibration profile; no automatic calibration or idle listening")
     p.add_argument("--plain-voice", action="store_true", help="use plain Aaron voice instead of supported, allowlisted emotional direction")
@@ -103,6 +105,8 @@ def public_plan(args):
         "ptt": {"enabled": args.simulate or args.ptt_microphone,
                 "source": "synthetic_pcm" if args.simulate else "explicit_microphone" if args.ptt_microphone else "disabled",
                 "automatic_capture": False, "wake_word_enabled": False, "physical_verified": False},
+        "one_turn_diagnostic": {"requested": args.one_turn_diagnostic is not None,
+                                "one_turn_only": True, "file_created": False},
         "ptt_diagnostics": {"trace_enabled": args.ptt_trace,
                             "ambient_profile_selected": args.ptt_ambient_profile is not None,
                             "raw_audio_logged": False, "transcripts_logged": False},
@@ -146,6 +150,11 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--wake-question-wait must be finite and from 1 to 10 seconds")
     if args.wake_question_wait != 5. and not args.wake_word:
         p.error("--wake-question-wait requires --wake-word")
+    if args.one_turn_diagnostic is not None and not args.character_life:
+        p.error("--one-turn-diagnostic requires --character-life")
+    if args.one_turn_diagnostic is not None and (args.install_desktop or args.prepare_greeting
+            or args.audition_greeting or args.approve_greeting is not None):
+        p.error("--one-turn-diagnostic is session-only; do not install or combine with greeting review")
     if args.demo_assets and not args.simulate:
         p.error("--demo-assets requires --simulate")
     if args.music_directory is not None and args.demo_assets:
@@ -242,6 +251,12 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             return 1
     if not (args.simulate or args.live):
         p.error("choose --simulate or explicit --live")
+    if args.one_turn_diagnostic is not None:
+        from .one_turn_diagnostic import validate_destination, OneTurnDiagnosticError
+        try:
+            validate_destination(args.one_turn_diagnostic)
+        except OneTurnDiagnosticError as error:
+            p.error(error.code)
     lock = client = app = temporary = arm_port = None
     previous_handlers = {}
     outcome = 0
@@ -328,6 +343,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "emotion_arms": args.emotion_arms}
             if args.character_life:
                 settings["character_life"] = True
+            if args.one_turn_diagnostic is not None:
+                settings["one_turn_diagnostic"] = args.one_turn_diagnostic
             if args.wake_word:
                 settings.update(wake_word=True, wake_model_manifest=args.wake_model_manifest,
                                 wake_question_wait=args.wake_question_wait)
