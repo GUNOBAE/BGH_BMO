@@ -9,11 +9,176 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 SOFTWARE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOFTWARE))
 from checks.check_desktop_app_browser import DesktopFixture, FIXTURE
+from checks import check_desktop_app_browser as desktop
 from bmo_ai.screen_profiles import SCREEN_PROFILES
+
+
+def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
+    """Product routing with native keys; only cache/PCM/provider IO is injected."""
+    from playwright.sync_api import sync_playwright
+    face=FIXTURE if profile=="ci-synthetic" else Path(SCREEN_PROFILES[profile]["default_path"])
+    # A genuinely missing cache exercises the product's startup notice button.
+    child=desktop.CHILD.replace("if scenario=='greeting_missing':",
+        "if scenario in ('greeting_missing','ptt_slow'):")
+    assert child!=desktop.CHILD
+    anchor="            counts['brain']+=1;time.sleep(.15)"
+    assert child.count(anchor)==1
+    child=child.replace(anchor,anchor+"""
+            deadline=time.monotonic()+8
+            while (root/'hold-provider').exists():
+                if time.monotonic()>deadline:raise AssertionError('Provider test gate expired')
+                time.sleep(.01)""")
+    child=child.replace("brain_instances=1)",
+        "brain_instances=1,game_inputs=list(getattr(host.games._runner,'inputs',())))")
+    checks=[]
+    with tempfile.TemporaryDirectory(prefix="bmo-ptt-focus-") as directory:
+        with patch.object(desktop,"CHILD",child):
+            fixture=DesktopFixture(directory,profile=profile,face=face,scenario="ptt_slow")
+        try:
+            with sync_playwright() as pw:
+                browser=pw.chromium.launch(executable_path=chromium,headless=True,
+                    env={"PATH":os.defpath,"HOME":directory,"LC_ALL":"C.UTF-8"},
+                    args=["--no-sandbox","--disable-gpu","--mute-audio","--disable-audio-output",
+                          "--disable-background-networking","--disable-component-update","--disable-sync","--no-first-run"])
+                try:
+                    page=browser.new_page(viewport={"width":800,"height":480});page.set_default_timeout(8000)
+                    page.route("**/*",lambda r:r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
+                    def wait(predicate):
+                        deadline=time.monotonic()+8
+                        while time.monotonic()<deadline:
+                            value=fixture.features()
+                            if predicate(value):return value
+                            page.wait_for_timeout(20)
+                        raise AssertionError('Focus regression did not settle: '+json.dumps({
+                            'mode':value['mode'],'phase':value['phase'],'ptt':value['ptt'],
+                            'audio_owner':value['audio_owner'],'last_result':value['last_result'],
+                            'requests':value['requests'][-3:],'audit':value['test_fixture'],
+                            'browser':page.evaluate("()=>({input:BMODesktop.inputEvidence,active:document.activeElement.id,childActive:document.querySelector('#face').contentDocument.activeElement.tagName})")}))
+                    def press_enter():
+                        page.keyboard.down("Enter");page.keyboard.up("Enter")
+                    def finish_turn(count):
+                        result=wait(lambda s:not s['conversation_busy'] and s['audio_owner'] is None
+                            and s['test_fixture']['mic_closed']==count)
+                        page.wait_for_function("count=>BMODesktop.features?.conversation_busy===false&&BMODesktop.features.audio_owner===null&&BMODesktop.features.test_fixture.mic_closed===count",arg=count)
+                        assert result['test_fixture']['stt']==result['test_fixture']['brain']==result['test_fixture']['synthesis']==count
+                        assert not page.locator("#menu").evaluate("e=>e.open")
+                        return result
+                    page.goto(fixture.url,wait_until="domcontentloaded")
+                    page.wait_for_function("()=>BMODesktop.state?.phase==='ready'&&BMODesktop.state.code==='greeting_missing'&&BMODesktop.features?.ptt?.enabled")
+                    assert page.locator("#notice-menu").is_visible()
+                    page.locator("#notice-menu").click()
+                    page.locator("#greeting-retry").focus()
+                    with page.expect_request(lambda request:request.url.endswith('/api/desktop')
+                            and request.method=='POST' and request.post_data_json['payload']['action']=='retry_greeting'):
+                        press_enter()
+                    page.wait_for_function("()=>BMODesktop.state?.greeting_attempts===2&&BMODesktop.state.phase==='ready'&&BMODesktop.state.code==='greeting_missing'")
+                    assert page.locator("#menu").evaluate("e=>e.open")
+                    assert fixture.features()['test_fixture']['mic_sources']==0
+                    page.locator("#resume").focus();press_enter()
+                    page.wait_for_function("()=>!document.querySelector('#menu').open&&document.activeElement.id==='face'")
+                    checks.append("startup greeting retry button keeps normal menu Enter behavior and does not become a dialogue PTT")
+
+                    page.locator("#notice-menu").focus()
+                    assert page.evaluate("()=>document.activeElement.id")=="notice-menu",page.evaluate("()=>document.activeElement.outerHTML")
+                    press_enter()
+                    audit=wait(lambda s:s['test_fixture']['mic_sources']>=1 or page.locator('#menu').evaluate('e=>e.open'))['test_fixture']
+                    assert audit["mic_sources"]==1 and not page.locator("#menu").evaluate("e=>e.open"),{
+                        "scenario":"startup_notice_button","mic_sources":audit["mic_sources"],
+                        "menu_open":page.locator("#menu").evaluate("e=>e.open"),
+                        "evidence":page.evaluate("()=>BMODesktop.inputEvidence")}
+                    finish_turn(1)
+                    checks.append("actual missing-cache startup notice focus + native Enter down/up starts one PTT instead of clicking menu")
+
+                    # Native Enter activation must still work INSIDE a menu.
+                    # Closing it must not leave the opener's button as a trap.
+                    page.locator("#notice-menu").click()
+                    page.wait_for_function("()=>document.querySelector('#menu').open")
+                    page.locator("#resume").focus();press_enter()
+                    page.wait_for_function("()=>!document.querySelector('#menu').open&&document.activeElement.id==='face'")
+                    assert fixture.features()['test_fixture']['mic_sources']==1
+                    press_enter();finish_turn(2)
+                    checks.append("menu resume uses its native Enter activation; keyup does not start PTT, focus returns to face, next Enter starts PTT without reopening menu")
+
+                    # A held key must never briefly open then activate Talk in
+                    # that new menu; a final mic count alone could hide this.
+                    page.evaluate("""()=>{window.__focusMenuOpens=0;new MutationObserver(rows=>{
+                        for(const row of rows)if(row.oldValue===null)window.__focusMenuOpens++;
+                    }).observe(document.querySelector('#menu'),{attributes:true,attributeFilter:['open'],attributeOldValue:true});}""")
+                    page.locator("#notice-menu").focus()
+                    page.keyboard.down("Enter");page.keyboard.down("Enter");page.keyboard.up("Enter")
+                    finish_turn(3)
+                    assert page.evaluate("()=>window.__focusMenuOpens")==0
+                    assert page.evaluate("()=>BMODesktop.inputEvidence.repeats_ignored")>=1
+                    checks.append("held native Enter/repeat on residual notice-button focus opens zero menus and admits exactly one PTT")
+
+                    page.locator("#face").click(position={"x":400,"y":230});press_enter();finish_turn(4)
+                    checks.append("same-origin face iframe native Enter down/up still reaches the single PTT owner")
+
+                    page.locator('#notice-menu').click();page.locator('#talk').focus();press_enter()
+                    page.wait_for_function("()=>!document.querySelector('#menu').open&&document.activeElement.id==='face'")
+                    finish_turn(5)
+                    checks.append("native menu Talk Enter starts exactly one PTT; menu-close face focus restoration does not cancel that capture")
+
+                    # Test native editing on the real product page, without
+                    # exporting or replacing its private key() implementation.
+                    page.evaluate("""()=>{const box=document.createElement('section');box.id='focus-editors';
+                        box.style.cssText='position:fixed;top:0;left:0;z-index:20;background:white;color:black';
+                        box.innerHTML='<input id="focus-input"><textarea id="focus-textarea"></textarea><div id="focus-editable" contenteditable="true"><span tabindex="0">editable text</span></div>';
+                        document.body.append(box);}""")
+                    for selector in ('#focus-input','#focus-textarea'):
+                        page.locator(selector).focus();page.keyboard.type('typed');press_enter()
+                    assert page.locator('#focus-input').input_value()=='typed'
+                    assert page.locator('#focus-textarea').input_value()=='typed\n'
+                    page.locator('#focus-editable span').first.focus();press_enter()
+                    page.wait_for_timeout(200)
+                    assert fixture.features()['test_fixture']['mic_sources']==5
+                    assert not page.locator('#menu').evaluate('e=>e.open')
+                    page.locator('#focus-editors').evaluate('e=>e.remove()')
+                    checks.append("input/textarea and nested contenteditable retain native Enter editing without PTT")
+
+                    page.locator('#notice-menu').click();page.locator('#games').click()
+                    page.wait_for_function("()=>document.querySelector('#game-menu').open&&document.querySelector('#game-list button:not(:disabled)')")
+                    page.locator('#game-list button:not(:disabled)').first.focus();press_enter()
+                    wait(lambda s:s['mode']=='game')
+                    page.wait_for_function("()=>!document.querySelector('#game-menu').open&&BMODesktop.features?.mode==='game'")
+                    page.locator('#face').focus();press_enter()
+                    game=wait(lambda s:['START',True] in s['test_fixture']['game_inputs'] and ['START',False] in s['test_fixture']['game_inputs'])
+                    assert game['test_fixture']['mic_sources']==5
+                    page.keyboard.press('Escape');wait(lambda s:s['mode']=='game_menu')
+                    page.wait_for_function("()=>document.querySelector('#game-menu').open&&BMODesktop.features?.mode==='game_menu'")
+                    page.locator('#game-back').focus();press_enter()
+                    wait(lambda s:s['mode']=='conversation')
+                    page.wait_for_function("()=>!document.querySelector('#game-menu').open&&document.activeElement.id==='face'")
+                    assert fixture.features()['test_fixture']['mic_sources']==5
+                    checks.append("open game menu native Enter launches a fixture game; gameplay Enter sends START down/up with zero PTT; game return restores face focus")
+
+                    hold=Path(directory)/'hold-provider';hold.write_text('synthetic provider wait')
+                    page.locator('#notice-menu').focus();press_enter()
+                    wait(lambda s:s['phase']=='thinking' and s['test_fixture']['brain']==6)
+                    # Simulate the exact residual focus during thinking too.
+                    page.locator('#notice-menu').focus();press_enter()
+                    wait(lambda s:s['phase']=='idle')
+                    hold.unlink()
+                    cancelled=wait(lambda s:not s['conversation_busy'])
+                    assert cancelled['test_fixture']['mic_sources']==cancelled['test_fixture']['mic_closed']==6
+                    assert cancelled['test_fixture']['synthesis']==5
+                    assert not page.locator('#menu').evaluate('e=>e.open')
+                    checks.append("thinking GP8/Enter from residual notice-button focus cancels the actual pending provider without a menu or late playback")
+                    code,counts,error=fixture.finish()
+                    assert code==0,error
+                    assert counts['forbidden']==0 and counts['mic_sources']==counts['mic_closed']==6
+                    assert counts['active_mics']==0 and counts['max_mics']==counts['max_players']==1
+                    assert counts['players']==counts['reaped'] and counts['browsers']==counts['browser_reaped']==1
+                    return {"status":"PASS","checks":checks,"counts":counts,
+                        "physical_gp8_identity":"NOT_RUN","cache":"PRIVATE_SYNTHETIC_MISSING",
+                        "input":"NATIVE_CHROMIUM_KEYDOWN_KEYUP"}
+                finally:browser.close()
+        finally:fixture.close()
 
 
 def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
@@ -200,8 +365,10 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                     checks.append("product exit reaps all owned synthetic players/browser and closes all PCM sources")
                 finally: browser.close()
         finally: fixture.close()
+    focus_regression=run_focus_regression(profile,chromium)
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
     return dict(status="PASS",screen_profile=profile,vad_mode=vad_mode,checks=checks,counts=counts,
+        focus_regression=focus_regression,
         sha256_before=before,sha256_after=before,
         not_run=["USB GP8 identity/firmware", "actual microphone/VAD tuning", "paid STT/GPT/Fish", "physical devices"])
 

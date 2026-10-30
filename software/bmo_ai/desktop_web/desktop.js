@@ -11,6 +11,12 @@ async function post(path,payload){const response=await fetch(path,{method:'POST'
 const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(action,value=null)=>post('/api/control',{action,value}),intent=(name,target=null)=>post('/api/intent',{name,target});
 function error(message){$('notice').hidden=false;$('notice-message').textContent=message;}
 function menu(){cancelPTT();if(!$('menu').open)$('menu').showModal();}
+function isTextInput(target){return !!(target?.isContentEditable||target?.closest?.('input,select,textarea'));}
+function restoreFaceFocus(){
+ if(closed||!canTalk()||currentMode!=='conversation'||document.querySelector('dialog[open]')||isTextInput(document.activeElement))return;
+ frame.focus({preventScroll:true});
+}
+for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('close',restoreFaceFocus);
 function refreshAdapter(){if(window.BMOIntegration?.closed){window.BMOIntegration=new window.BMOFaceAdapter(frame);}handshakeFrame=null;presentedRun=null;presentationGeneration++;}
 function canTalk(){return state?.phase==='ready'||state?.character_life?.enabled===true&&state?.phase==='greeting';}
 function presentFace(run){
@@ -158,7 +164,13 @@ for(const [id,action] of [['music-pause','pause'],['music-resume','resume'],['mu
 $('music-stop').onclick=()=>intent('stop_media').catch(()=>error('음악 종료를 확인해 주세요.'));
 for(const id of ['game-back','foreground-back'])$(id).onclick=()=>intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
 const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',z:'A',b:'B',Enter:'START',Shift:'SELECT',Escape:'ESC'};
-function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){if(!pressed){enterDown=false;bump('keyups');}else if(event.repeat)bump('repeats_ignored');else bump('enter_presses');}if(event.repeat)return;
+function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){if(!pressed){enterDown=false;bump('keyups');}else if(event.repeat)bump('repeats_ignored');else bump('enter_presses');}
+ // In the conversation surface Enter belongs to GP8/PTT, even if a closed
+ // menu or startup notice left a button focused. Suppress native button clicks
+ // on BOTH edges and repeats; dialogs and text editing retain their own keys.
+ if(event.key==='Enter'&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&canTalk()&&!isTextInput(event.target)){
+  event.preventDefault();event.stopPropagation();if(!pressed)return;if(event.repeat||enterDown)return;enterDown=true;ptt();return;}
+ if(event.repeat)return;
  if(pressed&&event.ctrlKey&&event.altKey&&event.code==='KeyD'&&state?.developer_enabled&&state.phase==='ready'){event.preventDefault();location.assign('/developer');return;}
  if(event.key==='Escape'){
   event.preventDefault();event.stopPropagation();
@@ -166,9 +178,7 @@ function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){
   if(covering){if(pressed){cancelPTT();covering.close();}return;}
   if(['game','game_menu'].includes(currentMode)){control('input',{key:'ESC',pressed}).catch(()=>error('게임 종료 상태를 확인해 주세요.'));return;}
   if(pressed){cancelPTT();for(const d of document.querySelectorAll('dialog[open]'))d.close();menu();}return;}
- if(['BUTTON','INPUT','SELECT','TEXTAREA'].includes(event.target.tagName))return;
- if(event.key==='Enter'&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&canTalk()){
-  event.preventDefault();event.stopPropagation();if(!pressed){enterDown=false;return;}if(enterDown)return;enterDown=true;ptt();return;}
+ if(isTextInput(event.target)||event.target?.closest?.('button'))return;
  if(['game','game_menu'].includes(currentMode)&&keys[event.key]){if(event.key==='Enter'&&pressed)bump('blocked_mode');event.preventDefault();event.stopPropagation();control('input',{key:keys[event.key],pressed}).catch(()=>error('게임 입력 상태를 확인해 주세요.'));return;}}
 window.addEventListener('keydown',event=>key(event,true));window.addEventListener('keyup',event=>key(event,false));
 function blurPTT(event){setTimeout(()=>{if(event.isTrusted&&document.hasFocus()&&document.activeElement===frame)return;bump('cancelled_blur');cancelPTT();},0);}
