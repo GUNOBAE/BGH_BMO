@@ -326,6 +326,31 @@ class MicrophoneOwnerTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         iterator.close()
 
+    def test_detector_error_restart_waits_for_old_owned_source_cleanup(self):
+        physical=self.start()
+        old_thread=self.broker._thread
+        closing,release=Event(),Event()
+        real_close=physical.close
+        def delayed_close():
+            closing.set()
+            if not release.wait(1.):raise AssertionError('Cleanup test gate expired')
+            return real_close()
+        physical.close=delayed_close
+        self.detector.status='MODEL_ERROR'
+        physical.send(1000)
+        self.assertTrue(closing.wait(1.))
+        try:
+            self.assertFalse(self.broker.snapshot()['wake_enabled'])
+            self.assertFalse(self.broker.start_wake(live_opt_in=True))
+            self.assertEqual(len(self.factory.sources),1)
+        finally:
+            release.set();old_thread.join(timeout=1.)
+        self.assertFalse(old_thread.is_alive())
+        self.assertTrue(self.broker.start_wake(live_opt_in=True))
+        eventually(lambda:len(self.factory.sources)==2 and self.factory.sources[-1].entered.is_set())
+        self.assertTrue(physical.closed.is_set())
+        self.assertEqual(self.factory.maximum,1)
+
     def test_existing_ptt_recorder_uses_shared_stream_vad_and_releases_cursor(self):
         physical = self.start()
         recorder = PttRecorder(AudioFocus(), self.broker.source_factory, speech_safe=True)

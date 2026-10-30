@@ -2,12 +2,31 @@
 
 PR #40의 [새 사용자 지시](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6527145621)를 적용한다. 기존 사진 촬영 직후 자동 복귀 지시는 이 문서의 명시적 review 복귀로 대체한다.
 
+**밤 RC 갱신:** [NIGHT CLOSEOUT](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6529744247)에 따라 Cloud가 같은 PR의 유일한 코드 writer다. Pi의 이미 끝난 진단을 반복하지 않으며, 이 문서 하나에 아침 후보 인계를 모은다. 운영 앱·바탕화면·OS·서비스·펌웨어를 밤중에 설치하거나 교체하지 않는다.
+
 ## 사용자 실기와 Cloud 검증의 구분
 
 - 사용자 확인: GP8 초기/메뉴 복귀/얼굴 클릭 후 대화, thinking 취소와 새 대화, 사실 질문의 기본 표정 복귀. 현재 부팅음은 승인되어 변경하지 않았다.
 - 사용자가 한국어로 보고한 화남 요청도 실제 BMO에는 영어로 말한 것이었다. 이를 한국어 화남 실기 PASS로 취급하지 않는다. 정확한 영어 `Get angry`에서 neutral/약한 억양이 관찰됐으나 실제 STT·모델 메타데이터·런타임 설정은 Cloud에서 확인하지 못했다.
 - 영어 사진 요청 실패와 한국어 요청의 촬영 관찰은 기존 후보의 보고다. 저장 파일·새 review UX까지 승인됐다는 뜻이 아니다.
 - Alt+Tab/VNC 이탈, 실제 영어 의미 이해·분노 억양·번역 정확도·촬영 품질은 자동 검사 PASS로 대체하지 않는다.
+- 밤 지시의 최신 사용자 성공 관찰은 **새 감정·자연어 대화·자막·GP8·사실 질문 neutral 복귀·승인 부팅음**이다. 위의 과거 영어 분노 실패 관찰은 당시 기록으로 남긴다. 성공한 prompt·감정·자막을 새 재현 오류 없이 다시 개작하지 않는다.
+
+## 밤 사진 진단의 확인 범위
+
+[PI-NIGHT-HANDOFF-20261031](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6530152438)의 판정은 **PHOTO_CAUSE_UNCONFIRMED**다. 확인한 후보 폴더는 `bdaffef759b79206d8b914166d1a9957d3b7bf88`이고 깨끗했지만, 실제 앱 PID·실행 HEAD·cwd·interpreter는 식별되지 않았다. 폴더 HEAD나 Chromium 존재로 실행 상태를 추정하지 않는다.
+
+기존 journal에 `camera_timeout / executed=true / completed=false / capture_attempted`가 있으나 이번 실패의 request_id와 일치하지 못했다. AF와 still capture가 같은 timeout code를 썼으므로 이 기록만으로 둘을 구분하지 않는다. 폴더 owner `bgh:bgh`/0700, journal 0600, 여유 약 448GB는 권한·공간 부족을 뒷받침하지 않는다. 기존 PNG 하나는 다른 요청이며 이번 사진 저장 성공의 증거가 아니다. 기존 사진·journal을 삭제하거나 chmod·재설치·일괄 timeout 연장으로 덮지 않는다.
+
+Cloud의 SDK·취소·review 경계 검사는 별도 소스 근거다. 최종 보고에서 **재현하여 고친 코드 문제**와 **이번 Pi 실패 원인의 미확정**을 구분한다. 사진의 새 후보 결과는 `PI_RETEST_REQUIRED`이며, 이미 끝난 진단을 사용자에게 다시 시키지 않는다. 현장 근거가 더 필요하면 아침 한 번의 검수에서 해당 요청의 whitelist 상태와 journal만 일치시킨다.
+
+같은 Pi 댓글의 추가 정적 확인에서 Picamera2 **0.3.37**의 `wait(job, timeout)`은 `Job.get_result()` → `Future.result(timeout)`이고, AF 완료값은 bool, still 완료값은 metadata dict였다. still Job에 저장과 preview 복귀가 포함되는 계약은 현재 adapter와 맞으며, 이 계약 자체가 실패 원인이라는 근거는 없다.
+
+이번 RC는 기존 `camera_timeout` code·시간 한도·AF/권한/취소 검사를 유지하면서 `PhotoResult.stage`를 journal·whitelist 상태에 남기고 AF 대기와 still 대기 실패를 구분한다. 사용자 UI에는 짧은 stage별 이유만 표시하며 임의 예외·개인 경로를 내보내지 않는다. 저장 뒤 성공 음성 실패는 이미 저장된 사진 결과를 촬영 실패로 뒤집지 않는다. 이 instrumentation과 독립 재현 코드 수정은 현장 실패 원인의 확정을 대신하지 않는다.
+
+독립 SDK 재현에서 **현재 촬영 구간 안에 노출된 still**도 PNG 인코딩·preview 복귀에 0.8초가 걸리면 tracking용 0.5초 frame-age 검사에 걸려 `stale_photo`가 됐다. still은 완료 시점의 preview 표시 나이 대신 현재 capture 시작~완료 구간과 노출 시각을 비교하도록 수정했다. 이전 요청의 노출·미래 timestamp·SDK focus/still timeout·취소 검사는 유지한다. 이는 별도로 재현한 소스 결함이며, request_id가 일치하지 않는 Pi의 `camera_timeout`을 해결했다는 뜻은 아니다.
+
+호출어에서는 수신 때 신선도를 검증한 질문 PCM을 소비자가 700ms 늦게 읽으면 버리던 문제와, detector 오류 뒤 이전 마이크 close가 끝나기 전에 새 reader를 시작할 수 있던 경합을 고쳤다. 기존 wake 질문 큐의 유한 12초 범위를 일관되게 적용하고 cleanup 완료 전 재시작을 보류한다. 원래 GP8 신선도·수신 검사와 무간격 질문 제한은 유지한다.
 
 ## 한 응답의 의미 해석
 
@@ -55,25 +74,79 @@ cd /home/bgh/BMO_CHARACTER_LIFE
 
 requested/model/resolved/emitted, validation/degradation 이유, 실제 TTS backend/mechanism/Soft override, character_life와 emotion mode를 비교한다. typed literal 시험과 실제 STT 입력을 `input_kind`로 구분한다. manual 표정 선택 또는 plain voice 옵션도 유효 설정에서 확인한다. 현재 실기 자료 없이 특정 단계가 Pi 실패 원인이라고 단정하지 않는다.
 
-## Pi 후보 갱신과 최소 세 시나리오
+## 밤 RC의 실행·설치 계획 확인
 
-기존 앱을 정상 종료한다. `/home/bgh/BMO_REAL_ROBOT`은 보존하고 후보만 갱신한다. 미커밋 변경·다른 브랜치·분기한 커밋이 있으면 중단하고 보존·통합한다. 정상 환경의 의존성·음성팩·부팅음·펌웨어를 다시 설치하지 않는다.
+`launch-character-life`는 후보 `.venv-device/bin/python`으로 한 Desktop을 실행하고 R10·기존 대화/자막·GP8/WebRTC·요청 시 사진/영상을 선택한다. 설치 계획이 쓰는 기존 `launch-desktop`도 `--character-life`가 있으면 같은 `.venv-device`를 고르게 수정했다. 이전에는 바탕화면 실행만 `.venv`로 달라질 수 있었다. 명시적 `BMO_PYTHON`은 계속 우선하고 일반 실행의 `.venv`는 보존한다. 후보 interpreter가 없다고 다른 환경으로 조용히 fallback하지 않는다.
+
+기존 installer의 **읽기 전용 계획**은 다음과 같다. 실제 Pi의 기존 아이콘·XDG 상태는 Pi 인계로 확인해야 하며, 계획 출력만으로 클릭 성공을 승인하지 않는다.
+
+```bash
+cd /home/bgh/BMO_CHARACTER_LIFE && ./launch-character-life --install-desktop --dry-run
+```
+
+`files_written=0`, `activation=NOT_RUN`, autostart/service 변경 없음과 후보 checkout·camera/wake 옵션을 검토한다. 이 밤 작업에서 `--dry-run`을 빼거나 운영 아이콘을 덮어쓰지 않는다. 기존 아이콘과 충돌하면 그대로 보존한다. R10 원본은 기존 screen-profile registry 경로를 읽고 private 자산·키는 설치 계획에 넣지 않는다. arm 옵션은 runtime 감독 조건이므로 installer에서 계속 명시적으로 거부한다. 후보 아이콘에 물리 확인을 영구 저장하지 않는다.
+
+Pi의 최종 읽기 전용 인계는 다음과 같다. 자산의 존재·내부 완전성·사람 승인은 각각 구분하며, 새 음성 생성·재생·복사·승인·제작 lock 변경을 하지 않는다.
+
+- 설치된 승인 부팅음 `~/.config/bmo/startup_chime.wav`의 SHA256은 `ba72dce47853da5a3da5df9e0e65e2b7f9c147720b6653c2ac24845ea1f26082`, PCM16/mono/48kHz/1.28초다. **현재 승인본을 보존하며 다른 세션의 대안 `461967…` WAV로 교체하지 않는다.**
+- 기본 ACK `~/.cache/bmo/wake-ack-v1/greeting.cache`는 없다. 따라서 기본 경로는 `VISUAL_LISTENING` fallback이며 다른 세션의 제작 실패/종료나 다른 경로의 승인 상태를 추정하지 않는다.
+- 기존 `~/.cache/bmo/character-voice-bank-v1/s2.1-pro-free/`의 6개 번들은 모두 `approved=false`, `simulated=false`다. WAV/cue SHA·spec fingerprint 내부 일치만 확인됐으며 현재 config 호환성·청취 승인은 아니다. 남아 있는 generation/bank/ledger lock 파일을 획득·삭제·해제하지 않는다.
+- 기존 wake manifest와 `.venv-device`의 `openwakeword 0.6.0`·`onnxruntime 1.31.1` metadata가 있다. 저장 WAV 추론 기록은 `OPERATIONAL_INFERENCE_PASS`지만 무라벨 PCM·활성화 0회이므로 사람 정확도 PASS가 아니다. manifest 지원 문구는 **Hey Beemo**, 사람 검수 `NOT_RUN`, 한국식 발음 `UNVERIFIED`다.
+- `.venv-device`는 Python 3.13.5/system-site이고 정적 launcher의 interpreter·cwd·R10·사진/영상 경로와 일치한다. 실행 PID·override·실제 config와 모든 장치 owner의 해제 여부까지 확인된 것은 아니다. 모듈 metadata 확인을 runtime import/실기 성공으로 바꾸지 않는다.
+
+## Pi 후보 갱신·실행과 정상 작동본 복귀
+
+아침 사용자가 기존 앱의 메뉴 **종료**로 정상 종료하고 자원 정리를 확인한 뒤 실행한다. `/home/bgh/BMO_REAL_ROBOT`은 보존하고 후보만 갱신한다. 미커밋 변경·다른 브랜치·분기한 커밋이 있으면 중단하고 보존·통합한다. 정상 환경의 의존성·음성팩·부팅음·펌웨어를 다시 설치하지 않는다. 아래 `FINAL_RC_SHA`는 최종 `CLOUD-NIGHT-RC-20261031` 댓글의 검토된 전체 SHA로 치환하며 과거 폴더 HEAD를 그대로 쓰지 않는다.
 
 ```bash
 (
   set -eu
+  bmo_rc_sha='FINAL_RC_SHA'
+  [[ "$bmo_rc_sha" =~ ^[0-9a-f]{40}$ ]]
   cd /home/bgh/BMO_CHARACTER_LIFE
   test "$(git branch --show-current)" = feature/bmo-character-life-v1
-  test -z "$(git status --porcelain)"
-  git fetch origin feature/bmo-character-life-v1
-  git merge --ff-only FETCH_HEAD
-  git rev-parse HEAD  # 최종 보고의 검토된 HEAD와 비교한 뒤 실행
-  ./launch-character-life
+  test -z "$(git status --porcelain=v1 --untracked-files=normal)"
+  git fetch origin refs/heads/feature/bmo-character-life-v1
+  git cat-file -e "$bmo_rc_sha^{commit}"
+  git merge --ff-only "$bmo_rc_sha"
+  test "$(git rev-parse HEAD)" = "$bmo_rc_sha"
+  test -x .venv-device/bin/python
 )
 ```
 
-1. `Get angry.`와 자연스러운 영어 변형 → 실제 angry 얼굴과 억양을 각각 확인 → `two plus two`에서 기본 표정 복귀. 필요할 때만 실패 한 턴의 로컬 진단을 사용한다.
-2. 자연스러운 영어 사진 요청 → 실제 live preview → 5초 → 저장 사진 유지 → 짧은 성공 대사 → repeat 재촬영 없음 → GP8/Back 복귀. 별도로 countdown 취소/실패 시 성공 대사 없음도 확인한다.
-3. `Turn on Korean subtitles`로 영어 음성과 한국어 번역을 함께 확인 → 메뉴 en/ko/off, 취소·repeat·다음 질문을 비교한다. 실제 번역 품질·하단 가림 정도는 Pi 화면에서 검수한다.
+기본 PTT 후보 실행은 한 줄이다. 실행 자체가 실제 장치 사용·기존 유료 대화 경로의 사용자 감독 시작이며 밤에는 자동 실행하지 않았다.
 
-Luna low, Aaron Soft, Beemo, gain 0.25, GP7/GP8와 서보 보정, 별도 음성팩은 보존했다. 새로운 게임·카메라 엔진·이미지 클라우드 업로드·팔 활성화는 없다. 최종 SHA와 exact-HEAD CI는 PR #40의 완료 보고를 기준으로 한다.
+```bash
+cd /home/bgh/BMO_CHARACTER_LIFE && ./launch-character-life
+```
+
+선택 wake는 같은 앱에 더한다. 아래 manifest 존재·runtime metadata는 Pi 인계에서 확인됐지만 실제 사람 인식률은 `NOT_RUN`이며 ACK 기본 자산은 없다. 사용자가 이 후보의 **Hey Beemo**를 검수하고, 누락·오류이면 PTT로 계속한다. 다른 모델을 자동 다운로드하지 않는다.
+
+```bash
+cd /home/bgh/BMO_CHARACTER_LIFE && ./launch-character-life --wake-word --wake-question-wait 5 --wake-model-manifest /home/bgh/.local/state/bmo/wake-model-candidates/amrmantawi-bmo-openwakeword-58eb9404df18/manifest.json
+```
+
+후보를 닫을 때 메뉴 **종료**를 사용하고 cleanup 완료를 확인한다. cleanup이 미확인되면 두 번째 앱이나 장치 owner를 열지 않는다. 정상 종료 뒤 기존 정상 작동본으로 돌아갈 때는 [기존 검수에 기록된 명령](DEVICE_ACCEPTANCE_20261029_KR.md)을 그대로 사용한다. 이번 밤에 정상 작동본을 수정·재시작하거나 실행 interpreter를 관측한 것은 아니다.
+
+```bash
+cd /home/bgh/BMO_REAL_ROBOT && BMO_PYTHON="$PWD/.venv-camera/bin/python" ./launch-desktop --live --windowed --ptt-microphone --ptt-trace
+```
+
+이 복귀에는 Git reset·펌웨어 복원·서비스 재시작·private 자산 삭제가 필요 없다. `.venv-camera`나 기록된 런처가 없으면 추정 경로로 대체하지 않고 기존 실제 실행 경로를 확인한다.
+
+## 아침 최소 네 시나리오
+
+1. **사진 한 장:** 자연스러운 영어 사진 요청 → 실제 preview 표시 → 5초 → 저장 PNG review 유지 → 저장 성공 뒤에만 짧은 대사 → repeat 재촬영 없음 → GP8/Back 복귀. 실패하면 같은 요청의 짧은 UI 이유·whitelist stage/code·journal 일치만 기록하고 자동 재촬영하지 않는다. countdown 취소나 late result가 성공 대사/추가 촬영으로 이어지지 않는지도 관련 경로만 확인한다.
+2. **성공 기능 비회귀:** 기존 자연어 대화·감정 뒤 `two plus two` neutral, en/ko/off 자막·repeat·thinking 취소 후 다음 GP8 질문을 짧게 비교한다. 실제 억양·번역·하단 가림은 사람이 판단한다. 승인 부팅음·고정 하늘색 배경/원본 등장·R10/v13.2 원본은 변경하지 않는다. 이미 성공한 하드웨어 전체 검사는 반복하지 않는다.
+3. **선택 wake:** 기존 모델/자산이 확인된 경우 호출 → ACK 또는 listening → 새 질문 → 질문 종료 후 thinking, 무질문 timeout·취소를 확인한다. 모호한 앞부분을 버린 뒤 뒷부분만 STT로 보내지 않으며, 무간격 호출+질문의 전체 보존은 계속 미검증/제한이다. 누락·오류·OFF 뒤 GP8는 유지한다.
+4. **팔은 별도 감독 조건만:** 현재 Pi의 board SHA/REMOTE_ENABLED 정적 관찰과 실제 B1 adapter 상태를 source/preflight/transport로 나누고, 과거 disabled/커넥터 분리를 현재 상태로 복사하지 않는다. 실제 연결·기구 간섭·즉시 전원 차단 수단·현재 전체 SHA의 검토가 준비되지 않으면 `physical_verified=false / NEEDS_OPERATOR`에서 멈춘다. 조건 충족 후에만 기존 B1 명명 gesture 하나와 기존 취소/STOP 흐름을 감독 검수하고, 문제 시 전체 전원을 즉시 차단한다. STOP ACK는 전원 차단·위치 확인이 아니며 GP7 수동 기능과 기존 보정을 보존한다.
+
+구형 static `arm_readiness()`의 BLOCKED는 기존 소스 gate이며 현재 B1 adapter runtime과 같지 않다. adapter의 software preflight, HELLO 전 UNVERIFIED, 검증된 ACK의 transport usable, STOP/close의 BLOCKED를 따로 표시하고 어느 상태에서도 `physical_verified`를 true로 추정하지 않는다.
+
+Pi가 재사용한 보드 파일 관측은 **2026-10-30의 정적 기록**이다. `code.py` SHA `4e30cb8dd29f3af03867828da2fee7e1ea1c1e5099be725e7daa11b98f67ebae`/`REMOTE_ENABLED=False`, bridge SHA `14fc42886a39f5b74fb7bc28e7eecf0914801b05e1fe5bd74cfdb3df0f0fcbfe`였으며 10/31 현재 runtime·배선의 증거가 아니다. 마지막 실제 B1은 10/29 HELLO 1회 → DISABLED/POSITION_UNVERIFIED, motion 0이다. **현재 사용할 수 있는 reviewed-enabled 전체 SHA는 미확인**이므로 과거 값을 감독 인자에 채우지 않는다. reset/재부팅도 원격 disabled만으로 물리 안전을 보장하지 않는다.
+
+팔 감독 실행의 기존 인자는 `--arms-supervised --arm-legacy-bridge --arm-reviewed-code-sha <현재_검토한_전체_code.py_SHA256> --arm-power-off-ready`다. 실제 승인 SHA를 채우거나 원격 펌웨어를 켜지 않는다. `--emotion-arms`는 같은 감독 실행에서만 선택한다. 무인 모션·펌웨어 write/reset·재보정 없이 준비만 하며 B1 ACK를 실물 움직임 PASS로 바꾸지 않는다.
+
+위 조건이 준비된 단일 감독 시험은 `--windowed`와 기존 팔 인자로 같은 앱을 실행하고, 기존 앱의 `BMODesktop.intent('arm_gesture','wave')` 한 번만 요청하는 절차다. 자동 감정 모션을 늘리지 않도록 `--emotion-arms`는 이 한 번의 명명 시험에 필요하지 않다. 기존 `BMODesktop.control('cancel')`은 HOLD, 메뉴 **정지** 또는 `BMODesktop.control('stop')`은 현재 세션 STOP latch다. DISABLED/STOPPED/불명 ACK·timeout·boot 변경·cleanup 불명·예상치 못한 움직임에서 재요청·자동 재시도하지 않고 감독자가 중단한다. 이 명령 형식은 준비 자료이며 이번 밤에 실행하지 않았다.
+
+Luna low/history/output, Aaron Soft, Beemo, gain 0.25, GP7/GP8와 GP10/GP11·600–2400µs·50Hz·좌우 반전·서보 보정, 별도 음성팩은 보존했다. 새로운 게임·카메라 엔진·이미지 클라우드 업로드·팔 활성화는 없다. 유한 제품 회귀의 주입 IO 결과와 실제 장치 검수는 분리한다. 공개 전시 비용 상한·rate limit은 별도 승인/미검수 사항이며 공개 운영 준비 완료로 보고하지 않는다. 최종 SHA와 해당 HEAD의 Python 3.11/3.13·제품 브라우저 CI는 PR #40의 `CLOUD-NIGHT-RC-20261031` 완료 보고를 기준으로 한다.

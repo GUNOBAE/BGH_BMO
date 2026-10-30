@@ -160,7 +160,7 @@ class PhotoStore:
             committed = True
             result = PhotoResult(request_id, 'simulated' if simulated else 'succeeded', 'photo_saved',
                                  photo_id, hashlib.sha256(written).hexdigest(), len(written), simulated,
-                                 not simulated, True, 'synthetic_saved' if simulated else 'saved')
+                                 not simulated, True, 'synthetic_saved' if simulated else 'saved', stage='complete')
             # Cancellation after publication cannot erase the committed image.
             try:
                 self.ledger.finish(result)

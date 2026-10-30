@@ -167,6 +167,12 @@ class MicrophoneBroker:
                 return False
             if self._wake:
                 return True
+            # A failed detector can retire wake admission before its reader
+            # has finished closing the owned device. Never replace that
+            # thread/source with a new microphone owner during cleanup.
+            if self._source is not None or self._thread is not None and self._thread.is_alive():
+                self._code = "pcm_cleanup_pending"
+                return False
             try:
                 ready = self.detector is not None and self.detector.load() is True
                 snapshot = self.detector.snapshot() if self.detector is not None else {}
@@ -512,11 +518,17 @@ class _BrokerSource:
                     pcm, buffered, stamp = self._queue.popleft()
                     self._queued_bytes -= len(pcm)
                 age = self.owner._now() - stamp
-                if buffered and age > .5 and not self._wake_question:
-                    continue  # Expired preroll is never replayed as fresh speech.
-                if buffered and age > 12 and self._wake_question:
-                    raise MicError("wake_handoff_expired")
-                if not buffered and age > .25:
+                if self._wake_question:
+                    # The reader already checked device freshness on ingress.
+                    # PCM received after cursor acquisition can also wait in
+                    # this queue while its consumer is scheduled. Preserve the
+                    # whole finite question, with the same bounded horizon as
+                    # the pre-acquisition queue; never accept old device PCM.
+                    if age > 12:
+                        raise MicError("wake_handoff_expired")
+                elif buffered and age > .5:
+                    continue  # Existing manual GP8 preroll expiry is unchanged.
+                elif not buffered and age > .25:
                     raise MicError("stale_pcm")
                 if self._needs_boundary:
                     try:voiced = evidence.classify(pcm).voiced

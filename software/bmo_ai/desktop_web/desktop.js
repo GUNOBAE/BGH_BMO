@@ -125,10 +125,17 @@ function renderFeatures(next){
  $('video-download').hidden=!saved;if(saved)$('video-download').href='/api/video/'+encodeURIComponent(result.video_id);
  $('video-download').textContent=liveVideo?'검증된 카메라 영상 파일':'검증된 모의 영상 파일';
  const photoScreen=next.mode==='photo',photoPhase=next.photo_phase||'idle';
+ const photoFailure=next.photo_diagnostic;
+ const photoReasons={focus:'The camera could not finish focusing.',still_capture:'The camera could not finish that capture.',
+  capture_result:'The camera result could not be verified.',frame_validation:'The photo frame could not be verified.',
+  storage_prepare:'The photo folder is not ready.',storage:'The photo could not be saved.',
+  review:'The saved photo could not be displayed. It may still be on disk.',preview:'The camera preview is not ready.',
+  camera_open:'The camera could not be opened.',cancel:'Photo cancelled.'};
  document.body.dataset.photoScreen=String(photoScreen);
  $('photo-view').hidden=!photoScreen;
  $('foreground-status').textContent=next.mode==='game'?'게임 실행 중':
-  ({preparing:'Getting the camera ready…',countdown:'Hold still!',photo_review:'Photo saved.',failed:'Couldn’t finish that photo.'})[photoPhase]||'사진을 준비하고 있어요.';
+  (photoPhase==='failed'?(photoReasons[photoFailure?.stage]||'Couldn’t finish that photo.'):
+   ({preparing:'Getting the camera ready…',countdown:'Hold still!',photo_review:'Photo saved.'})[photoPhase])||'사진을 준비하고 있어요.';
  const photoReady=photoScreen&&photoPhase==='photo_review'&&next.photo?.completed===true&&typeof next.photo?.photo_id==='string';
  $('photo-result-image').hidden=!photoReady;$('photo-download').hidden=!photoReady;
  if(photoReady){const url='/api/photo/'+encodeURIComponent(next.photo.photo_id);if($('photo-result-image').getAttribute('src')!==url)$('photo-result-image').src=url;$('photo-download').href=url;}
@@ -163,6 +170,9 @@ function renderFeatures(next){
  for(const id of ['music-next','music-stop'])$(id).disabled=next.mode!=='music';
  const telemetry=next.system_diagnostics?.telemetry;
  $('system-readiness').textContent=telemetry?.power?.status==='OBSERVED'?('전원 현재 이상: '+(telemetry.power.current_fault?'있음':'없음')+' · 과거 기록: '+(telemetry.power.historical_fault?'있음':'없음')):'온도·전원 실측은 아직 실행하지 않았어요. 자동 설정 변경은 하지 않아요.';
+ const arm=next.system_diagnostics?.arms,armLink=arm?.transport?.status;
+ const armStatus={NOT_CONNECTED:'연결 확인 전',ACKNOWLEDGED:'프로토콜 응답 확인',UNKNOWN:'연결 상태 미확정',STOPPED:'중지됨',CLOSED:'닫힘'};
+ $('arm-readiness').textContent='팔 앱 연결: '+(armStatus[armLink]||'미관측')+' · 실제 배선·전원·움직임: 미검수';
  if($('system-dialog').open){
   const emotions=new Set(['neutral','happy','sad','surprised','angry','crying']);
   let faceState={};try{faceState=frame.contentWindow?.BMOFace?.getState()||{};}catch(_){}
@@ -174,6 +184,7 @@ function renderFeatures(next){
   }
   $('turn-diagnostics').textContent=JSON.stringify({...(next.turn_diagnostics||{enabled:false}),
    expression_trace:next.character_life?.expression_trace||null,effective_config:effective,
+   photo:next.photo_diagnostic||null,photo_feedback:next.photo_feedback||null,arms:arm||null,
    face_state:{selected_emotion:selected||null,rendered_emotion:rendered||null}},null,2);
  }
  $('input-evidence').textContent=JSON.stringify(inputEvidence,null,2);

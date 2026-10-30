@@ -7,6 +7,7 @@ from .backends import DemoBackend, FixtureDetector, NullDetector
 from .broker import CameraBroker
 from .codec import validate_png
 from .models import GazeTarget, PhotoResult
+from .diagnostics import PHOTO_STAGES
 from .tracking import TargetTracker, TrackerConfig
 
 
@@ -182,21 +183,32 @@ class CameraFeature:
 
         simulated = self.broker.simulated
         capture_attempted = False
+        stage = 'storage_prepare'
         try:
             previous = self.store.begin(request_id, simulated=simulated)
             if previous is not None:
                 return previous
             reserved = True
             check()
+            stage = 'camera_open'
             self.broker.open(cancel_check=check)
             simulated = self.broker.simulated
             check()
             capture_attempted = True
+            stage = 'still_capture'
+            capture_started = self.clock()
             frame = self.broker.capture_photo(cancel_check=check)
             check()
+            stage = 'frame_validation'
             now = self.clock()
-            if frame.captured_at > now + .05 or now - frame.captured_at > self.tracker.config.max_age:
+            # A still Job includes PNG encoding and restoration of preview.
+            # Test the exposure against THIS bounded capture, rather than the
+            # tracking preview's 500 ms display-age limit after encoding ends.
+            # The backend retains its focus/still deadlines and cancel checks.
+            if (now < capture_started or frame.captured_at > now + .05
+                    or frame.captured_at < capture_started - .05):
                 raise FeatureError('stale_photo')
+            stage = 'storage'
             result = self.store.save(request_id, frame, simulated=simulated, cancel_check=check)
             reserved = False  # save owns final journal completion after commit.
             return result
@@ -208,9 +220,12 @@ class CameraFeature:
             code = ('photo_interrupted' if interrupted else 'photo_cancelled' if cancelled
                     else error.code if isinstance(error, FeatureError) else 'photo_storage_failed')
             status = 'unknown' if interrupted else 'cancelled' if cancelled else 'failed'
+            evidence_stage = getattr(error, 'stage', stage)
+            evidence_stage = evidence_stage if type(evidence_stage) is str and evidence_stage in PHOTO_STAGES else 'unknown'
             result = PhotoResult(request_id, status, code,
                                  simulated=simulated, executed=not simulated and capture_attempted,
-                                 completion='unknown' if interrupted else 'capture_attempted' if capture_attempted and not simulated else 'not_started')
+                                 completion='unknown' if interrupted else 'capture_attempted' if capture_attempted and not simulated else 'not_started',
+                                 stage='cancel' if cancelled else evidence_stage)
             if reserved:
                 try:
                     self.store.finish(result)

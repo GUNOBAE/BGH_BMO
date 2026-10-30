@@ -240,7 +240,8 @@ class SupervisedCameraHostTests(unittest.TestCase):
         state=self.poll(host)
         self.assertEqual(state['capabilities']['camera'],'explicit_supervised')
         self.assertEqual(state['capabilities']['camera_video'],'explicit_supervised')
-        self.assertEqual(state['system_diagnostics']['arms']['readiness'],'BLOCKED')
+        self.assertEqual(state['system_diagnostics']['arms']['source']['readiness'],'BLOCKED')
+        self.assertFalse(state['system_diagnostics']['arms']['physical_verified'])
         self.assertEqual(state['capabilities']['arms'],'denied')
 
     def test_simulate_cannot_be_combined_with_physical_camera_flags(self):

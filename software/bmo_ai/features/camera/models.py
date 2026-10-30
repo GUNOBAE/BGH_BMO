@@ -6,6 +6,7 @@ from typing import Protocol
 
 from ..contracts import FeatureError, request_id_ok, valid_id
 from .limits import MAX_IMAGE_SIDE, MAX_PNG_BYTES
+from .diagnostics import PHOTO_STAGES
 
 
 def finite(value):
@@ -94,11 +95,13 @@ class PhotoResult:
     executed: bool = False
     completed: bool = False
     completion: str = "not_started"
+    stage: str = "unknown"
 
     def __post_init__(self):
         if (not request_id_ok(self.request_id)
                 or self.status not in ("running", "simulated", "succeeded", "failed", "cancelled", "rejected", "unknown")
                 or not valid_id(self.code) or not valid_id(self.completion)
+                or type(self.stage) is not str or self.stage not in PHOTO_STAGES
                 or self.photo_id is not None and (type(self.photo_id) is not str or re.fullmatch(r'photo_[0-9a-f]{32}', self.photo_id) is None)
                 or self.sha256 is not None and (type(self.sha256) is not str or re.fullmatch(r'[0-9a-f]{64}', self.sha256) is None)
                 or any(type(value) is not bool for value in (self.simulated, self.executed, self.completed))

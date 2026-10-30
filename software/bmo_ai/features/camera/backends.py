@@ -7,6 +7,7 @@ import time
 from ..contracts import FeatureError
 from .codec import png_bytes, validate_png
 from .models import FaceBox, Frame, finite
+from .diagnostics import CameraOperationError
 
 
 def _picamera_factory():
@@ -164,7 +165,7 @@ class Picamera2Backend:
                 raise
             raise FeatureError('camera_unavailable') from None
 
-    def _wait(self, camera, job, timeout, cancel_check):
+    def _wait(self, camera, job, timeout, cancel_check, *, stage):
         deadline = self._wait_clock() + timeout
         while True:
             _check_cancel(cancel_check)
@@ -172,7 +173,7 @@ class Picamera2Backend:
                 raise FeatureError('camera_cancelled')
             remaining = deadline - self._wait_clock()
             if remaining <= 0:
-                raise FeatureError('camera_timeout')
+                raise CameraOperationError('camera_timeout', stage)
             try:
                 result = camera.wait(job, timeout=min(.05, remaining))
             except TimeoutError:
@@ -181,7 +182,7 @@ class Picamera2Backend:
             if camera is not self._camera:
                 raise FeatureError('camera_cancelled')
             if self._wait_clock() > deadline:
-                raise FeatureError('camera_timeout')
+                raise CameraOperationError('camera_timeout', stage)
             return result
 
     def _abort(self, camera):
@@ -196,6 +197,7 @@ class Picamera2Backend:
         camera = self._camera
         if camera is None:
             raise FeatureError('camera_off')
+        stage = 'still_capture' if still else 'preview'
         try:
             _check_cancel(cancel_check)
             output = BytesIO()
@@ -208,9 +210,14 @@ class Picamera2Backend:
                 job = camera.switch_mode_and_capture_file(config, output, format='png', wait=False)
             else:
                 job = camera.capture_file(output, format='png', wait=False)
-            metadata = self._wait(camera, job, self.photo_timeout if still else self.read_timeout, cancel_check)
+            metadata = self._wait(camera, job, self.photo_timeout if still else self.read_timeout,
+                                  cancel_check, stage=stage)
+            stage = 'frame_validation'
             payload = output.getvalue()
             width, height = validate_png(payload)
+            stage = 'capture_result'
+            if type(metadata) is not dict:
+                raise FeatureError('camera_capture_failed')
             sensor = metadata.get('SensorTimestamp')
             if type(sensor) is not int or sensor <= 0:
                 raise FeatureError('camera_timestamp_unavailable')
@@ -229,7 +236,7 @@ class Picamera2Backend:
                 raise
             if isinstance(error, FeatureError) and error.code in ('camera_timeout', 'camera_cancelled'):
                 raise
-            raise FeatureError('camera_capture_failed') from None
+            raise CameraOperationError('camera_capture_failed', stage) from None
 
     def read_frame(self, *, cancel_check=None):
         return self._capture(cancel_check=cancel_check)
@@ -241,16 +248,16 @@ class Picamera2Backend:
         try:
             _check_cancel(cancel_check)
             focused = self._wait(camera, camera.autofocus_cycle(wait=False), self.focus_timeout,
-                                 cancel_check) if 'AfMode' in camera.camera_controls else True
+                                 cancel_check, stage='focus') if 'AfMode' in camera.camera_controls else True
         except BaseException as error:
             self._abort(camera)
             if not isinstance(error, Exception):
                 raise
             if isinstance(error, FeatureError) and error.code in ('camera_timeout', 'camera_cancelled'):
                 raise
-            raise FeatureError('camera_focus_failed') from None
+            raise CameraOperationError('camera_focus_failed', 'focus') from None
         if focused is not True:
-            raise FeatureError('photo_focus_failed')
+            raise CameraOperationError('photo_focus_failed', 'focus')
         return self._capture(focus_ok=True, still=True, cancel_check=cancel_check)
 
     def close(self):

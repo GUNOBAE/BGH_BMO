@@ -106,8 +106,8 @@ def child_source():
     def capture_photo(**options):
         counts['photo_captures']+=1
         if (root/'fail-photo').exists():
-            from bmo_ai.features.contracts import FeatureError
-            raise FeatureError('fixture_capture_failed')
+            from bmo_ai.features.camera.diagnostics import CameraOperationError
+            raise CameraOperationError('camera_timeout','focus')
         return capture(**options)
     host.camera.broker.capture_photo=capture_photo
     save=host.camera.store.save
@@ -406,16 +406,19 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     fixture.features()  # Current host heartbeat across controlled clock steps.
                 failed=wait(lambda s:s['photo_phase']=='failed')
                 assert failed['photo']['completed'] is False
+                assert failed['photo']['code']=='camera_timeout' and failed['photo']['stage']=='focus'
+                assert failed['photo_diagnostic']==dict(stage='focus',code='camera_timeout',status='failed',saved=False,automatic_retry=False)
                 assert failed['test_fixture']['photo_captures']==failure_before['photo_captures']+1
                 assert failed['test_fixture']['photo_saves']==failure_before['photo_saves']
                 assert failed['test_fixture']['synthesis']==failure_before['synthesis']+1
                 page.wait_for_function("()=>BMODesktop.features?.photo_phase==='failed'")
+                page.wait_for_function("()=>document.querySelector('#foreground-status').textContent==='The camera could not finish focusing.'")
                 assert not page.locator('#photo-result-image').is_visible()
                 assert page.locator('#foreground-back').is_visible()
                 page.locator('#foreground-back').click()
                 wait(lambda s:s['mode']=='conversation')
                 (root/'fail-photo').unlink()
-                checks.append('injected capture failure saves nothing, emits no success voice, does not retry, and Back to BMO restores conversation')
+                checks.append('injected focus timeout retains safe stage/code and a short specific UI reason, saves nothing, emits no success voice, does not retry, and Back to BMO restores conversation')
 
                 count=fixture.features()['test_fixture']['photo_captures']
                 for text in ("Don't take a photo.",'Can you take photos?','Tomorrow, take a photo.','Translate "take a photo".'):

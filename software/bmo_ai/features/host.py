@@ -23,6 +23,7 @@ from .journal import ActionJournal
 from .reply import FeatureClient, HostIntent
 from .resources import ModeManager, AudioFocus, InputRouter, GazeArbiter, LOGICAL_INPUTS
 from .runtime import RuntimePolicy
+from .camera.diagnostics import photo_diagnostic
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +247,7 @@ class FeatureHost:
         self._active_game_request = self._active_media_request = None
         self._pending_photo = self._photo_result = self._photo_restore = None
         self._photo_phase = 'idle'
+        self._photo_diagnostic = None
         self._photo_cancel_epoch = 0
         self._photo_back_pending = False
         self._photo_feedback = None
@@ -572,6 +574,7 @@ class FeatureHost:
             success=context.get('success'), cancel_epoch=self._photo_cancel_epoch)
         self.camera.set_preview(True, generation=self.modes.generation)
         self._photo_result = self._photo_png = None
+        self._photo_diagnostic = None
         self._photo_phase = 'preparing'
         self._photo_back_pending = False
 
@@ -588,6 +591,7 @@ class FeatureHost:
             request = self._pending_photo['request_id']
             self.camera.cancel_photo(request)
             self._finish_result(HostResult(request, 'cancelled', 'photo_cancelled'))
+            self._photo_diagnostic = photo_diagnostic(dict(status='cancelled', code='photo_cancelled', stage='cancel'))
         self._pending_photo = None  # Retire countdown before any cancellation callback.
         if self.session.busy:
             self._photo_back_pending = True
@@ -630,6 +634,9 @@ class FeatureHost:
             if not self.session.start_feedback(value.get('speech'), value.get('captions')):
                 self.audio.release(self._voice_lease)
                 self._voice_lease = None
+                self._photo_feedback = dict(status='skipped', code='voice_busy')
+            else:
+                self._photo_feedback = dict(status='pending', code='voice_pending')
 
     def _leave_photo(self):
         if self._pending_photo is not None:
@@ -1439,6 +1446,11 @@ class FeatureHost:
         for event in finished:
             if event.kind != "finished":
                 continue
+            if self.audio.owner == 'photo_feedback' and self._photo_feedback:
+                # Voice failure does not rewrite a committed photo receipt.
+                self._photo_feedback = dict(
+                    status='complete' if event.code == 'ok' else 'cancelled' if event.code == 'cancelled' else 'failed',
+                    code='voice_completed' if event.code == 'ok' else 'voice_cancelled' if event.code == 'cancelled' else 'voice_failed')
             if self.microphone is not None and self.microphone.snapshot().get("cleanup_pending"):
                 self._ptt_cleanup_fault = True
             else:
@@ -1543,11 +1555,13 @@ class FeatureHost:
                     self._photo_phase = 'failed'
                     self.camera.off()
                     self._finish_result(HostResult(pending['request_id'], 'cancelled', 'photo_cancelled'))
+                    self._photo_diagnostic = photo_diagnostic(dict(status='cancelled', code='photo_cancelled', stage='cancel'))
                 elif camera['error'] or self.clock() >= pending['prepare_deadline']:
                     self._pending_photo = None
                     self._photo_phase = 'failed'
                     self.camera.off()
                     self._remember(HostResult(pending['request_id'], 'failed', 'photo_preview_unavailable'))
+                    self._photo_diagnostic = photo_diagnostic(dict(status='failed', code='photo_preview_unavailable', stage='preview'))
                 elif camera['preview_available'] and not pending['preview_token']:
                     pending['preview_token'] = uuid4().hex
             elif self._photo_phase == 'countdown' and self.clock() >= pending['deadline']:
@@ -1559,6 +1573,7 @@ class FeatureHost:
                         self.camera.off()
                         self._photo_phase = 'failed'
                         self._finish_result(HostResult(pending['request_id'], 'cancelled', 'photo_cancelled'))
+                        self._photo_diagnostic = photo_diagnostic(dict(status='cancelled', code='photo_cancelled', stage='cancel'))
                 elif pending['generation'] == self.modes.generation and self.modes.mode == 'photo':
                     self._photo_result = photo.public()
                     try:
@@ -1567,7 +1582,8 @@ class FeatureHost:
                         self._photo_png = None
                     saved = bool(photo.completed and photo.photo_id and self._photo_png)
                     if photo.completed and not saved:
-                        self._photo_result.update(status='unknown', code='photo_review_unavailable', completed=False)
+                        self._photo_result.update(status='unknown', code='photo_review_unavailable', completed=False, stage='review')
+                    self._photo_diagnostic = photo_diagnostic(self._photo_result, storage_saved=photo.completed)
                     result = HostResult(photo.request_id,
                         photo.status if not photo.completed or saved else 'unknown',
                         photo.code if not photo.completed or saved else 'photo_review_unavailable',
@@ -1590,6 +1606,13 @@ class FeatureHost:
         self._state_sequence += 1
         face = self.session.snapshot()
         camera = self.camera.snapshot()
+        motion = self.motion.snapshot()
+        # The old source-admission checker and the active B1 adapter describe
+        # different evidence. Neither is proof of wiring or servo movement.
+        arms = dict(source=dict(self._system_diagnostics['arms'], scope='legacy_static_admission'),
+            preflight=motion.get('preflight', dict(status='NOT_REPORTED', scope='software_adapter')),
+            transport=motion.get('transport', dict(status='NOT_REPORTED', negotiated=False, usable=False)),
+            adapter_readiness=motion.get('readiness', 'UNVERIFIED'), physical_verified=False)
         ptt = self.microphone.snapshot() if self.microphone is not None else self.pcm.snapshot()
         if not self.turn_diagnostics.enabled:
             ptt = {key: value for key, value in ptt.items()
@@ -1606,7 +1629,7 @@ class FeatureHost:
             "games": {"catalog": [item.public() for item in self.games.catalog()], **self.games.snapshot()},
             "media": {"catalog": [item.public() for item in self.media.catalog()], **self.media.snapshot()},
             "camera": camera, "camera_video": self.video.snapshot(), "photo": self._photo_result,
-            "system_diagnostics": self._system_diagnostics,
+            "system_diagnostics": dict(self._system_diagnostics, arms=arms),
             "one_turn_diagnostic": self._one_turn_diagnostic.snapshot() if self._one_turn_diagnostic else None,
             "turn_diagnostics": self.turn_diagnostics.snapshot(),
             "character_life": {"enabled": self.character_life, "ptt_vad_profile": self.ptt_vad_profile,
@@ -1621,10 +1644,12 @@ class FeatureHost:
                                "physical_latency": "UNMEASURED"},
             "photo_countdown": max(0, self._pending_photo['deadline'] - self.clock()) if self._pending_photo and self._pending_photo['deadline'] is not None else None,
             "photo_phase": self._photo_phase,
+            "photo_diagnostic": self._photo_diagnostic,
+            "photo_feedback": self._photo_feedback,
             "photo_request_id": self._pending_photo['request_id'] if self._pending_photo else None,
             "photo_preview_token": self._pending_photo['preview_token'] if self._pending_photo else None,
             "subtitles": self.session.subtitle_snapshot(),
-            "motion": self.motion.snapshot(), "imu": self.imu.snapshot(),
+            "motion": motion, "imu": self.imu.snapshot(),
             "input": self.input_adapter.snapshot() if self.input_adapter else
                      {"enabled": False, "real_input": "NOT_RUN", "device_opens": 0},
             "usb_gamepad": self.gamepad.snapshot(),

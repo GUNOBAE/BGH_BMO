@@ -6,6 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 import wave
+from threading import Event
 
 from bmo_ai.features.host import FeatureHost, FeatureSimulatedClient
 from bmo_ai.features.input.microphone import PcmFrame
@@ -188,6 +189,46 @@ class FieldWakeHandoffTests(unittest.TestCase):
         host.poll();self.finish(host)
         self.assertEqual(len(client.requests),1)
         self.assertIn((5001).to_bytes(2,'little')*640,captures[0])
+
+    def test_live_wake_queue_preserves_whole_question_during_bounded_consumer_delay(self):
+        for ack in (False, True):
+            with self.subTest(approved_ack_fixture=ack):
+                host,client,factory,detector,clock,captures,played=self.make(ack=ack)
+                paused,resume=Event(),Event()
+                real_factory=host._microphone_broker.wake_source_factory
+                def delayed_factory():
+                    cursor=real_factory()
+                    real_frames=cursor.frames
+                    def frames(*args,**kwargs):
+                        iterator=real_frames(*args,**kwargs)
+                        try:
+                            for index,frame in enumerate(iterator):
+                                yield frame
+                                if index==0:
+                                    paused.set()
+                                    if not resume.wait(1.):raise AssertionError('Consumer test gate expired')
+                        finally:iterator.close()
+                    cursor.frames=frames
+                    return cursor
+                host._microphone_broker.wake_source_factory=delayed_factory
+                source=self.trigger(host,factory,detector);host.poll()
+                eventually(lambda:host._microphone_broker.snapshot()['capture_active'])
+                source=factory.sources[-1]
+                for _ in range(3):source.send(0)
+                self.assertTrue(paused.wait(1.))
+                try:
+                    self.speech(source)
+                    eventually(lambda:host._microphone_broker._capture._queued_bytes>=35*1280)
+                    clock.offset+=.7  # Valid PCM already admitted by the one reader.
+                finally:resume.set()
+                self.finish(host)
+                self.assertEqual(host.microphone.snapshot()['reason_code'],'transcribed')
+                self.assertEqual(len(captures),1)
+                whole_question=(5001).to_bytes(2,'little')*640+(5000).to_bytes(2,'little')*(7*640)
+                self.assertIn(whole_question,captures[0])
+                self.assertNotIn((8000).to_bytes(2,'little')*640,captures[0])
+                self.assertEqual(len(client.requests),1)
+                self.assertEqual(factory.maximum,1)
 
     def test_unsegmented_post_trigger_speech_is_quarantined_without_guessing_word_alignment(self):
         host,client,factory,detector,clock,captures,played=self.make()
