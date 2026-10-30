@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import re
 
 from .expression_contract import FACE_EMOTIONS, ExpressionFormatError
+from .acting_request import requested_acting
 
 
 DELIVERIES = ("calm", "warm", "excited", "curious", "proud", "playfully_annoyed",
@@ -52,34 +53,6 @@ def latest_user_text(request):
             value = item.get("content")
             return value[:8000] if type(value) is str else ""
     return ""
-
-
-def requested_acting(message):
-    """Narrow current-request permission; history/quoted model metadata cannot grant it."""
-    if type(message) is not str:
-        return None
-    message = message[:8000]
-    def denied(english, korean):
-        # Negation belongs to the requested action. "I'm not sad; pretend to
-        # cry" is permission, while "don't pretend to cry" is not.
-        return re.search(
-            r"\b(?:don't|do not|never|stop|not)\s+"
-            r"(?:(?:(?:ever|please|try|start|pretend|act|acting|imitate|be|look|sound|to|playfully)\s+){0,8}"
-            + r"(?:" + english + r")\b|(?:pretend|act|acting|imitate)\b[^.!?;\n]{0,60}\b(?:"
-            + english + r")\b)|" + korean, message, re.I)
-    if re.search(r"\b(?:pretend|act|acting|imitate)\b[^.!?;\n]{0,60}\b(?:cry|crying|sob|sobbing)\b"
-                 r"|\b(?:cry|sob) (?:for me|please)\b|울(?:어\s*(?:봐|보)|는\s*척)|우는\s*연기", message, re.I):
-        if not denied("cry|crying|sob|sobbing", r"울지\s*마|(?:우는|울어)[^.!?;\n]{0,35}(?:하지|보지)\s*마"):
-            return "crying"
-    if re.search(r"\b(?:pretend|act|acting|playful|playfully)\b[^.!?;\n]{0,60}\b(?:angry|anger|mad|annoyed)\b"
-                 r"|\b(?:be|look|sound) (?:playfully )?angry\b|화내\s*(?:봐|보)|화난\s*(?:척|연기)|장난스럽게\s*화", message, re.I):
-        if not denied("angry|anger|mad|annoyed", r"화내지\s*마|(?:화난|화내는|화내)[^.!?;\n]{0,35}(?:하지|보지)\s*마"):
-            return "angry"
-    if re.search(r"\b(?:pretend|act|acting)\b[^.!?;\n]{0,60}\b(?:happy|joyful|excited)\b"
-                 r"|기뻐해\s*(?:봐|보)|(?:기쁜|기뻐하는|행복한)\s*(?:척|연기)", message, re.I):
-        if not denied("happy|joyful|excited", r"기뻐하지\s*마|(?:기쁜|기뻐하는|기뻐해|행복한)[^.!?;\n]{0,35}(?:하지|보지)\s*마"):
-            return "happy"
-    return None
 
 
 def sensitive_context(message):
@@ -150,11 +123,12 @@ class CharacterDirector:
             emotion = "sad" if emotion != "neutral" else "neutral"
             return CharacterPlan(emotion, "empathetic", "low", source="dialogue",
                                  sensitive_context=True, gaze_id="attentive")
-        if acting in ("crying", "angry", "happy"):
+        if acting in ("crying", "angry", "happy", "sad"):
             emotion, source = acting, "acting"
-            delivery = {"crying": "theatrical_crying", "angry": "theatrical_angry", "happy": "excited"}[acting]
+            delivery = {"crying": "theatrical_crying", "angry": "theatrical_angry",
+                        "happy": "excited", "sad": "soft_sad"}[acting]
             intensity = "medium" if intensity != "low" else "low"
-            gesture, gaze = "none", "soft_down" if acting == "crying" else "attentive"
+            gesture, gaze = "none", "soft_down" if acting in ("crying", "sad") else "attentive"
         elif source == "acting":
             # Only the current user's explicit request grants theatrical output.
             emotion, delivery, source, intensity = "neutral", "calm", "dialogue", "low"
