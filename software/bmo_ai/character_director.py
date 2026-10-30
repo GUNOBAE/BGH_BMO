@@ -131,7 +131,11 @@ class CharacterDirector:
             gesture, gaze = "none", "soft_down" if acting in ("crying", "sad") else "attentive"
         elif source == "acting":
             # Only the current user's explicit request grants theatrical output.
-            emotion, delivery, source, intensity = "neutral", "calm", "dialogue", "low"
+            # An untrusted source label does not erase otherwise restrained
+            # natural happiness/sympathy/surprise. Anger/tears remain subject to
+            # explicit acting permission; the label alone cannot grant it.
+            emotion = "neutral" if emotion in ("angry", "crying") else emotion
+            delivery, source, intensity = _DEFAULT[emotion], "dialogue", "low"
             reaction, gesture, gaze = "none", "none", "none"
         if delivery not in DELIVERIES or emotion not in _CONGRUENT[delivery]:
             delivery = _DEFAULT[emotion]

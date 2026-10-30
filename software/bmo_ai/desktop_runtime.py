@@ -193,6 +193,8 @@ class DesktopRuntime:
                 "progress_error": self._code if self._phase == "error" else None,
                 "face_presented": self._face_presented.is_set(),
                 "greeting_played": self._ever_played,
+                "startup_chime_status": getattr(getattr(self.greeting, "greeting_player", self.greeting),
+                                                "startup_chime_status", "NOT_ATTEMPTED"),
                 "developer_enabled": self.developer, "external_api_ready": "NOT_CHECKED",
                 "live_verified": False, "exit_requested": self.exiting,
                 "character_life": {"enabled": self.character_life,

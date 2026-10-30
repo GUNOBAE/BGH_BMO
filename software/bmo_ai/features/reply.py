@@ -10,6 +10,7 @@ from .contracts import GESTURES, INTENTS, valid_id
 from ..expressive_voice import REACTIONS
 from ..character_director import (CharacterDirector, CharacterPlan, DELIVERIES,
                                   INTENSITIES, GAZES, latest_user_text)
+from ..acting_request import requested_acting
 from .motion.gesture_rules_v2 import EXPLICIT_ACTIONS as ARM_INTENT_ACTIONS
 
 
@@ -225,10 +226,12 @@ class FeatureResponses:
         self.character_life = bool(character_life)
         self.director = CharacterDirector() if self.character_life else None
         self.last_reply = None
+        self.last_resolution = None
         self.context_json = "{}"
 
     def create(self, **request):
         self.last_reply = None
+        self.last_resolution = None
         # Reuse request validation/bounds; replace the two-field instructions and
         # schema together rather than appending conflicting JSON contracts.
         adapted = expression_request(request)
@@ -250,12 +253,20 @@ class FeatureResponses:
         if not self.character_life:
             reply = _requested_reaction(reply, request)
         if self.character_life:
+            # Decode has already validated this bounded envelope. Retain only
+            # its enum, never raw text or provider payload, for local diagnosis.
+            model_emotion = json.loads(response.output_text).get("emotion")
+            model_emotion = model_emotion if type(model_emotion) is str and model_emotion in FACE_EMOTIONS else None
+            requested = requested_acting(latest_user_text(request))
             plan = self.director.resolve(reply.emotion, reply.reaction, reply.gesture,
                 metadata=reply.character_metadata, message=latest_user_text(request), has_intent=reply.intent is not None)
             if reply.degraded:
                 plan = CharacterPlan("neutral", "calm")
             reply = replace(reply, emotion=plan.face_emotion, reaction=plan.reaction_id,
                             gesture=plan.gesture_id, character_plan=plan)
+            self.last_resolution = dict(requested_emotion=requested,
+                model_emotion=model_emotion, resolved_emotion=plan.face_emotion,
+                resolved_source=plan.source, validation="degraded" if reply.degraded else "validated")
         self.last_reply = reply
         return SimpleNamespace(status="completed", incomplete_details=None, error=None, output_text=reply.speech)
 
@@ -269,8 +280,14 @@ class FeatureClient:
     def last_reply(self):
         return self.responses.last_reply
 
+    @property
+    def last_resolution(self):
+        value = self.responses.last_resolution
+        return dict(value) if value is not None else None
+
     def reset(self):
         self.responses.last_reply = None
+        self.responses.last_resolution = None
 
     def set_context(self, context):
         try:

@@ -8,6 +8,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -57,11 +58,15 @@ def _character_arguments(options, *, simulate, ptt_microphone):
                "ptt_vad_mode": ("rms", "webrtc"),
                "presence_mode": ("normal", "quiet", "sleep", "off")}
     paths = ("voice_bank_directory", "wake_model_manifest")
+    numbers = ("wake_question_wait",)
     if (type(options) is not dict
-            or set(options) - {*booleans, *choices, *paths}
+            or set(options) - {*booleans, *choices, *paths, *numbers}
             or any(type(options[key]) is not bool for key in booleans if key in options)
             or any(type(options[key]) is not str or options[key] not in values
                    for key, values in choices.items() if key in options)
+            or "wake_question_wait" in options and (type(options["wake_question_wait"]) not in (int,float)
+                or not math.isfinite(options["wake_question_wait"]) or not 1 <= options["wake_question_wait"] <= 10
+                or options.get("wake_word") is not True)
             or options.keys() - {"character_life"} and options.get("character_life") is not True
             or options.get("wake_word") is True and not (ptt_microphone or simulate)
             or "wake_model_manifest" in options and (options.get("wake_word") is not True or simulate)):
@@ -70,14 +75,14 @@ def _character_arguments(options, *, simulate, ptt_microphone):
     result = []
     # This stable order is independent of dictionary insertion order.
     for key in ("character_life", "ptt_trace", "ptt_vad_profile", "ptt_vad_mode", "plain_voice",
-                "voice_bank_directory", "idle_voice", "presence_mode", "wake_word", "wake_model_manifest"):
+                "voice_bank_directory", "idle_voice", "presence_mode", "wake_word", "wake_model_manifest", "wake_question_wait"):
         if key not in options:
             continue
         flag = "--" + key.replace("_", "-")
         if key in booleans:
             if options[key]: result.append(flag)
         else:
-            result.extend((flag, str(normalized_paths[key]) if key in paths else options[key]))
+            result.extend((flag, str(normalized_paths[key]) if key in paths else str(options[key])))
     return result
 
 

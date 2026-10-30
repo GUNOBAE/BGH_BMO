@@ -143,7 +143,15 @@ class HostWakeTests(unittest.TestCase):
         self.assertFalse(host.session.busy)  # Worker callback only enqueues.
         host.poll()
         eventually(lambda: host._microphone_broker.snapshot()["capture_active"])
-        for _ in range(8): physical.send(5000)
+        # Wake-specific speech evidence now uses the real local VAD. A DC
+        # constant is not speech; retain the one-reader assertion with the
+        # licensed public reference after a real quiet PCM boundary instead.
+        from bmo_ai.ptt_replay import load_public_reference_pcm16k
+        for _ in range(6): physical.send(0)
+        reference=load_public_reference_pcm16k(target_rms=.02)
+        reference+=bytes((-len(reference))%1280)
+        for offset in range(0,len(reference),1280):
+            physical.queue.put(reference[offset:offset+1280])
         for _ in range(24): physical.send(0)
         self.finish(host)
         self.assertEqual(len(client.requests), 1)

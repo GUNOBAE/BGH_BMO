@@ -13,12 +13,14 @@ from .integration_voice import IntegrationVoice
 
 class GreetingPlayer:
     def __init__(self, config, cache, *, simulate=False, player=None, startup_chime=False,
-                 chime_home=None):
+                 chime_home=None, allow_synthesized_chime=True):
         if (not isinstance(cache, GreetingCache) or type(simulate) is not bool
-                or type(startup_chime) is not bool):
+                or type(startup_chime) is not bool or type(allow_synthesized_chime) is not bool):
             raise GreetingError('greeting_corrupt')
         self.cache, self.simulate = cache, simulate
         self.startup_chime = startup_chime
+        self.allow_synthesized_chime = allow_synthesized_chime
+        self.startup_chime_status = 'NOT_ATTEMPTED' if startup_chime else 'DISABLED'
         self._chime_home = chime_home
         self._chime_attempted = False
         self._cancelled, self._closed = Event(), Event()
@@ -28,11 +30,19 @@ class GreetingPlayer:
     def _play_chime(self, check):
         if self.startup_chime and not self._chime_attempted:
             self._chime_attempted = True
-            from .startup_sound import startup_chime_asset
-            with startup_chime_asset(home=self._chime_home) as (path, info):
-                self.voice._play(path, 'local_startup_chime', info, (), check,
-                    lambda *_a, **_kw: None, None,
-                    dict(emotion='neutral', emotion_validation='none', notice=False))
+            from .startup_sound import StartupSoundError, startup_chime_asset
+            try:
+                with startup_chime_asset(home=self._chime_home,
+                        allow_synthesized=self.allow_synthesized_chime) as (path, info):
+                    self.voice._play(path, 'local_startup_chime', info, (), check,
+                        lambda *_a, **_kw: None, None,
+                        dict(emotion='neutral', emotion_validation='none', notice=False))
+                self.startup_chime_status = 'PLAYED'
+            except StartupSoundError as error:
+                if error.code != 'startup_sound_missing' or self.allow_synthesized_chime:
+                    self.startup_chime_status = 'INVALID'
+                    raise
+                self.startup_chime_status = 'ASSET_NOT_TRANSFERRED'
             check()
 
     def play_chime(self, *, cancel_check=None):

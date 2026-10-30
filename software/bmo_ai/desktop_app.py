@@ -53,6 +53,8 @@ def parser():
                    help="local character speech policy; quiet/sleep/off suppress idle clips")
     p.add_argument("--wake-word", action="store_true", help="explicit optional local microphone listening after startup; missing custom model keeps PTT only")
     p.add_argument("--wake-model-manifest", type=Path, help="reviewed local Hey BMO ONNX manifest; no automatic download")
+    p.add_argument("--wake-question-wait", type=float, default=5.,
+                   help="wake-only fresh question speech-start window, 1–10 seconds; GP8 timing unchanged")
     p.add_argument("--ptt-vad-profile", choices=("baseline", "balanced", "quick"), default="baseline",
                    help="explicit VAD comparison profile: baseline .9s, balanced .6s, quick .45s; no measured latency claim")
     p.add_argument("--ptt-vad-mode", choices=("rms", "webrtc"), default="rms",
@@ -112,6 +114,7 @@ def public_plan(args):
                            "presence_mode": args.presence_mode or ("normal" if args.idle_voice else "off"),
                            "voice_bank_selected": args.voice_bank_directory is not None,
                            "wake_requested": args.wake_word,
+                           "wake_question_wait": args.wake_question_wait,
                            "wake_model": "NOT_CHECKED" if args.wake_model_manifest else "MODEL_MISSING",
                            "acoustic_wake_acceptance": "NOT_RUN"},
         "arm_legacy_bridge": {"requested": args.arm_legacy_bridge,
@@ -139,6 +142,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
     for value in (args.startup_timeout, args.greeting_timeout):
         if not 0 < value <= 120:
             p.error("timeouts must be finite and from 0 to 120 seconds")
+    if not 1 <= args.wake_question_wait <= 10:
+        p.error("--wake-question-wait must be finite and from 1 to 10 seconds")
+    if args.wake_question_wait != 5. and not args.wake_word:
+        p.error("--wake-question-wait requires --wake-word")
     if args.demo_assets and not args.simulate:
         p.error("--demo-assets requires --simulate")
     if args.music_directory is not None and args.demo_assets:
@@ -196,6 +203,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                     "idle_voice": args.idle_voice, "wake_word": args.wake_word}
                 if args.ptt_vad_mode != "rms":
                     character_options["ptt_vad_mode"] = args.ptt_vad_mode
+                if args.wake_question_wait != 5.:
+                    character_options["wake_question_wait"] = args.wake_question_wait
                 for key in ("voice_bank_directory", "presence_mode", "wake_model_manifest"):
                     value = getattr(args, key)
                     if value is not None:
@@ -313,7 +322,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
             if args.character_life:
                 settings["character_life"] = True
             if args.wake_word:
-                settings.update(wake_word=True, wake_model_manifest=args.wake_model_manifest)
+                settings.update(wake_word=True, wake_model_manifest=args.wake_model_manifest,
+                                wake_question_wait=args.wake_question_wait)
             if args.ptt_vad_profile != "baseline":
                 settings["ptt_vad_profile"] = args.ptt_vad_profile
             if args.ptt_vad_mode != "rms":
@@ -373,11 +383,14 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 temporary = TemporaryDirectory(prefix="bmo-desktop-synthetic-")
                 cache = make_synthetic_greeting_cache(Path(temporary.name)/"greeting", config)
                 greeting = GreetingPlayer(config, cache, simulate=True,
-                    startup_chime=not args.no_startup_chime, chime_home=Path(temporary.name))
+                    startup_chime=not args.no_startup_chime, chime_home=Path(temporary.name),
+                    allow_synthesized_chime=not args.character_life)
             else:
                 cache = GreetingCache(default_greeting_directory(), GreetingSpec.from_config(config))
-                greeting = GreetingPlayer(config, cache, startup_chime=not args.no_startup_chime)
+                greeting = GreetingPlayer(config, cache, startup_chime=not args.no_startup_chime,
+                                          allow_synthesized_chime=not args.character_life)
             if args.character_life:
+                greeting.allow_synthesized_chime = False
                 from .voice_bank import VoiceBank, BankPlayer, default_voice_bank_directory
                 from .character_presence import CachedPresence
                 if args.simulate and temporary is None:

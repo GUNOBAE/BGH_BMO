@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass, replace
 import json
 import hashlib
+import math
 from pathlib import Path
 from queue import Empty, Full, Queue, PriorityQueue
 from tempfile import TemporaryDirectory
@@ -88,7 +89,8 @@ class FeatureHost:
                  camera_supervised=False, photo_directory=None, camera_video_supervised=False,
                  ptt_speech_safe=False, emotion_arms=False, music_supervised=False,
                  usb_gamepad=False, character_life=False, ptt_vad_profile="baseline",
-                 wake_word=False, wake_model_manifest=None, ptt_vad_mode="rms"):
+                 wake_word=False, wake_model_manifest=None, ptt_vad_mode="rms",
+                 wake_question_wait=5.):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -96,11 +98,17 @@ class FeatureHost:
         self.runtime = runtime if runtime is not None else RuntimePolicy()
         if (type(character_life) is not bool or type(wake_word) is not bool
                 or ptt_vad_profile not in ("baseline", "balanced", "quick")
-                or ptt_vad_mode not in ("rms", "webrtc")):
+                or ptt_vad_mode not in ("rms", "webrtc")
+                or type(wake_question_wait) not in (int, float)
+                or not math.isfinite(wake_question_wait) or not 1 <= wake_question_wait <= 10):
             raise FeatureError("invalid_character_configuration")
         self.character_life = character_life
         self.ptt_vad_profile = ptt_vad_profile
         self.ptt_vad_mode = ptt_vad_mode
+        self.wake_question_wait = float(wake_question_wait)
+        self._wake_input_active = False
+        self._wake_handoff = dict(phase="idle", acknowledgement="NOT_CHECKED",
+                                  wait_seconds=self.wake_question_wait, trigger_preroll_reused=False)
         self._last_character_plan = None
         if not isinstance(self.runtime, RuntimePolicy):
             raise FeatureError("invalid_runtime")
@@ -111,6 +119,7 @@ class FeatureHost:
             raise FeatureError("wake_word_requires_character_microphone")
         self._wake_requested, self._wake_armed = wake_word, False
         self._microphone_broker = None
+        self._wake_ack_cache = None
         if any(type(value) is not bool for value in (music_supervised, usb_gamepad)):
             raise FeatureError("invalid_runtime")
         if music_supervised:
@@ -282,6 +291,9 @@ class FeatureHost:
             if wake_word:
                 from .input.wake_word import LocalWakeDetector
                 from .input.microphone_owner import MicrophoneBroker
+                from ..wake_ack import WakeAckCache
+                self._wake_ack_cache = WakeAckCache(self.config,
+                    directory=Path(self._temporary.name)/"wake-ack" if self.runtime.simulate else None)
                 self.wake_word = LocalWakeDetector(wake_model_manifest)
                 self._microphone_broker = MicrophoneBroker(source, detector=self.wake_word,
                     on_trigger=self._queue_wake, clock=clock,
@@ -361,6 +373,8 @@ class FeatureHost:
 
     def disable_wake_word(self, *, refresh=True):
         self._wake_armed = False
+        if self._wake_input_active:
+            self.cancel_conversation()
         clean = self._microphone_broker.stop_wake() if self._microphone_broker is not None else True
         if not clean:
             self._ptt_cleanup_fault = True
@@ -394,6 +408,13 @@ class FeatureHost:
 
     def _ptt_state(self, value):
         state, code = value["state"], value["reason_code"]
+        if self._wake_input_active and self._wake_handoff["phase"] != "cancelled":
+            if state == "listening":
+                self._wake_handoff["phase"] = "question_listening"
+            elif state == "speech":
+                self._wake_handoff["phase"] = "speech"
+            elif state in ("ready", "transcribing"):
+                self._wake_handoff["phase"] = "ready"
         if state == "failed":
             stage = "capture_close" if "cleanup" in code else self._ptt_last_stage
             self.turn_diagnostics.record(stage, code, outcome="error", **value)
@@ -926,7 +947,64 @@ class FeatureHost:
             return False
         return self.ptt_button() if self.microphone is not None else self.start_question()
 
-    def ptt_button(self, *, received_at=None):
+    def _confirm_wake(self, check):
+        """Optional approved local ACK on the existing voice/player, no synthesis.
+
+        A follow-up already arriving after the trigger wins over the cutscene.
+        Missing assets use the existing face listening activity and clear hint.
+        """
+        self._wake_handoff.update(phase="confirming", acknowledgement="MISSING")
+        check()
+        if self._microphone_broker.followup_started():
+            self._wake_handoff["acknowledgement"] = "SKIPPED_FOLLOWUP"
+            return
+        with self._wake_ack_cache.load(simulate=self.runtime.simulate, cancel_check=check) as asset:
+            if asset is None:
+                return
+            check()
+            if self._microphone_broker.followup_started():
+                self._wake_handoff["acknowledgement"] = "SKIPPED_FOLLOWUP"
+                return
+            voice = self.session.voice
+            if not voice._speaking.acquire(blocking=False):
+                self._wake_handoff["acknowledgement"] = "SKIPPED_BUSY"
+                return
+            voice._idle.clear()
+            suspended = False
+            previous_timing = voice.on_timing
+            try:
+                if self._microphone_broker.suspend_confirmation() is False:
+                    self._wake_handoff["acknowledgement"] = "SKIPPED_FOLLOWUP"
+                    return
+                suspended = True
+                check()
+                self._wake_handoff["acknowledgement"] = "PLAYING"
+                # ACK is input confirmation, never the question's first audio.
+                # Preserve dialogue/repeat timing and cache on this same player.
+                voice.on_timing = None
+                voice._play(asset.path, "cached_wake_ack", asset.info, asset.cues,
+                    check, lambda *_a, **_kw: None, None,
+                    dict(emotion=self.session.snapshot()["emotion"], emotion_validation="none", notice=False))
+                check()
+                self._wake_handoff["acknowledgement"] = "PLAYED"
+            except Exception as error:
+                from ..audio import AudioPlaybackError
+                if isinstance(error, AudioPlaybackError) and error.code == "audio_cleanup_failed":
+                    self._ptt_cleanup_fault = True
+                if not isinstance(error, AudioPlaybackError) or error.code == "audio_cleanup_failed":
+                    raise
+                check()
+                self._wake_handoff["acknowledgement"] = "FAILED_VISUAL"
+            finally:
+                try:
+                    if suspended:
+                        self._microphone_broker.resume_question()
+                finally:
+                    voice.on_timing = previous_timing
+                    voice._speaking.release()
+                    voice._idle.set()
+
+    def ptt_button(self, *, received_at=None, _wake=False):
         """One edge starts input; another ends capture or cancels output.
 
         HID Enter identity is verified by the human later. No RP2040 pin or
@@ -937,10 +1015,13 @@ class FeatureHost:
             return False
         self.runtime.require("conversation_ptt_microphone")
         now = self.clock()
-        if self._last_ptt_press is not None and 0 <= now - self._last_ptt_press < .25:
+        if not _wake and self._last_ptt_press is not None and 0 <= now - self._last_ptt_press < .25:
             return True  # Coalesce duplicate browser/queued edges, never auto recapture.
-        self._last_ptt_press = now
+        if not _wake:
+            self._last_ptt_press = now
         if self.session.busy:
+            if _wake:
+                return False
             if self._ptt_turn_active and self.microphone.finish():
                 return True
             self.cancel_conversation()
@@ -956,13 +1037,20 @@ class FeatureHost:
         capture_id = "ptt_" + uuid4().hex
         self._ptt_handoff_pending = True
         self._ptt_turn_active = True
+        self._wake_input_active = _wake
         def provider(check):
             self._ptt_last_stage = "microphone"
             try:
                 check()
+                if _wake:
+                    self._confirm_wake(check)
+                    check()
+                    self._wake_handoff["phase"] = "waiting_wake_end"
                 self.turn_diagnostics.record("microphone", "started", outcome="started",
                                              sample_rate=16000, channels=1)
-                capture = self.microphone.capture(capture_id, generation=generation, cancel_check=check)
+                capture = self.microphone.capture(capture_id, generation=generation, cancel_check=check,
+                    **({"source_factory": self._microphone_broker.wake_source_factory,
+                        "no_speech_timeout": self.wake_question_wait, "vad_mode": "webrtc"} if _wake else {}))
             except TurnCancelled:
                 self.turn_diagnostics.record("microphone", "cancelled", outcome="cancelled")
                 raise
@@ -977,6 +1065,8 @@ class FeatureHost:
                 self._ptt_handoff_pending = False
             check()
             if capture.status != "ready":
+                if _wake and self._wake_handoff["phase"] != "cancelled":
+                    self._wake_handoff["phase"] = "timed_out" if capture.code == "no_speech" else "idle"
                 return ""  # No speech means zero STT/brain/TTS calls.
             try:
                 text = self.microphone.transcribe_capture(capture, self.client,
@@ -999,6 +1089,7 @@ class FeatureHost:
         if not result:
             self._ptt_turn_active = False
             self._ptt_handoff_pending = False
+            self._wake_input_active = False
         return result
 
     def start_ptt(self, capture_id):
@@ -1017,6 +1108,8 @@ class FeatureHost:
         return False
 
     def cancel_conversation(self):
+        if self._wake_input_active:
+            self._wake_handoff["phase"] = "cancelled"
         self._ptt_handoff_pending = False
         with self._records_lock:
             self._command_epoch += 1
@@ -1114,6 +1207,12 @@ class FeatureHost:
                             or receipt.get("input_turn") != self.session.worker.turn):
                         self._remember(HostResult(request, "rejected", "wake_stale_or_busy"))
                         continue
+                    started = self.ptt_button(received_at=receipt["received_at"], _wake=True)
+                    if started:
+                        self._voice_control_request = request
+                    self._remember(HostResult(request, "running" if started else "rejected",
+                                              "wake_question_started" if started else "wake_stale_or_busy"))
+                    continue
                 if intent.action not in ("stop", "cancel") and generation != self.modes.generation:
                     self._remember(HostResult(request, "rejected", "stale_mode"))
                 else:
@@ -1214,17 +1313,22 @@ class FeatureHost:
                 self._voice_lease = self._ptt_lease = None
             self._ptt_turn_active = False
             self._ptt_handoff_pending = False
+            empty_wake = self._wake_input_active and event.code == "empty_stt"
+            if self._wake_input_active:
+                if self._wake_handoff["phase"] not in ("cancelled", "timed_out"):
+                    self._wake_handoff["phase"] = "idle"
+                self._wake_input_active = False
             turn = f"{self.session.session_id}:{event.turn}"
             with self._playback_lock:
                 played = turn in self._voice_started_turns
                 self._voice_started_turns.discard(turn)
             if self._voice_control_request is not None:
                 request, self._voice_control_request = self._voice_control_request, None
-                ok = event.code == "ok"
+                ok = event.code == "ok" or empty_wake
                 self._remember(HostResult(request, ("simulated" if self.runtime.simulate else "succeeded") if ok else "cancelled" if event.code == "cancelled" else "failed",
-                    "voice_completed" if ok else "voice_cancelled" if event.code == "cancelled" else "voice_failed",
+                    "wake_no_question" if empty_wake else "voice_completed" if ok else "voice_cancelled" if event.code == "cancelled" else "voice_failed",
                     simulated=self.runtime.simulate, executed=not self.runtime.simulate and played,
-                    completed=ok, completion=("simulated" if self.runtime.simulate else "voice_playback") if ok else
+                    completed=ok, completion="no_question" if empty_wake else ("simulated" if self.runtime.simulate else "voice_playback") if ok else
                     "partial_playback" if played else "unknown"))
             cleanup, self._voice_cleanup = self._voice_cleanup, {}
             stopped = self.stop() if any(action in ("stop", "reset") for action in cleanup.values()) else True
@@ -1319,6 +1423,7 @@ class FeatureHost:
             "turn_diagnostics": self.turn_diagnostics.snapshot(),
             "character_life": {"enabled": self.character_life, "ptt_vad_profile": self.ptt_vad_profile,
                                "ptt_vad_mode": self.ptt_vad_mode,
+                               "expression_trace": face.get("expression_trace"),
                                "last_played_plan": self._last_character_plan,
                                "physical_latency": "UNMEASURED"},
             "photo_countdown": max(0, self._pending_photo["deadline"] - self.clock()) if self._pending_photo else None,
@@ -1332,7 +1437,8 @@ class FeatureHost:
                         hid_identity="keyboard_or_gp8_unverified", physical_verified=False)
                     if self.microphone is not None else ptt),
             "wake_word": dict(self.wake_word.snapshot(), requested=self._wake_requested,
-                              armed=self._wake_armed),
+                              armed=self._wake_armed, handoff=dict(self._wake_handoff),
+                              acknowledgement=self._wake_ack_cache.snapshot() if self._wake_ack_cache else None),
             "microphone_broker": self._microphone_broker.snapshot() if self._microphone_broker else None,
             "last_result": self._last_result, "requests": recent,
             "asset_status": {"real_game_pack": "ASSET_PENDING",

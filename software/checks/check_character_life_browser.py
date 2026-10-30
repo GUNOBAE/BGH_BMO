@@ -37,9 +37,11 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page = browser.new_page(viewport={"width": 800, "height": 480})
                     page.set_default_timeout(8000)
                     page.route("**/*", lambda r: r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
-                    page.add_init_script("""window.__audioCalls=0;window.__entrances=0;
+                    page.add_init_script("""window.__audioCalls=0;window.__entrances=0;window.__rootEntrances=0;
                         const originalAnimate=Element.prototype.animate;
-                        Element.prototype.animate=function(...args){if(this.tagName==='MAIN')window.__entrances++;
+                        Element.prototype.animate=function(...args){
+                          if(this.matches('[data-bmo-expression-entrance]'))window.__entrances++;
+                          if(['MAIN','IFRAME','SVG','BODY','HTML'].includes(this.tagName.toUpperCase()))window.__rootEntrances++;
                           return originalAnimate.apply(this,args);};
                         HTMLMediaElement.prototype.play=function(){window.__audioCalls++;throw Error('Browser audio forbidden')};""")
                     def wait(predicate):
@@ -60,10 +62,15 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert 10 <= fixture.state()["progress_percent"] < 100
                     page.unroute("**/face.html?kiosk=1"); held.pop().continue_()
                     page.wait_for_function("()=>BMOIntegration.state?.source==='cached_greeting'&&BMOIntegration.state.playback==='started'")
-                    assert page.evaluate("()=>window.__entrances") == 1
+                    assert page.evaluate("()=>window.__rootEntrances") == 0
+                    assert page.locator('#face').content_frame.locator('body').evaluate('()=>window.__rootEntrances') == 0
+                    expected_entrances = 0 if profile == 'ci-synthetic' else 1
+                    assert page.locator('#face').content_frame.locator('body').evaluate('()=>window.__entrances') == expected_entrances
+                    assert page.evaluate("()=>BMOIntegration.entranceState.status") == (
+                        'artwork_unavailable' if profile == 'ci-synthetic' else 'completed')
                     assert fixture.state()["face_presented"] and fixture.state()["progress_percent"] == 100
                     assert fixture.features()["test_fixture"]["brain"] == 0
-                    checks.append("English achieved-checkpoint boot and once-only 550ms wrapper entrance precede cache-only greeting; original face untouched")
+                    checks.append("English checkpoint boot keeps background/main/iframe fixed; approved expression-only entrance precedes cache-only greeting, non-art fixture explicitly skips")
                     page.locator("#face").click(position={"x": 400, "y": 230})
                     page.keyboard.down("Enter"); page.keyboard.down("Enter"); page.keyboard.up("Enter")
                     wait(lambda s:s["ptt"]["microphone_open"])
@@ -74,6 +81,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     checks.append("GP8 preempts boot for exactly one synthetic PTT turn; missing real wake model opens no persistent microphone")
                     page.reload(); page.wait_for_function("()=>BMODesktop.state?.phase==='ready'&&BMOIntegration.state?.phase==='idle'")
                     assert page.evaluate("()=>window.__entrances") == 0
+                    assert page.locator('#face').content_frame.locator('body').evaluate('()=>window.__entrances') == 0
                     assert fixture.state()["greeting_attempts"] == 1
                     checks.append("reload restores the same face/session without another entrance or greeting")
                     before_idle=fixture.features()["test_fixture"]

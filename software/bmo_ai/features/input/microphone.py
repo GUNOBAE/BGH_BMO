@@ -364,7 +364,9 @@ class PttRecorder:
                              no_speech_timeout=no_speech_timeout, max_duration=max_duration)
         self.calibration, self.noise_multiplier, self.max_noise = calibration, noise_multiplier, max_noise
         self.vad_mode = vad_mode
+        self._effective_vad_mode = vad_mode
         self.speech_safe, self.ambient_rms = speech_safe or vad_mode == "webrtc", ambient_rms
+        self._effective_speech_safe = self.speech_safe
         self._vad_evidence = None
         self._rms_min, self._rms_max, self._threshold, self._frames = None, 0., threshold, 0
         self._first_frame_received = False
@@ -384,18 +386,19 @@ class PttRecorder:
                          speech_detected=self._state in ("speech", "ready", "transcribing"),
                          automatic_capture=False, wake_word_enabled=False,
                          cleanup_pending=self._cleanup_failed or self._pending_wav is not None,
-                         vad="webrtc_mode1" if self.vad_mode == "webrtc" else "rms_energy",
-                         vad_mode=self.vad_mode, rms_threshold_active=self.vad_mode == "rms",
-                         speech_entry_window=.6 if self.vad_mode == "webrtc" else None,
-                         ambient_profile_applied=self.ambient_rms is not None and self.vad_mode == "rms",
+                         vad="webrtc_mode1" if self._effective_vad_mode == "webrtc" else "rms_energy",
+                         vad_mode=self._effective_vad_mode, configured_vad_mode=self.vad_mode,
+                         rms_threshold_active=self._effective_vad_mode == "rms",
+                         speech_entry_window=.6 if self._effective_vad_mode == "webrtc" else None,
+                         ambient_profile_applied=self.ambient_rms is not None and self._effective_vad_mode == "rms",
                          vad_evidence=self._vad_evidence.snapshot() if self._vad_evidence else None,
                          calibration_seconds=self.calibration,
                          silence_seconds=self.settings["silence_timeout"], max_seconds=self.settings["max_duration"],
                          first_frame_received=self._first_frame_received, voice_detected=self._state in ("speech", "ready", "transcribing"),
                          rms_min=self._rms_min or 0., rms_max=self._rms_max, threshold=self._threshold,
                          frames=self._frames, ambient_verified=self.ambient_rms is not None,
-                         speech_safe=self.speech_safe, preroll_seconds=self.preroll_seconds,
-                         effective_calibration_seconds=0. if self.speech_safe else self.calibration)
+                         speech_safe=self._effective_speech_safe, preroll_seconds=self.preroll_seconds,
+                         effective_calibration_seconds=0. if self._effective_speech_safe else self.calibration)
             return value
 
     def _publish(self, state, code="ok", *, microphone_open=None):
@@ -413,19 +416,34 @@ class PttRecorder:
         except Exception:
             return True
 
-    def capture(self, capture_id, *, generation, cancel_check=None):
+    def capture(self, capture_id, *, generation, cancel_check=None,
+                source_factory=None, no_speech_timeout=None, vad_mode=None):
         if not self._operation.acquire(blocking=False):
             raise MicError("microphone_busy")
         self._idle.clear()
         try:
-            return self._capture_turn(capture_id, generation=generation, cancel_check=cancel_check)
+            return self._capture_turn(capture_id, generation=generation, cancel_check=cancel_check,
+                                      source_factory=source_factory, no_speech_timeout=no_speech_timeout,
+                                      vad_mode=vad_mode)
         finally:
             self._idle.set()
             self._operation.release()
 
-    def _capture_turn(self, capture_id, *, generation, cancel_check=None):
+    def _capture_turn(self, capture_id, *, generation, cancel_check=None,
+                      source_factory=None, no_speech_timeout=None, vad_mode=None):
         if not request_id_ok(capture_id) or type(generation) is not int or generation < 0:
             raise MicError("invalid_capture")
+        settings = dict(self.settings)
+        if no_speech_timeout is not None:
+            if not _positive(no_speech_timeout, settings["max_duration"]):
+                raise MicError("invalid_mic_configuration")
+            settings["no_speech_timeout"] = float(no_speech_timeout)
+        if source_factory is not None and not callable(source_factory):
+            raise MicError("invalid_mic_configuration")
+        effective_vad = self.vad_mode if vad_mode is None else vad_mode
+        if effective_vad not in ("rms", "webrtc"):
+            raise MicError("invalid_vad_configuration")
+        speech_safe = self.speech_safe or effective_vad == "webrtc"
         source = frames = gate = voice_evidence = None
         result = None
         try:
@@ -437,6 +455,8 @@ class PttRecorder:
                 if generation <= self._last_generation:
                     raise MicError("duplicate_capture")
                 self._last_generation, self._ready, self._captured_bytes = generation, None, 0
+                self._effective_vad_mode = effective_vad
+                self._effective_speech_safe = speech_safe
                 self._rms_min, self._rms_max, self._frames = None, 0., 0
                 self._first_frame_received = False
                 self._cancel.clear()
@@ -444,7 +464,7 @@ class PttRecorder:
             self._idle.clear()
             began = _clock_now(self.clock)
             self._vad_evidence = None
-            if self.vad_mode == "webrtc":
+            if effective_vad == "webrtc":
                 from .ambient_vad import WebRtcVoiceEvidence, VadError
                 # Resolve the explicitly selected backend before any source is
                 # constructed. Missing/error never falls back to the noisy RMS
@@ -456,7 +476,7 @@ class PttRecorder:
             self._vad_evidence = voice_evidence
             gate = PcmTurnGate(self.focus, enabled=True, clock=self.clock,
                                playback_active=self.playback_active,
-                               speech_window=.6 if self.vad_mode == "webrtc" else None, **self.settings)
+                               speech_window=.6 if effective_vad == "webrtc" else None, **settings)
             gate_started = False
             first_voiced_sample = earliest_voiced_sample = voiced_candidate_sample = voiced_candidate_at = None
             fed_samples, vad_closed = 0, False
@@ -479,7 +499,7 @@ class PttRecorder:
                 if now < began:
                     raise MicError("invalid_capture_clock")
                 speech_seen = gate.snapshot()["speech_detected"]
-                if not speech_seen and now - began >= self.settings["no_speech_timeout"]:
+                if not speech_seen and now - began >= settings["no_speech_timeout"]:
                     raise _NoSpeech()
                 if now - began >= self.settings["max_duration"]:
                     raise _Limit()
@@ -489,14 +509,14 @@ class PttRecorder:
                         raise _Done()
             check()
             self._publish("calibrating")
-            source = self.source_factory()
+            source = (source_factory or self.source_factory)()
             if getattr(source, "sample_rate", 16000) != 16000:
                 raise MicError("pcm_audio_format_failed")
             with self._lock:
                 self._source, self._microphone_open = source, True
             if callable(getattr(source, "set_timing_observer", None)):
                 source.set_timing_observer(self.on_timing)
-            if self.speech_safe:
+            if speech_safe:
                 # Admit the fixed/profile gate BEFORE the source stamps its
                 # first frame. Starting it afterwards rejects that real frame
                 # as older than the gate by a few monotonic-clock microseconds.
@@ -530,7 +550,7 @@ class PttRecorder:
                     self._frames += 1
                 if first_frame:
                     observed("microphone", "first_frame", frame.timestamp, first_frame_received=True)
-                    if self.speech_safe:
+                    if speech_safe:
                         self._publish("listening", microphone_open=True)
                 frame_samples = tuple(v[0] for v in struct.iter_unpack("<h", frame.pcm))
                 frame_rms = math.sqrt(sum(s * s for s in frame_samples) / len(frame_samples)) / 32768
@@ -671,7 +691,7 @@ class PttRecorder:
                 result = replace(result, status="cancelled", code="user_cancelled", pcm=b"")
             trim_samples = 0
             if result.status == "ready":
-                if self.speech_safe and first_voiced_sample is not None:
+                if speech_safe and first_voiced_sample is not None:
                     # Keep a .3-.5s configured lead-in, the entire qualified
                     # phrase and its full VAD tail. Drop only older silence.
                     trim_samples = max(0, first_voiced_sample - round(16000 * self.preroll_seconds))

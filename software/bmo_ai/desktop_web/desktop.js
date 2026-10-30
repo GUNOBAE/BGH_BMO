@@ -1,7 +1,7 @@
 /* Product wrapper only. The pinned R10 and Python audio owner stay unchanged. */
 (()=>{'use strict';
 const $=id=>document.getElementById(id),frame=$('face'),token=document.querySelector('meta[name="bmo-command-token"]').content;
-let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null;
+let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null,presentationGeneration=0;
 let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0;
 let featureState=null,musicCatalogKey=null,lastFeatureMode=null;
 const inputEvidence={enter_presses:0,keyups:0,repeats_ignored:0,blocked_mode:0,request_sent:0,request_accepted:0,request_rejected:0,cancelled_blur:0,physical_identity:'UNVERIFIED'};
@@ -11,23 +11,25 @@ async function post(path,payload){const response=await fetch(path,{method:'POST'
 const desktop=(action,value=null)=>post('/api/desktop',{action,value}),control=(action,value=null)=>post('/api/control',{action,value}),intent=(name,target=null)=>post('/api/intent',{name,target});
 function error(message){$('notice').hidden=false;$('notice-message').textContent=message;}
 function menu(){cancelPTT();if(!$('menu').open)$('menu').showModal();}
-function refreshAdapter(){if(window.BMOIntegration?.closed){window.BMOIntegration=new window.BMOFaceAdapter(frame);}handshakeFrame=null;}
+function refreshAdapter(){if(window.BMOIntegration?.closed){window.BMOIntegration=new window.BMOFaceAdapter(frame);}handshakeFrame=null;presentedRun=null;presentationGeneration++;}
 function canTalk(){return state?.phase==='ready'||state?.character_life?.enabled===true&&state?.phase==='greeting';}
 function presentFace(run){
- const acknowledge=()=>{if(!closed&&!document.hidden&&state?.run_id===run&&$('splash').hidden)
-   desktop('face_presented',{run_id:run}).catch(()=>{presentedRun=null;});else presentedRun=null;};
- requestAnimationFrame(()=>requestAnimationFrame(()=>{
-  let shown=false;try{shown=sessionStorage.getItem('bmo-face-entrance')===run;}catch(_){}
-  if(state?.character_life?.enabled&&!shown){
-   try{sessionStorage.setItem('bmo-face-entrance',run);}catch(_){}
-   const wrapper=document.querySelector('main');wrapper.classList.add('character-entrance');
-   const done=()=>{wrapper.classList.remove('character-entrance');acknowledge();};
-   if(matchMedia('(prefers-reduced-motion: reduce)').matches){done();return;}
-   const animation=wrapper.animate([{transform:'translateY(100%)'},{transform:'translateY(0)'}],
-     {duration:550,easing:'cubic-bezier(.2,.7,.2,1)',fill:'none'});
-   animation.finished.then(done,done);
-  }else acknowledge();
- }));}
+ const generation=++presentationGeneration,adapter=window.BMOIntegration,doc=frame.contentDocument;
+ const acknowledge=()=>{if(generation!==presentationGeneration)return;
+  if(!closed&&!document.hidden&&state?.run_id===run&&$('splash').hidden&&frame.isConnected
+    &&adapter&&!adapter.closed&&window.BMOIntegration===adapter&&frame.contentDocument===doc&&handshakeFrame===doc)
+   desktop('face_presented',{run_id:run}).catch(()=>{if(generation===presentationGeneration)presentedRun=null;});
+  else presentedRun=null;};
+ const done=()=>requestAnimationFrame(()=>requestAnimationFrame(acknowledge));
+ let shown=false;try{shown=sessionStorage.getItem('bmo-face-entrance')===run;}catch(_){}
+ if(state?.character_life?.enabled&&!shown){
+  try{sessionStorage.setItem('bmo-face-entrance',run);}catch(_){}
+  // Mount the expression-only transform synchronously before the first reveal
+  // can paint. The background/main/iframe stay in their original fixed place.
+  const presentation=adapter?.presentExpression({
+    reducedMotion:matchMedia('(prefers-reduced-motion: reduce)').matches});
+  Promise.resolve(presentation).then(done,done);
+ }else done();}
 frame.addEventListener('load',refreshAdapter);
 async function ready(){if(!state||handshakeFrame===frame.contentDocument)return;
  let face;try{face=frame.contentWindow.BMOFace;}catch(_){return;}
@@ -68,10 +70,12 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
  const capture=next.ptt?.state;
  const diagnosis=next.turn_diagnostics,failure=diagnosis?.failure;
  const inputFailed=capture==='failed'||next.ptt?.cleanup_fault===true||failure;
- $('ptt-state').hidden=!inputFailed&&!['calibrating','listening','speech','transcribing'].includes(capture);
+ const wakePhase=next.wake_word?.handoff?.phase;
+ const wakeHint=({confirming:'One moment…',waiting_wake_end:'I heard you…',question_listening:'I’m listening. What’s up?'})[wakePhase]||'';
+ $('ptt-state').hidden=!inputFailed&&!wakeHint&&!['calibrating','listening','speech','transcribing'].includes(capture);
  const failures={no_speech:'말소리를 감지하지 못했어요. 버튼을 누르고 다시 말해 주세요.',stt_empty:'말을 알아듣지 못했어요. 다시 말해 주세요.'};
  $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':failures[failure?.code]||(capture==='failed'&&failure?.stage!=='stt'?'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.':'대화를 완료하지 못했어요. 준비 상태에서 실패 단계를 확인해 주세요.')):
-  ({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
+  wakeHint||({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
  if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){if(!$('game-menu').open)$('game-menu').showModal();$('game-list').replaceChildren();if(!next.games.catalog.length)$('game-list').textContent='게임 자료가 아직 준비되지 않았어요.';for(const item of next.games.catalog){const b=document.createElement('button');b.textContent=item.title;b.disabled=item.readiness!=='READY';b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}}
  else if($('game-menu').open)$('game-menu').close();
  $('foreground').hidden=!['game','photo'].includes(next.mode);$('foreground-status').textContent=next.mode==='game'?'게임 실행 중':next.photo_countdown!==null?'사진을 준비하고 있어요.':'사진 처리 결과를 확인해 주세요.';
@@ -130,7 +134,7 @@ function ptt(){if(!pttEnabled){error('버튼 녹음은 사용자 검수용 마�
  if(pttPending){control('ptt').catch(()=>error('버튼 입력을 확인해 주세요.'));return;}
  pttPending=true;pttRequest=null;const current=++pttEpoch;
  bump('request_sent');control('ptt').then(result=>{bump('request_accepted');if(current===pttEpoch&&pttPending)pttRequest=result.request_id;}).catch(()=>{bump('request_rejected');if(current===pttEpoch){pttPending=false;error('버튼 녹음을 시작하지 못했어요.');}});}
-function cancelPTT(){enterDown=false;if(pttPending){pttEpoch++;pttPending=false;pttRequest=null;control('cancel').catch(()=>{});}}
+function cancelPTT(){window.BMOIntegration?.cancelEntrance('input_cancelled');enterDown=false;if(pttPending){pttEpoch++;pttPending=false;pttRequest=null;control('cancel').catch(()=>{});}}
 $('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));$('menu').close();};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
 $('presence-mode').onchange=()=>desktop('presence_mode',$('presence-mode').value).catch(()=>error('대기 음성 설정을 확인해 주세요.'));

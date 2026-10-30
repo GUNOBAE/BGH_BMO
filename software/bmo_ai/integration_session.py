@@ -161,6 +161,7 @@ class IntegrationSession:
         self._turn_mode = emotion_mode
         self._turn_emotion_generation = 0
         self._staged_expression = self._notice_restore = None
+        self._retained_expression_trace = None
         self._started = self._browser_seen = None
         self._turn = 0
         self._data = dict(session_id=self.session_id, turn_id=None,
@@ -170,6 +171,7 @@ class IntegrationSession:
                           cues=[], source=None)
         if self.character_life:
             self._data["character"] = None
+            self._data["expression_trace"] = None
         self.events = deque(maxlen=128)
         voice_credentials = {} if fish_api_key is None else {"fish_api_key": fish_api_key}
         self.voice = voice if voice is not None else IntegrationVoice(
@@ -228,6 +230,8 @@ class IntegrationSession:
         self._data.update(phase="idle", playback=playback, cues=[], position=0.0,
                           utterance_id=None)
         self._started = None
+        if self.character_life and self._data.get("expression_trace") is not None:
+            self._data["expression_trace"]["emission_status"] = playback
 
     @property
     def busy(self):
@@ -239,6 +243,8 @@ class IntegrationSession:
             value["cues"] = [dict(cue) for cue in self._data["cues"]]
             if self.character_life and value.get("character") is not None:
                 value["character"] = dict(value["character"])
+            if self.character_life and value.get("expression_trace") is not None:
+                value["expression_trace"] = dict(value["expression_trace"])
             if self._started is not None and self._data["playback"] == "started":
                 value["position"] = max(0.0, self.clock() - self._started)
             return value
@@ -255,6 +261,8 @@ class IntegrationSession:
         with self._lock:
             self._data["emotion_mode"] = "auto" if emotion == "auto" else "manual"
             self._invalidate_expression()
+            if self.character_life:
+                self._data["expression_trace"] = None
             if emotion in EMOTIONS:
                 self._data["emotion"] = emotion
             if self._data["emotion_mode"] == "manual":
@@ -296,6 +304,19 @@ class IntegrationSession:
                     value["reaction"] = reply.reaction
                 if self.character_life and getattr(reply, "character_plan", None) is not None:
                     value["character_plan"] = reply.character_plan.public()
+                    resolution = getattr(self.expression_client, "last_resolution", None)
+                    if type(resolution) is dict:
+                        # Fixed enums only. A custom reply view cannot smuggle
+                        # transcripts, paths, tags or provider errors into state.
+                        trace = {key: resolution.get(key) if type(resolution.get(key)) is str
+                                 and resolution.get(key) in EMOTIONS else None
+                                 for key in ("requested_emotion", "model_emotion", "resolved_emotion")}
+                        trace.update(resolved_source=resolution.get("resolved_source")
+                            if resolution.get("resolved_source") in ("dialogue", "acting") else "dialogue",
+                            validation="degraded" if reply.degraded else "validated",
+                            emitted_emotion=None, emission_status="staged", replayed=False,
+                            turn=turn, contains_text=False)
+                        self._data["expression_trace"] = trace
                 self._staged_expression = dict(turn=turn, generation=generation, **value)
                 self.voice.expression_metadata = value
                 if self._on_reply is not None:
@@ -364,6 +385,9 @@ class IntegrationSession:
                         if validation not in ("none", "manual", "validated", "degraded", "notice"):
                             emotion, validation = "neutral", "none"
                         self._data.update(emotion=emotion, emotion_validation=validation)
+                        if self.character_life and self._data.get("expression_trace") is not None:
+                            self._data["expression_trace"].update(emitted_emotion=emotion,
+                                emission_status="started")
                         if self.character_life:
                             from .character_director import CharacterPlan
                             try:
@@ -432,6 +456,11 @@ class IntegrationSession:
             self._turn_mode = self._data["emotion_mode"]
             self._turn_emotion_generation = self._emotion_generation
             self._turn = self.worker.turn + 1
+            if self.character_life:
+                trace = self._retained_expression_trace
+                self._data["expression_trace"] = (
+                    dict(trace, emitted_emotion=None, emission_status="waiting", replayed=True, turn=self._turn)
+                    if repeat and trace is not None and self._data["emotion_mode"] == "auto" else None)
             if self.diagnostics is not None:
                 self.diagnostics.begin(self._turn)
             self._active = True
@@ -474,6 +503,14 @@ class IntegrationSession:
                 with self._lock:
                     self._active = False
                     status = self._data["playback"]
+                    if (self.character_life and item.code == "ok" and not self._repeat
+                            and self._data.get("expression_trace") is not None
+                            and self._data["expression_trace"]["emitted_emotion"] is not None
+                            and getattr(self.voice, "has_cache", False) is True):
+                        # Only the worker's completed success can promote the
+                        # diagnostic associated with the retained repeat WAV.
+                        # A staged/cancelled replacement must not overwrite it.
+                        self._retained_expression_trace = dict(self._data["expression_trace"])
                     if item.code not in ("ok", "empty_stt", "cancelled"):
                         status = "error"
                     elif item.code == "cancelled":
@@ -492,6 +529,9 @@ class IntegrationSession:
         self._pending_reset = False
         with self._lock:
             self._invalidate_expression(neutral=True)
+            self._retained_expression_trace = None
+            if self.character_life:
+                self._data["expression_trace"] = None
             self._idle("idle")
             self._record("reset")
 
