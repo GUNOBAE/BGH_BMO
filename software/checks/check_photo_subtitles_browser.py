@@ -8,6 +8,7 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -137,7 +138,29 @@ def fixture_for(directory,profile,face):
         fixture=desktop.DesktopFixture(directory,profile=profile,face=face,scenario='character',
             extra_args=('--character-life','--ptt-trace','--voice-bank-directory',str(Path(directory)/'character-bank')))
     try:yield fixture
+    except Exception as error:
+        if fixture.process.poll() is not None:
+            output,stderr=fixture.process.communicate(timeout=3)
+            error.add_note('Desktop fixture exited with code '+str(fixture.process.returncode)
+                +'\n'+stderr+'\n'+''.join(fixture._lines)+output)
+        raise
     finally:fixture.close()
+
+
+def set_photo_clock(directory,value):
+    """Publish a complete offset; the owner loop reads this concurrently."""
+    if type(value) not in (int,float) or not math.isfinite(value):
+        raise ValueError('Photo fixture clock offset must be finite')
+    staged=None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w',encoding='ascii',dir=directory,
+                prefix='.photo-clock-',delete=False) as output:
+            staged=Path(output.name)
+            output.write(repr(float(value)))
+        os.replace(staged,Path(directory)/'photo-clock')
+        staged=None
+    finally:
+        if staged is not None:staged.unlink(missing_ok=True)
 
 
 def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
@@ -288,7 +311,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 hold_preview[0]=True
                 # Freeze only Host/camera time for exact countdown boundaries;
                 # the Desktop heartbeat and owned player stay on real clocks.
-                (root/'photo-clock').write_text('0')
+                set_photo_clock(root,0)
                 photo_before=fixture.features()['test_fixture']
                 question('Can you take a picture of my tiny spaceship for me, BMO?')
                 wait(lambda s:s['photo_phase']=='preparing')
@@ -296,7 +319,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 deadline=time.monotonic()+4
                 while not held_preview and time.monotonic()<deadline:page.wait_for_timeout(20)
                 assert held_preview
-                (root/'photo-clock').write_text('2')
+                set_photo_clock(root,2)
                 page.wait_for_timeout(150)
                 preparing=fixture.features()
                 assert preparing['photo_countdown'] is None and preparing['test_fixture']['photo_captures']==photo_before['photo_captures']
@@ -320,10 +343,10 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert page.locator('#photo-preview-image').is_visible()
                 assert page.locator('#photo-preview-image').evaluate('image=>image.complete&&image.naturalWidth>0')
                 for digit in (4,3,2,1):
-                    (root/'photo-clock').write_text(str(7-digit))
+                    set_photo_clock(root,7-digit)
                     page.wait_for_function('digit=>document.querySelector("#photo-countdown").textContent===String(digit)',arg=digit)
                     assert fixture.features()['test_fixture']['photo_captures']==photo_before['photo_captures']
-                (root/'photo-clock').write_text('7.1')
+                set_photo_clock(root,7.1)
                 saved=wait(lambda s:s['photo_phase']=='photo_review' and s['photo'] and s['photo']['completed'])
                 photo_id=saved['photo']['photo_id']
                 page.locator('#photo-result-image').wait_for(state='visible')
@@ -379,7 +402,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 question('Can you take a picture of my tiny spaceship for me, BMO?')
                 wait(lambda s:s['photo_phase']=='countdown')
                 for offset in (8.1,9.1,10.1,11.1,12.1):
-                    (root/'photo-clock').write_text(str(offset));page.wait_for_timeout(90)
+                    set_photo_clock(root,offset);page.wait_for_timeout(90)
                     fixture.features()  # Current host heartbeat across controlled clock steps.
                 failed=wait(lambda s:s['photo_phase']=='failed')
                 assert failed['photo']['completed'] is False
