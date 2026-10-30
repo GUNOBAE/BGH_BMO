@@ -57,9 +57,11 @@ def _read_local(root, name, maximum):
                              dir_fd=directory)
         before = os.fstat(descriptor)
         if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
-                or before.st_uid not in (0, os.geteuid()) or before.st_mode & 0o0022
+                or before.st_uid not in (0, os.geteuid())
                 or not 0 < before.st_size <= maximum):
             raise FeatureError("unsafe_game_bundle")
+        if before.st_mode & 0o0022:
+            raise FeatureError("games_bundle_permissions")
         with os.fdopen(descriptor, "rb", closefd=False) as source:
             raw = source.read(maximum + 1)
         after = os.fstat(descriptor)
@@ -69,6 +71,10 @@ def _read_local(root, name, maximum):
         return raw
     except FeatureError:
         raise
+    except FileNotFoundError:
+        raise FeatureError("game_bundle_missing") from None
+    except PermissionError:
+        raise FeatureError("games_bundle_permissions") from None
     except (OSError, ValueError, TypeError):
         raise FeatureError("game_bundle_unavailable") from None
     finally:
