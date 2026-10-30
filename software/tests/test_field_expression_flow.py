@@ -99,6 +99,24 @@ class FieldExpressionFlowTests(unittest.TestCase):
         self.assertEqual(state["expression_trace"]["emitted_emotion"],"sad")
         self.assertEqual(len(provider.requests),1)
 
+    def test_get_angry_reaches_player_started_face_and_next_fact_resets(self):
+        provider=self.make_host([envelope('angry',delivery='theatrical_angry'),envelope()])
+        self.begin.set();self.release.set()
+        self.assertTrue(self.host.start_question('Get angry.'))
+        self.pump(lambda:not self.host.session.busy)
+        state=self.host.face_snapshot();trace=state['expression_trace']
+        self.assertEqual((trace['requested_emotion'],trace['model_emotion'],
+                          trace['resolved_emotion'],trace['emitted_emotion']),
+                         ('angry','angry','angry','angry'))
+        self.assertEqual(state['character']['delivery_id'],'theatrical_angry')
+        self.assertTrue(state['character']['explicit_acting'])
+        self.assertTrue(self.host.start_question('What is two plus two?'))
+        self.pump(lambda:not self.host.session.busy)
+        state=self.host.session.snapshot()
+        self.assertEqual(state['emotion'],'neutral')
+        self.assertIsNone(state['expression_trace']['requested_emotion'])
+        self.assertEqual(len(provider.requests),2)
+
     def test_repeat_retains_expression_and_next_fact_does_not_reuse_acting_permission(self):
         provider=self.make_host([envelope(),envelope("angry",delivery="theatrical_angry")])
         self.begin.set();self.release.set()

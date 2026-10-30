@@ -43,6 +43,16 @@ def requested_acting(message):
             if denied:
                 continue
             english_request = re.search(prefix + action + r'\b[^.!?;\n]{0,80}\b(?:' + words + r')\b', clause, re.I)
+            if emotion == 'angry':
+                # "Get angry" is a direct performance request too. Keep the
+                # adjective next to the verb: a broad "get ... angry" match
+                # would also authorize "get me a book about angry people".
+                english_request = english_request or re.search(
+                    prefix + r'(?:get|become)\s+'
+                    r'(?:(?:really|very|a little|a bit|more|playfully)\s+){0,2}'
+                    r'(?:angry|mad|annoyed)\b'
+                    r'(?=\s*(?:$|,)|\s+(?:at|with|about|for|like|now|please|and)\b)',
+                    clause, re.I)
             if emotion == 'crying':
                 english_request = english_request or re.search(prefix + r'(?:cry|sob)\b(?:\s+(?:for me|please)){0,2}\s*$', clause, re.I)
             if english_request or re.search(korean, clause, re.I):
