@@ -1,0 +1,102 @@
+{
+  "schema": "bmo.voice_handoff.github.v10",
+  "status": "ASSETS_READY_NOT_DEPLOYED",
+  "audio_archive": {
+    "filename": "BMO_Voice_Release_v10_142.zip",
+    "sha256": "6bcbf926b2d5519e63eb502c141fab4571e06eafc72315597cb147121c3a189e",
+    "bytes": 33169055,
+    "distribution": "private_user_attachment_not_public_git"
+  },
+  "source_runtime_reviewed": "91665e4dd19229d6144ff04d4a398b0181a98270",
+  "selection": {
+    "scripts": 142,
+    "wavs": 142,
+    "initial_candidates": 60,
+    "idle_take": "A",
+    "old_B_in_separate_backup": 18,
+    "unchanged_raw": 141,
+    "locally_edited_countdown": 1
+  },
+  "format": {
+    "sample_rate_hz": 44100,
+    "channels": 1,
+    "pcm_bits": 16,
+    "baked_gain": 1.0
+  },
+  "provenance": {
+    "provider": "fish",
+    "requested_model": "drama-3",
+    "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+    "server_model_attestation": "NOT_AVAILABLE"
+  },
+  "verification": {
+    "checker": "CHECK_FILES.py shipped in archive",
+    "result": "PASS",
+    "selected_wavs": 142,
+    "total_seconds": 495.637642,
+    "api_calls": 0,
+    "listening_approval": "NOT_PROVEN_BY_THIS_CHECK",
+    "runtime_import": "NOT_RUN",
+    "deployment": "NOT_PERFORMED"
+  },
+  "sidecars": {
+    "catalogue.json": {
+      "sha256": "8b553d006d24943d5368a856d6b659ef581935175024886331c82b8a6f8f5a3c",
+      "bytes": 534812
+    },
+    "INITIAL_SELECTION_60.json": {
+      "sha256": "e8d1f1d7e7a44728ae97093a7ec73ed6503f35412ad0f2f067436c40559334d9",
+      "bytes": 28449
+    },
+    "COUNTDOWN_ALIGNMENT.json": {
+      "sha256": "ebc6514e2c54312b3745155bea6e6e3bf7ab0b2226a6d4064c9f0051a4d94265",
+      "bytes": 2890
+    },
+    "CHECK_FILES.py": {
+      "sha256": "343703dafe4320207c0a61a84fd2d51688ff73546dab02df4e1d0722f77ca1a5",
+      "bytes": 5622
+    },
+    "AB_SELECTION.json": {
+      "sha256": "d4e0c773bfc4dd56bddec3172e20222300cc6ec8a6951f1461ffba8f59f32caf",
+      "bytes": 3365
+    },
+    "FACE_EVENT_RULES_KR.md": {
+      "sha256": "7164ec91e4133397b0a7727d201676f2d24681a63c4d9f763b90bd643085605d",
+      "bytes": 2347
+    }
+  },
+  "critical_assets": [
+    {
+      "clip_id": "wake_ack_01",
+      "spoken_text": "Yeah? What's up?",
+      "file": "audio/WAKE/wake_ack_01__Yeah_What_s_up.wav",
+      "sha256": "28ea53663ab2fb0218ce04138b9698957772c6c84444f9e3a7119f2b7ea329bf",
+      "duration_seconds": 1.7647165532879818,
+      "baked_gain": 1.0
+    },
+    {
+      "clip_id": "PH_COUNTDOWN_05S",
+      "spoken_text": "Five. Four. Three. Two. One.",
+      "file": "audio/PHOTO/PHOTO_COUNTDOWN_5S_ALIGNED__Five_Four_Three_Two_One__PH_COUNTDOWN_05S.wav",
+      "sha256": "7444e92dade1ac3129aaebfc77aa700b26366bd284c4172e62d14397c372d2e4",
+      "duration_seconds": 5.0,
+      "baked_gain": 1.0
+    },
+    {
+      "clip_id": "C09",
+      "spoken_text": "I remember looking for Finn's sock. Such a small thing. Such a big case. Hmm. A detective cannot ignore a sock just because it is a sock.",
+      "file": "audio/IDLE/IDLE_SOCK_CASE_LONG__I_remember_looking_for_Finn_s_sock_Such_a_small_thing_Such_a_big__C09.wav",
+      "sha256": "b2bc83f8b34b8afb1b7972ecaed75e4aa4bf65ad286ca2a6b14c4b11eed4d778",
+      "duration_seconds": 13.188934240362812,
+      "baked_gain": 1.0
+    },
+    {
+      "clip_id": "C12",
+      "spoken_text": "Finn wanted an action movie. Jake wanted a romantic comedy. They argued. I made something about being friends instead. I liked my version.",
+      "file": "audio/IDLE/IDLE_OUR_MOVIE__Finn_wanted_an_action_movie_Jake_wanted_a_romantic_comedy_They__C12.wav",
+      "sha256": "68cbbb03811e829eac73de084147ead4cbd2b18a620d9d4dddcddba776cb9a9a",
+      "duration_seconds": 11.099138321995465,
+      "baked_gain": 1.0
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema": "bmo.voice_handoff.initial_selection.v10",
+  "not_activation_or_listening_approval": true,
+  "preserve_existing_approved_boot": true,
+  "selected_count": 60,
+  "source_file_in_private_zip": "INITIAL_SELECTION_60.json",
+  "full_source_file_sha256": "e8d1f1d7e7a44728ae97093a7ec73ed6503f35412ad0f2f067436c40559334d9",
+  "note": "This public summary contains IDs only. Exact WAV paths, hashes and usage gates are in the hash-pinned private archive. Event mapping must be checked against the actual spoken text.",
+  "groups": {
+    "games": ["G01", "G02", "G03", "G04", "G07"],
+    "music": ["M01", "M04", "M10", "MUSIC_CHOOSE_MODE"],
+    "photo": ["PH_READY_03", "PH_COUNTDOWN_05S", "PH_REVIEW_02", "PH_RETAKE_01", "PH_EXIT_02", "PH_RETURN_GUIDE_01", "PH_CANCEL_01"],
+    "errors": ["E01", "E03", "E07", "E08", "E10", "E11", "E12", "E13", "E14", "E15", "E16"],
+    "short_reactions": ["RX01", "RX02", "RX03", "RX04"],
+    "reaction_lines": ["REACTION_LINE_CHUCKLE_SILLY", "REACTION_LINE_OOH_INTERESTING"],
+    "goodbye": ["F04", "F05"],
+    "utility": ["A01", "A02", "A03"],
+    "wake": ["wake_ack_01"],
+    "video": ["VIDEO_PREP_ACTING", "VIDEO_TAKE_FINISHED", "VIDEO_SAVED_PRODUCTION", "VIDEO_ERROR_START", "VIDEO_ERROR_SAVE", "VIDEO_REVIEW_EXIT", "VIDEO_CAMERA_BUSY", "VIDEO_NOT_RECORDING", "VIDEO_LIMIT_REACHED"],
+    "tracking": ["TRACK_START", "TRACK_STOP", "TRACK_UNAVAILABLE"],
+    "system_focus_storage": ["SYSTEM_VOLUME_UP", "SYSTEM_VOLUME_DOWN", "SYSTEM_VOLUME_MAX", "SYSTEM_NOTHING_TO_REPEAT", "PHOTO_FOCUS_UNCERTAIN", "PHOTO_REFOCUS_ONCE", "SYSTEM_STORAGE_FULL", "SYSTEM_SAVED_FILE_OPEN_FAILED", "SYSTEM_CAMERA_OFF"]
+  }
+}

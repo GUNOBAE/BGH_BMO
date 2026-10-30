@@ -1,0 +1,143 @@
+clip_id,category,seconds,spoken_text
+B01,boot,3.344,"Oh! Hello! It is me, Beemo."
+B02,boot,3.204,I'm awake! Okay. What are we doing?
+B03,boot,2.647,"Hello, hello! Let us begin."
+B04,boot,4.226,Beemo is ready! I am also very cute.
+B05,boot,2.926,Hello! You can be in charge first.
+B06,boot,3.297,"Oh, hello. It is nice to be here."
+G01,games,1.115,Pick a game!
+G02,games,1.950,"Ooh, game time!"
+G03,games,1.300,I'm back!
+G04,games,2.508,Oops. That game isn't ready.
+G05,games,1.161,You did it!
+G06,games,3.019,Oh... game over.
+G07,games,2.554,Oops! The controller disconnected.
+M01,music,3.065,I will pick! Let us see what we get.
+M02,music,3.901,A surprise song! Even I am curious.
+M03,music,5.062,Beemo is choosing. This is serious music business.
+M04,music,2.322,That one? Okay! Here it comes.
+M05,music,3.019,You picked it. I will make it go.
+M06,music,2.647,"A song for you, chosen by you!"
+M07,music,3.994,Pause! Even music needs a little rest.
+M08,music,2.415,"And now, the rest of the song."
+M09,music,2.229,Let us hear the next one.
+M10,music,3.483,"The concert is over. Thank you, everybody."
+PH_READY_01,photo,4.737,Okay! Make your picture face. I will count down from five.
+PH_READY_02,photo,3.762,Hold still. Beemo is the photographer today.
+PH_READY_03,photo,3.715,Ready? You do the pose. I will do the counting.
+PH_READY_04,photo,3.529,Everybody ready? Stay together. Here we go!
+PH_READY_05,photo,4.598,This is important camera business. No wiggling!
+PH_READY_06,photo,4.690,A picture? Yes! Let us keep a little piece of today.
+PH_COUNTDOWN_05S,photo,5.000,Five. Four. Three. Two. One.
+PH_REVIEW_01,photo,2.368,There you are! What do you think?
+PH_REVIEW_02,photo,2.926,Ta-da! A picture by Beemo.
+PH_REVIEW_03,photo,3.065,"Saved! Beemo, photographer."
+PH_REVIEW_04,photo,3.204,How do you like it? I did the camera part.
+PH_REVIEW_05,photo,2.833,There! A little piece of today.
+PH_REVIEW_06,photo,2.647,I took it! You can be the judge.
+PH_RETAKE_01,photo,3.529,Another one? All right. A new pose!
+PH_RETAKE_02,photo,4.180,Again? Okay. Beemo is still the photographer.
+PH_RETURN_GUIDE_01,photo,3.204,Press the back button when you are done looking.
+PH_EXIT_01,photo,3.622,I'm back! Camera business is finished.
+PH_EXIT_02,photo,2.647,"And now, back to being Beemo."
+PH_EXIT_03,photo,3.019,Photo time is over. Beemo time!
+PH_CANCEL_01,photo,2.601,Okay. No picture.
+E01,errors,3.808,Hmm? The words got fuzzy. Say that again?
+E02,errors,3.344,Oh. I did not hear any words.
+E03,errors,2.926,Oh. My microphone is not working.
+E04,errors,3.204,Which one? Beemo needs one more clue.
+E05,errors,4.272,Hmm. This is taking a little longer.
+E06,errors,4.133,"The answer did not come back. Oh, bother."
+E07,errors,3.576,Oh. I cannot get online right now.
+E08,errors,4.830,I cannot get an answer right now. That is not very helpful.
+E09,errors,2.136,I do not have that trick.
+E10,errors,4.737,Huh. That did not go according to Beemo's plan.
+E11,errors,2.879,That song is not in my music box.
+E12,errors,4.272,My music box is empty. We need some songs.
+E13,errors,5.294,That song will not play. A very stubborn song.
+E14,errors,3.669,My camera is not ready. No picture yet.
+E15,errors,3.622,Oh. I did not get the picture.
+E16,errors,3.715,"Oh, no. I could not save the picture."
+RX01,reaction,1.347,
+RX02,reaction,2.183,Oh!
+RX03,reaction,1.068,Hmph!
+RX04,reaction,1.486,"Oh, dear."
+RX05,reaction,1.022,Yay!
+RX06,reaction,0.789,Hmm?
+RX07,reaction,1.022,Aha!
+RX08,reaction,1.811,Whoa...
+C01,idle,4.923,Finn? Jake? ... Hmm. I wonder what those two are doing.
+C02,idle,3.158,I like it when Finn and Jake play games with me.
+C03,idle,6.734,Finn and Jake went inside one of my games once. Playing from the outside is much less trouble.
+C04,idle,4.505,"Hello, Football. ... Oh. I should find a mirror first."
+C05,idle,7.105,Football and I look very much alike. But I am Beemo. That is an important difference.
+C06,idle,8.127,Football wanted a turn outside the mirror. Changing places sounded simple. Hmm. It was not simple.
+C07,idle,3.947,Finn's missing sock... That was a serious case.
+C08,idle,6.269,I was a detective once. Finn needed a sock. I found a whole mystery.
+C09,idle,13.189,I remember looking for Finn's sock. Such a small thing. Such a big case. Hmm. A detective cannot ignore a sock just because it is a sock.
+C10,idle,4.319,Movie night at the tree house. Hmm. That was nice.
+C11,idle,6.594,Finn and Jake made a movie. I did the camera work. Yes. Beemo has experience.
+C12,idle,11.099,Finn wanted an action movie. Jake wanted a romantic comedy. They argued. I made something about being friends instead. I liked my version.
+C13,idle,3.576,"Moe made me to play. Good idea, Moe."
+C14,idle,5.062,Finn and Jake came with me to the MO factory. I was glad they were there.
+C15,idle,7.988,Moe wanted me to find a family. I found Finn and Jake. Hmm. That was a very good thing to find.
+C16,idle,4.505,Card Wars with Jake? Hmm. I think I will watch.
+F01,goodbye,2.972,Bye-bye! Go have a good adventure.
+F02,goodbye,3.762,See you next time. I will still be Beemo.
+F03,goodbye,3.901,That was fun. The end! For now.
+F04,goodbye,3.390,Okay. Beemo is going to sleep now.
+F05,goodbye,3.344,Good night. Have a very interesting dream.
+F06,goodbye,3.390,Good night. Even heroes need pajamas.
+C17,idle,8.313,Y5 was a scientist on a space station. I was Beemo on a space station. A very good team.
+C18,idle,8.731,I made a friend a long way from Ooo. Her name is Y5. I wonder what she is working on now.
+A01,utility,3.019,"Press my talk button, then tell me something!"
+A02,utility,2.322,Okay. Quiet Beemo.
+A03,utility,2.136,Oh! It works again!
+wake_ack_01,wake,1.765,Yeah? What's up?
+REACTION_LINE_CHUCKLE_SILLY,reaction_line,2.833,That was silly.
+REACTION_LINE_OOH_INTERESTING,reaction_line,4.505,Ooooh. Now that is interesting.
+REACTION_LINE_AHA_IDEA,reaction_line,3.019,Aha! Beemo has an idea.
+REACTION_LINE_OH_SURPRISE,reaction_line,4.087,Oh! I was not expecting that.
+REACTION_LINE_HMM_MYSTERY,reaction_line,3.111,Hmm... a mystery.
+REACTION_LINE_POUT_NO_FAIR,reaction_line,2.461,Hmph! No fair.
+REACTION_LINE_WHEW_RELIEF,reaction_line,2.694,Whew! That was close.
+REACTION_LINE_TADA_SUCCESS,reaction_line,2.322,Ta-da! Beemo did it.
+REACTION_LINE_GIGGLE_FUNNY,reaction_line,3.529,"Oh, that was funny."
+REACTION_LINE_AWW_KIND,reaction_line,2.833,Aww. That was kind.
+REACTION_LINE_OOPS_MY_MISTAKE,reaction_line,2.833,Oops. That was my mistake.
+REACTION_LINE_GASP_AMAZING,reaction_line,3.715,Oh! That is amazing!
+REACTION_LINE_PROUD_HELP,reaction_line,3.390,Heh. Beemo is pretty good at this.
+REACTION_LINE_SOFT_SOB_ACTING,reaction_line,4.040,Oh... I need a tiny moment.
+VIDEO_PREP_MOVIE,video,3.576,Ooh! A movie! I will be the camera.
+VIDEO_PREP_READY,video,2.833,Ready? Beemo is making a movie.
+VIDEO_PREP_ACTING,video,3.019,You do the acting. I will do the filming.
+VIDEO_RECORDING_STARTED,video,1.533,We are recording!
+VIDEO_TAKE_FINISHED,video,1.533,And... cut!
+VIDEO_SAVED_PRODUCTION,video,2.879,Saved! A Beemo production.
+VIDEO_REVIEW_WATCH,video,2.461,There is our movie. Want to watch?
+VIDEO_RETAKE,video,3.808,Another take? Okay! We are very professional.
+VIDEO_ERROR_START,video,3.437,Oh. The movie did not start.
+VIDEO_ERROR_SAVE,video,4.133,"Oh, no. I could not save the movie."
+VIDEO_LIMIT_REACHED,video,2.554,Recording stopped. The time is up.
+VIDEO_CAMERA_BUSY,video,3.762,"The camera is busy. One camera, one job."
+VIDEO_NOT_RECORDING,video,2.601,There is no movie recording right now.
+VIDEO_REVIEW_EXIT,video,3.019,Movie time is finished. Back to Beemo.
+TRACK_START,tracking,2.926,Okay. My eyes will follow you.
+TRACK_TARGET_FOUND,tracking,1.811,Oh! There you are.
+TRACK_TARGET_LOST,tracking,2.740,Hmm. I lost sight of you.
+TRACK_TARGET_RETURNED,tracking,2.415,Ah! There you are again.
+TRACK_STOP,tracking,2.368,Okay. No more following.
+TRACK_UNAVAILABLE,tracking,3.204,My camera cannot do that right now.
+TRACK_NO_TARGET_YET,tracking,3.204,Hmm. I do not see a face yet.
+MUSIC_CHOOSE_MODE,music,3.019,"A surprise song, or one you choose?"
+MUSIC_REPEAT_SELECTED,music,3.483,This one again? Okay. One more time!
+MUSIC_PLAYLIST_FINISHED,music,4.226,That was the last song. The music box is taking a rest.
+SYSTEM_VOLUME_UP,system,2.554,A little louder. Okay!
+SYSTEM_VOLUME_DOWN,system,1.904,Softer. Got it.
+PHOTO_FOCUS_UNCERTAIN,system,4.783,Hmm. I am not sure about the focus. Take it anyway?
+PHOTO_REFOCUS_ONCE,system,3.715,Okay. I will try focusing once more.
+SYSTEM_STORAGE_FULL,system,2.508,There is no room to save that.
+SYSTEM_SAVED_FILE_OPEN_FAILED,system,2.554,I could not open the saved file.
+SYSTEM_CAMERA_OFF,system,1.811,My camera is off now.
+SYSTEM_VOLUME_MAX,system,2.879,That is as loud as I can go.
+SYSTEM_NOTHING_TO_REPEAT,system,2.461,I have nothing to repeat yet.
