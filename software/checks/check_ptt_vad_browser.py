@@ -65,7 +65,11 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                         result=wait(lambda s:not s['conversation_busy'] and s['audio_owner'] is None
                             and s['test_fixture']['mic_closed']==count)
                         page.wait_for_function("count=>BMODesktop.features?.conversation_busy===false&&BMODesktop.features.audio_owner===null&&BMODesktop.features.test_fixture.mic_closed===count",arg=count)
-                        assert result['test_fixture']['stt']==result['test_fixture']['brain']==result['test_fixture']['synthesis']==count
+                        assert result['test_fixture']['stt']==result['test_fixture']['brain']==result['test_fixture']['synthesis']==count,{
+                            'expected_completed_turns':count,'audit':result['test_fixture'],
+                            'ptt':result['ptt'],'last_result':result['last_result'],
+                            'requests':result['requests'][-3:],
+                            'browser':page.evaluate("()=>({input:BMODesktop.inputEvidence,active:document.activeElement.id,childActive:document.querySelector('#face').contentDocument.activeElement.tagName})")}
                         assert not page.locator("#menu").evaluate("e=>e.open")
                         return result
                     page.goto(fixture.url,wait_until="domcontentloaded")
@@ -161,7 +165,9 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page.locator('#notice-menu').focus();press_enter()
                     wait(lambda s:s['phase']=='thinking' and s['test_fixture']['brain']==6)
                     # Simulate the exact residual focus during thinking too.
-                    page.locator('#notice-menu').focus();press_enter()
+                    page.locator('#notice-menu').focus()
+                    assert fixture.features()['phase']=='thinking'
+                    press_enter()
                     wait(lambda s:s['phase']=='idle')
                     hold.unlink()
                     cancelled=wait(lambda s:not s['conversation_busy'])
@@ -169,6 +175,7 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert cancelled['test_fixture']['synthesis']==5
                     assert not page.locator('#menu').evaluate('e=>e.open')
                     checks.append("thinking GP8/Enter from residual notice-button focus cancels the actual pending provider without a menu or late playback")
+
                     code,counts,error=fixture.finish()
                     assert code==0,error
                     assert counts['forbidden']==0 and counts['mic_sources']==counts['mic_closed']==6
@@ -176,6 +183,7 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert counts['players']==counts['reaped'] and counts['browsers']==counts['browser_reaped']==1
                     return {"status":"PASS","checks":checks,"counts":counts,
                         "physical_gp8_identity":"NOT_RUN","cache":"PRIVATE_SYNTHETIC_MISSING",
+                        "native_os_focus_loss":"NOT_RUN_HEADLESS_DOCUMENT_FOCUS_ALWAYS_TRUE",
                         "input":"NATIVE_CHROMIUM_KEYDOWN_KEYUP"}
                 finally:browser.close()
         finally:fixture.close()

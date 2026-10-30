@@ -181,9 +181,14 @@ function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){
  if(isTextInput(event.target)||event.target?.closest?.('button'))return;
  if(['game','game_menu'].includes(currentMode)&&keys[event.key]){if(event.key==='Enter'&&pressed)bump('blocked_mode');event.preventDefault();event.stopPropagation();control('input',{key:keys[event.key],pressed}).catch(()=>error('게임 입력 상태를 확인해 주세요.'));return;}}
 window.addEventListener('keydown',event=>key(event,true));window.addEventListener('keyup',event=>key(event,false));
-function blurPTT(event){setTimeout(()=>{if(event.isTrusted&&document.hasFocus()&&document.activeElement===frame)return;bump('cancelled_blur');cancelPTT();},0);}
+function blurPTT(event){setTimeout(()=>{
+ // Focusing the iframe blurs its parent window. A later move back to a notice
+ // button is still inside BMO, even if it happens before this callback runs.
+ // Only loss of the whole document's focus cancels trusted input here.
+ if(event.isTrusted&&document.hasFocus())return;bump('cancelled_blur');cancelPTT();
+},0);}
 window.addEventListener('blur',blurPTT);
-let touchStart=null,inputDocument=null;function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',cancelPTT);
+let touchStart=null,inputDocument=null;function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',blurPTT);
  doc.addEventListener('pointerdown',event=>{touchStart={x:event.clientX,y:event.clientY};if(event.clientX<60&&event.clientY<60)touchStart.timer=setTimeout(menu,1200);});for(const name of ['pointerup','pointercancel'])doc.addEventListener(name,()=>{clearTimeout(touchStart?.timer);touchStart=null;});doc.addEventListener('pointermove',event=>{if(touchStart&&Math.hypot(event.clientX-touchStart.x,event.clientY-touchStart.y)>12){clearTimeout(touchStart.timer);touchStart=null;}});}catch(_){}}
 frame.addEventListener('load',()=>{cancelPTT();bindFrameInputs();});bindFrameInputs();
 // The standard browser mapping is opt-in and game-only. Never map a pad button
