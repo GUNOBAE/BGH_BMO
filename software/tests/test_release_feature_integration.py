@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 import wave
@@ -12,6 +14,7 @@ from bmo_ai.features.contracts import FeatureError, HostResult
 from bmo_ai.features.host import FeatureHost, FeatureSimulatedClient, HostControl
 from bmo_ai.features.input.gamepad import BrowserGamepadGate
 from bmo_ai.features.media.library import install_wav, review_wav
+from bmo_ai.features.media import SampleClockWavBackend
 from bmo_ai.features.reply import HostIntent
 from bmo_ai.features.runtime import RuntimePolicy
 
@@ -53,6 +56,42 @@ class ReleaseFeatureIntegrationTests(unittest.TestCase):
             install_wav(review_wav(source), library, "generated_song" if index == 0 else "generated_song_b",
                         title="Generated silence", license_id="test_generated", license_reviewed=True)
         return library
+
+    def music_boundary(self):
+        """Keep the production media backend; replace only the ALSA sink IO.
+
+        Sink delay is controlled by the test, so opening/queueing PCM cannot
+        be mistaken for consumed samples or finish before a receipt check.
+        """
+        sinks = []
+        class SilentSink:
+            def __init__(self, device, rate, channels):
+                self.device, self.rate, self.channels = device, rate, channels
+                self.ended = self.closed = False
+                self.queued = 0
+                self.guard = threading.Lock()
+                sinks.append(self)
+            def write(self, block):
+                with self.guard:
+                    count = min(len(block) // (self.channels * 2), max(0, self.rate // 10 - self.queued))
+                    self.queued += count
+                    return count
+            def delay(self):
+                with self.guard:
+                    if self.ended:
+                        self.queued = 0
+                    return self.queued
+            def close(self):
+                self.closed = True
+        def backend(**kwargs):
+            return SampleClockWavBackend(**kwargs, sink_factory=SilentSink)
+        return self.enterContext(patch("bmo_ai.features.media.SampleClockWavBackend", side_effect=backend)), sinks
+
+    def wait_music(self, condition):
+        deadline = time.monotonic() + 2
+        while not condition():
+            self.assertLess(time.monotonic(), deadline, "Injected PCM sink did not reach expected state")
+            time.sleep(.005)
 
     def test_gamepad_default_off_and_global_keys_rejected(self):
         host = self.host(demo_assets=True)
@@ -206,37 +245,36 @@ class ReleaseFeatureIntegrationTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "music_supervision_requires_library")
 
     def test_live_music_reuses_owned_fd_backend_and_truthful_receipts(self):
-        runners = []
-        class BoundaryRunner:
-            def __init__(self, command, **kwargs):
-                self.command, self.pass_fds = command, kwargs["pass_fds"]
-                self.ended, self.stopped = False, False
-                runners.append(self)
-            def start(self, asset):
-                self.asset = asset
-                self.valid_fd = os.fstat(self.pass_fds[0]).st_size > 44
-            def poll(self):
-                return "ended" if self.ended else None
-            def stop(self):
-                self.stopped = True
-        with patch("bmo_ai.features.games.OwnedProcessRunner", BoundaryRunner):
+        _, sinks = self.music_boundary()
+        with patch("bmo_ai.features.media.pcm_clock.AlsaPcmSink", side_effect=AssertionError("No real output")):
             host = self.host(runtime=RuntimePolicy(simulate=False), music_directory=self.library(),
                              music_supervised=True)
             host.session.set_emotion("surprised")
-            self.assertEqual(runners, [])  # Construction/menu never plays anything.
+            self.assertEqual(sinks, [])  # Construction/menu never opens output.
             start = host.execute(HostIntent("play_song", "generated_song"), request_id="music_live")
             self.assertEqual((start.status, start.simulated, start.executed, start.completed),
                              ("running", False, True, False))
             self.assertEqual(host.audio.owner, "music")
-            runner, = runners
-            self.assertEqual(runner.command[0:2], ("aplay", "-q"))
-            self.assertTrue(runner.valid_fd)
-            self.assertTrue(runner.command[-1].startswith("/proc/self/fd/"))
-            self.assertEqual(host.control(HostControl("pause"), "cannot_pause").code, "pause_unsupported")
-            runner.ended = True; host.poll()
+            sink, = sinks
+            descriptor = host.media._handle.fd
+            self.assertGreater(os.fstat(descriptor).st_size, 44)
+            self.assertEqual(os.pread(descriptor, 4, 0), b"RIFF")
+            self.assertIs(host.media.backend._handle, host.media._handle)
+            self.assertEqual(host.media.snapshot()["clock_quality"], "alsa_submitted_minus_delay")
+            self.assertFalse(host.media.snapshot()["output_started"])
+            self.assertEqual(host.control(HostControl("pause"), "music_pause").code, "ok")
+            self.assertTrue(sink.closed)
+            self.assertEqual(host.control(HostControl("resume"), "music_resume").code, "ok")
+            resumed = sinks[-1]
+            self.assertIsNot(sink, resumed)
+            resumed.ended = True
+            self.wait_music(lambda: host.media.backend.poll() == "ended")
+            host.poll()
             receipt = host._result_history["music_live"]
             self.assertEqual((receipt.status, receipt.simulated, receipt.completed), ("succeeded", False, True))
-            self.assertTrue(runner.stopped)
+            self.assertTrue(resumed.closed)
+            with self.assertRaises(OSError):
+                os.fstat(descriptor)
             self.assertEqual(host.modes.mode, "conversation")
             self.assertIsNone(host.audio.owner)
             self.assertEqual(host.session.snapshot()["emotion"], "surprised")
@@ -300,11 +338,10 @@ class ReleaseFeatureIntegrationTests(unittest.TestCase):
 
     def test_music_stop_mode_change_and_next_retire_original_running_receipts(self):
         library = self.library(count=2)
+        self.music_boundary()
         for action in ("stop_media", "return_to_face", "next"):
             with self.subTest(action=action):
-                runner = Mock()
-                runner.poll.return_value = None
-                with patch("bmo_ai.features.games.OwnedProcessRunner", return_value=runner):
+                with patch("bmo_ai.features.media.pcm_clock.AlsaPcmSink", side_effect=AssertionError("No real output")):
                     host = self.host(runtime=RuntimePolicy(simulate=False), music_directory=library,
                                      music_supervised=True)
                     host.execute(HostIntent("play_song", "generated_song"), request_id="song_original")

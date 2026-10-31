@@ -96,13 +96,19 @@ class IntegrationProfileTests(unittest.TestCase):
             self.assertNotIn(name, exported)
         self.assertNotIn("private", repr(exported))
 
-    def test_policy_copy_matches_preserved_original_and_cases_are_review_data(self):
+    def test_policy_candidate_is_pinned_and_original_review_data_is_preserved(self):
         import json
         root = Path(__file__).resolve().parents[2]
         original = root / "docs/voice-policy-v1/system-prompt.en.txt"
-        self.assertEqual(load_voice_policy(), original.read_text(encoding="utf-8"))
-        self.assertEqual(POLICY_BLOB_SHA, "a63a8e5c2c768b14b878aa1ca8468323a05fe554")
-        for path in (original, root / "software/bmo_ai/policies/system-prompt.en.txt"):
+        revised = root / "docs/character-life-v1/system-prompt.en.txt"
+        raw = original.read_bytes()
+        blob = b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
+        self.assertEqual(hashlib.sha1(blob, usedforsecurity=False).hexdigest(),
+                         "a63a8e5c2c768b14b878aa1ca8468323a05fe554")
+        self.assertEqual(load_voice_policy(), revised.read_text(encoding="utf-8"))
+        self.assertNotEqual(revised.read_bytes(), raw)
+        self.assertEqual(POLICY_BLOB_SHA, "2b2b5263253ffbce8c3f6c37ec312c06a221ff64")
+        for path in (revised, root / "software/bmo_ai/policies/system-prompt.en.txt"):
             raw = path.read_bytes()
             blob = b"blob " + str(len(raw)).encode("ascii") + b"\0" + raw
             self.assertEqual(hashlib.sha1(blob, usedforsecurity=False).hexdigest(), POLICY_BLOB_SHA)
@@ -110,6 +116,12 @@ class IntegrationProfileTests(unittest.TestCase):
         self.assertEqual(len(cases["cases"]), 20)
         self.assertFalse(cases["executed"])
         self.assertEqual(cases["kind"], "review_data_only")
+        provenance = effective_config(integration_config())
+        self.assertIsNone(provenance["policy_source_commit"])
+        self.assertEqual(provenance["policy_revision"], "character-life-20261030-v2")
+        self.assertEqual(provenance["policy_blob_sha"], POLICY_BLOB_SHA)
+        self.assertEqual(provenance["policy_source_path"],
+                         "docs/character-life-v1/system-prompt.en.txt")
 
     def test_matching_but_drifted_policy_copies_fail_before_any_request(self):
         client = self.client()

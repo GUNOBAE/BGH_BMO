@@ -1,11 +1,14 @@
 """Synthetic defaults and explicit opt-in adapters; constructors open nothing."""
 from io import BytesIO
+from pathlib import Path
 from threading import Lock
 import time
 
 from ..contracts import FeatureError
 from .codec import png_bytes, validate_png
-from .models import FaceBox, Frame, finite
+from .jpeg_codec import validate_jpeg
+from .models import FaceBox, Frame, PreviewFrame, finite
+from .diagnostics import CameraOperationError
 
 
 def _picamera_factory():
@@ -17,6 +20,23 @@ def _opencv_modules():
     import cv2
     import numpy
     return cv2, numpy
+
+
+def _haar_cascade_path(cv2):
+    """Use the wheel's data directory or an installed Debian OpenCV asset.
+
+    Debian python3-opencv does not provide cv2.data. Do not download a model,
+    search arbitrary directories, or treat a missing classifier as detection.
+    """
+    directory = getattr(getattr(cv2, 'data', None), 'haarcascades', None)
+    name = 'haarcascade_frontalface_default.xml'
+    if type(directory) is str and directory:
+        return str(Path(directory) / name)
+    for directory in ('/usr/share/opencv4/haarcascades', '/usr/share/opencv/haarcascades'):
+        path = Path(directory) / name
+        if path.is_file():
+            return str(path)
+    raise FeatureError('face_detector_asset_missing')
 
 
 def _check_cancel(callback):
@@ -57,7 +77,9 @@ class DemoBackend:
         self.read_count += 1
         return self._frame()
 
-    def capture_photo(self):
+    def capture_photo(self, *, allow_unconfirmed=False):
+        if type(allow_unconfirmed) is not bool:
+            raise FeatureError('invalid_photo_focus_policy')
         self.photo_count += 1
         return self._frame()
 
@@ -101,7 +123,8 @@ class Picamera2Backend:
 
     def __init__(self, *, enabled=False, clock=time.monotonic, size=(320, 240),
                  still_size=None, camera_factory=None, read_timeout=1.0,
-                 photo_timeout=4.0, focus_timeout=2.0, wait_clock=time.monotonic):
+                 photo_timeout=4.0, focus_timeout=2.0, wait_clock=time.monotonic,
+                 preview_fps=20):
         for dimensions in (size, still_size):
             if dimensions is not None and (type(dimensions) is not tuple or len(dimensions) != 2
                     or any(type(n) is not int or not 1 <= n <= 8192 for n in dimensions)):
@@ -109,15 +132,92 @@ class Picamera2Backend:
         if any(not finite(value) or not .05 <= value <= 30
                for value in (read_timeout, photo_timeout, focus_timeout)):
             raise FeatureError('invalid_camera_timeout')
+        if type(preview_fps) is not int or not 1 <= preview_fps <= 30:
+            raise FeatureError('invalid_camera_preview_rate')
         self.enabled, self.clock, self.size = enabled, clock, size
         self.still_size = still_size
         self._factory = camera_factory or _picamera_factory
         self._wait_clock = wait_clock
         self.read_timeout, self.photo_timeout, self.focus_timeout = read_timeout, photo_timeout, focus_timeout
+        self.preview_fps = preview_fps
         self._camera = None
         self._owns_lock = False
         self._generation = self._seq = 0
         self._sensor_origin = self._clock_origin = None
+        self._af_supported = False
+        self._resume_continuous = False
+        self._refocus_pending = self._refocus_scan_seen = False
+        self._focus_started = self._focus_finished = None
+        self._focus = self._focus_state('unconfirmed', 'focus_not_observed')
+
+    def _focus_state(self, status, code, **values):
+        return dict(status=status, code=code, stream_generation=self._generation,
+                    observed_at=None, sensor_timestamp=None, af_mode=None, af_state=None,
+                    lens_position=None, af_started_at=self._focus_started,
+                    af_finished_at=self._focus_finished, elapsed=None, **values)
+
+    def focus_snapshot(self):
+        """Whitelisted metadata only; no device calls or physical-quality claim."""
+        result = dict(self._focus)
+        try:
+            now = self.clock()
+        except Exception:
+            now = None
+        observed = result['observed_at']
+        fresh = (self._camera is not None and result['stream_generation'] == self._generation
+                 and finite(now) and finite(observed) and 0 <= now - observed <= .5)
+        result['can_take_anyway'] = bool(fresh and result['status'] != 'device_fault'
+            and (result['status'] == 'unsupported' or finite(result['lens_position'])))
+        return result
+
+    def _observe_focus(self, metadata, captured_at):
+        now = self.clock()
+        def enum_value(name, allowed):
+            value = metadata.get(name)
+            # libcamera may provide an IntEnum; never coerce bool, strings or
+            # arbitrary Python values into successful focus evidence.
+            return int(value) if isinstance(value, int) and not isinstance(value, bool) and value in allowed else None
+        mode = enum_value('AfMode', (0, 1, 2))
+        state = enum_value('AfState', (0, 1, 2, 3))
+        lens = metadata.get('LensPosition')
+        lens = float(lens) if finite(lens) and 0 <= lens <= 1000 else None
+        previous = self._focus.get('af_state')
+        # AfMode is a configured control and need not be returned in metadata.
+        # Keep the observed value absent; AfState + the current finite lens are
+        # the focus evidence. A conflicting reported mode remains conservative.
+        refocus_mode_matches = mode is None or mode == 1
+        if self._refocus_pending and refocus_mode_matches and state == 1:
+            self._refocus_scan_seen = True
+        if state == 1 and previous != 'scanning' and not self._refocus_pending:
+            self._focus_started, self._focus_finished = now, None
+        elif (state in (2, 3) and self._focus_started is not None
+              and (previous == 'scanning' or self._focus_finished is None)
+              and (not self._refocus_pending or self._refocus_scan_seen and refocus_mode_matches)):
+            self._focus_finished = now
+        elapsed = (max(0., (self._focus_finished or now) - self._focus_started)
+                   if self._focus_started is not None else None)
+        if not self._af_supported:
+            status, code = 'unsupported', 'focus_control_unsupported'
+        elif state is None or lens is None:
+            status, code = 'unconfirmed', 'focus_metadata_unavailable'
+        elif self._refocus_pending and (not self._refocus_scan_seen or not refocus_mode_matches):
+            status, code = ('unconfirmed', 'focus_deadline') if elapsed is not None and elapsed >= self.focus_timeout else ('scanning', 'focus_requested')
+        elif state == 2:
+            status, code = 'focused', 'focus_observed'
+        elif state == 1:
+            status, code = ('unconfirmed', 'focus_deadline') if elapsed is not None and elapsed >= self.focus_timeout else ('scanning', 'focus_scanning')
+        elif state == 3:
+            status, code = 'unconfirmed', 'focus_failed'
+        else:
+            status, code = 'unconfirmed', 'focus_idle'
+        if self._refocus_pending and self._refocus_scan_seen and refocus_mode_matches and state in (2, 3):
+            self._refocus_pending = False
+        self._focus = dict(status=status, code=code, stream_generation=self._generation,
+            observed_at=captured_at, sensor_timestamp=metadata.get('SensorTimestamp'),
+            af_mode={0: 'manual', 1: 'auto', 2: 'continuous'}.get(mode),
+            af_state={0: 'idle', 1: 'scanning', 2: 'focused', 3: 'failed'}.get(state),
+            lens_position=lens, af_started_at=self._focus_started,
+            af_finished_at=self._focus_finished, elapsed=elapsed)
 
     def open(self, stream_generation, *, cancel_check=None):
         if self.enabled is not True:
@@ -128,16 +228,26 @@ class Picamera2Backend:
         self._owns_lock = True
         try:
             self._camera = self._factory()
+            self._generation, self._seq = stream_generation, 0
+            self._sensor_origin = self._clock_origin = None
+            self._focus_started = self._focus_finished = None
+            self._af_supported = 'AfMode' in self._camera.camera_controls
+            self._resume_continuous = False
+            self._refocus_pending = self._refocus_scan_seen = False
+            self._focus = self._focus_state('unconfirmed' if self._af_supported else 'unsupported',
+                'focus_not_observed' if self._af_supported else 'focus_control_unsupported')
             _check_cancel(cancel_check)
             config = self._camera.create_preview_configuration(
-                main={'size': self.size, 'format': 'RGB888'}, buffer_count=2, queue=False)
+                main={'size': self.size, 'format': 'RGB888'}, buffer_count=2, queue=False,
+                controls={'FrameRate': self.preview_fps})
             _check_cancel(cancel_check)
             self._camera.configure(config)
             _check_cancel(cancel_check)
+            if self._af_supported:
+                self._camera.set_controls({'AfMode': 2})
+                _check_cancel(cancel_check)
             self._camera.start(show_preview=False)
             _check_cancel(cancel_check)
-            self._generation, self._seq = stream_generation, 0
-            self._sensor_origin = self._clock_origin = None
         except BaseException as error:
             self.close()
             if not isinstance(error, Exception):
@@ -146,7 +256,7 @@ class Picamera2Backend:
                 raise
             raise FeatureError('camera_unavailable') from None
 
-    def _wait(self, camera, job, timeout, cancel_check):
+    def _wait(self, camera, job, timeout, cancel_check, *, stage):
         deadline = self._wait_clock() + timeout
         while True:
             _check_cancel(cancel_check)
@@ -154,7 +264,7 @@ class Picamera2Backend:
                 raise FeatureError('camera_cancelled')
             remaining = deadline - self._wait_clock()
             if remaining <= 0:
-                raise FeatureError('camera_timeout')
+                raise CameraOperationError('camera_timeout', stage)
             try:
                 result = camera.wait(job, timeout=min(.05, remaining))
             except TimeoutError:
@@ -163,7 +273,7 @@ class Picamera2Backend:
             if camera is not self._camera:
                 raise FeatureError('camera_cancelled')
             if self._wait_clock() > deadline:
-                raise FeatureError('camera_timeout')
+                raise CameraOperationError('camera_timeout', stage)
             return result
 
     def _abort(self, camera):
@@ -174,25 +284,39 @@ class Picamera2Backend:
                 pass
             self.close()
 
-    def _capture(self, focus_ok=True, *, still=False, cancel_check=None):
+    def _capture(self, focus_ok=True, *, still=False, cancel_check=None,
+                 preview=False, focus_status='focused', still_controls=None):
         camera = self._camera
         if camera is None:
             raise FeatureError('camera_off')
+        stage = 'still_capture' if still else 'preview'
         try:
             _check_cancel(cancel_check)
+            if not still and self._resume_continuous:
+                camera.set_controls({'AfMode': 2})
+                self._resume_continuous = False
+                _check_cancel(cancel_check)
             output = BytesIO()
             if still:
                 main = {'format': 'RGB888'}
                 if self.still_size is not None:
                     main['size'] = self.still_size
-                config = camera.create_still_configuration(main=main, raw=None, buffer_count=1, queue=False)
+                options = dict(main=main, raw=None, buffer_count=1, queue=False)
+                if still_controls:
+                    options['controls'] = still_controls
+                config = camera.create_still_configuration(**options)
                 _check_cancel(cancel_check)
                 job = camera.switch_mode_and_capture_file(config, output, format='png', wait=False)
             else:
-                job = camera.capture_file(output, format='png', wait=False)
-            metadata = self._wait(camera, job, self.photo_timeout if still else self.read_timeout, cancel_check)
+                job = camera.capture_file(output, format='jpeg' if preview else 'png', wait=False)
+            metadata = self._wait(camera, job, self.photo_timeout if still else self.read_timeout,
+                                  cancel_check, stage=stage)
+            stage = 'frame_validation'
             payload = output.getvalue()
-            width, height = validate_png(payload)
+            width, height = validate_jpeg(payload) if preview else validate_png(payload)
+            stage = 'capture_result'
+            if type(metadata) is not dict:
+                raise FeatureError('camera_capture_failed')
             sensor = metadata.get('SensorTimestamp')
             if type(sensor) is not int or sensor <= 0:
                 raise FeatureError('camera_timestamp_unavailable')
@@ -202,38 +326,104 @@ class Picamera2Backend:
                 self._sensor_origin, self._clock_origin = sensor, self.clock()
             stamp = self._clock_origin + (sensor - self._sensor_origin) / 1_000_000_000
             self._seq += 1
-            return Frame(self._generation, self._seq, stamp, width, height, payload, focus_ok=focus_ok)
+            if not still:
+                self._observe_focus(metadata, stamp)
+            if preview:
+                return PreviewFrame(self._generation, self._seq, stamp, width, height,
+                                    payload, sensor_timestamp=sensor)
+            return Frame(self._generation, self._seq, stamp, width, height, payload,
+                         focus_ok=focus_ok, focus_status=focus_status)
         except BaseException as error:
             # SDK cancellation leaves its stream indeterminate; do not restore
             # tracking with a timed-out or partially switched sensor instance.
             self._abort(camera)
+            self._focus = self._focus_state('device_fault',
+                error.code if isinstance(error, FeatureError) and error.code in ('camera_timeout', 'camera_cancelled') else 'camera_capture_failed')
             if not isinstance(error, Exception):
                 raise
             if isinstance(error, FeatureError) and error.code in ('camera_timeout', 'camera_cancelled'):
                 raise
-            raise FeatureError('camera_capture_failed') from None
+            raise CameraOperationError('camera_capture_failed', stage) from None
 
     def read_frame(self, *, cancel_check=None):
         return self._capture(cancel_check=cancel_check)
 
-    def capture_photo(self, *, cancel_check=None):
+    def read_preview(self, *, cancel_check=None):
+        return self._capture(preview=True, cancel_check=cancel_check)
+
+    def refocus(self, *, cancel_check=None):
         camera = self._camera
         if camera is None:
             raise FeatureError('camera_off')
+        _check_cancel(cancel_check)
+        if not self._af_supported:
+            return self.focus_snapshot()
         try:
+            # No blocking autofocus-cycle job is left alongside a still job.
+            # Completion is observed only from subsequent preview metadata.
+            camera.set_controls({'AfMode': 1, 'AfTrigger': 0})
             _check_cancel(cancel_check)
-            focused = self._wait(camera, camera.autofocus_cycle(wait=False), self.focus_timeout,
-                                 cancel_check) if 'AfMode' in camera.camera_controls else True
+            self._focus_started, self._focus_finished = self.clock(), None
+            self._refocus_pending, self._refocus_scan_seen = True, False
+            self._focus.update(status='scanning', code='focus_requested', af_mode='auto',
+                af_state='scanning', af_started_at=self._focus_started, af_finished_at=None, elapsed=0.)
+            return self.focus_snapshot()
         except BaseException as error:
             self._abort(camera)
+            self._focus = self._focus_state('device_fault', 'camera_focus_failed')
             if not isinstance(error, Exception):
                 raise
-            if isinstance(error, FeatureError) and error.code in ('camera_timeout', 'camera_cancelled'):
+            if isinstance(error, FeatureError) and error.code == 'camera_cancelled':
                 raise
-            raise FeatureError('camera_focus_failed') from None
-        if focused is not True:
-            raise FeatureError('photo_focus_failed')
-        return self._capture(focus_ok=True, still=True, cancel_check=cancel_check)
+            raise CameraOperationError('camera_focus_failed', 'focus') from None
+
+    def capture_photo(self, *, cancel_check=None, allow_unconfirmed=False):
+        if type(allow_unconfirmed) is not bool:
+            raise FeatureError('invalid_photo_focus_policy')
+        camera = self._camera
+        if camera is None:
+            raise FeatureError('camera_off')
+        # The owner pauses its producer before the photo transaction. Preserve
+        # the current stream's fresh focus evidence through lens freeze instead
+        # of racing another AF observation after the journal reservation.
+        focus = self.focus_snapshot()
+        observed = focus['observed_at']
+        if (focus['stream_generation'] != self._generation or not finite(observed)
+                or not 0 <= self.clock() - observed <= .5):
+            self.read_preview(cancel_check=cancel_check)
+        focus = self.focus_snapshot()
+        confirmed = focus['status'] == 'focused'
+        unsupported = focus['status'] == 'unsupported'
+        if not focus['can_take_anyway']:
+            raise CameraOperationError('photo_focus_uncertain', 'focus')
+        if not confirmed and not allow_unconfirmed:
+            raise CameraOperationError('photo_focus_uncertain', 'focus')
+        lens = focus['lens_position']
+        if not unsupported and lens is None:
+            raise CameraOperationError('photo_focus_uncertain', 'focus')
+        controls = None if unsupported else {'AfMode': 0, 'LensPosition': lens}
+        try:
+            _check_cancel(cancel_check)
+            if controls:
+                camera.set_controls(controls)
+                self._refocus_pending = False  # Manual lens freeze ends the requested scan.
+            _check_cancel(cancel_check)
+        except BaseException as error:
+            self._abort(camera)
+            self._focus = self._focus_state('device_fault', 'camera_focus_failed')
+            if not isinstance(error, Exception):
+                raise
+            if isinstance(error, FeatureError) and error.code == 'camera_cancelled':
+                raise
+            raise CameraOperationError('camera_focus_failed', 'focus') from None
+        result = self._capture(focus_ok=confirmed, still=True, cancel_check=cancel_check,
+            focus_status='focused' if confirmed else 'unsupported' if unsupported else 'unconfirmed',
+            still_controls=controls)
+        # The valid still result is never discarded because preview resumption
+        # failed afterwards. Re-enable Continuous only if a later preview is
+        # actually requested; normal photo review closes the camera instead.
+        self._resume_continuous = self._af_supported
+        return result
 
     def close(self):
         camera, self._camera = self._camera, None
@@ -264,13 +454,16 @@ class OpenCVFaceDetector:
         if self.enabled is not True:
             raise FeatureError('detector_real_disabled')
         try:
-            if not isinstance(frame, Frame) or validate_png(frame.payload) != (frame.width, frame.height):
+            if not isinstance(frame, (Frame, PreviewFrame)):
+                raise ValueError()
+            geometry = validate_jpeg(frame.payload) if frame.format == 'jpeg' else validate_png(frame.payload)
+            if geometry != (frame.width, frame.height):
                 raise ValueError()
             if self._modules is None:
                 self._modules = self._loader()
             cv2, np = self._modules
             if self._classifier is None:
-                classifier = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+                classifier = cv2.CascadeClassifier(_haar_cascade_path(cv2))
                 if classifier.empty():
                     raise ValueError()
                 self._classifier = classifier

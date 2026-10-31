@@ -2,11 +2,13 @@
 import hmac
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
+import os
 from pathlib import Path
 import re
 import secrets
 from threading import Thread
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 from ..integration_face import FaceServer, _public_snapshot
 from .contracts import FeatureError
@@ -39,9 +41,14 @@ class FeatureServer:
             "/feature.css": ("text/css; charset=utf-8", root.joinpath("feature.css").read_bytes())})
         if desktop is not None:
             product = root.parent.parent / "desktop_web"
-            self._resources["/"] = ("text/html; charset=utf-8",
-                product.joinpath("index.html").read_text().replace("__COMMAND_TOKEN__", self._token).encode())
+            product_page = product.joinpath("index.html").read_text().replace("__COMMAND_TOKEN__", self._token)
+            if getattr(desktop, "character_life", False):
+                product_page = (product_page.replace("<h1>BMO Loading...</h1>", "<h1>Starting BMO…</h1>")
+                    .replace('id="loading-stage">시작 준비 중...', 'id="loading-stage">Getting ready…')
+                    .replace('aria-label="BMO 시작 준비"', 'aria-label="Getting BMO ready"'))
+            self._resources["/"] = ("text/html; charset=utf-8", product_page.encode())
             for name, mime in (("desktop.js", "text/javascript; charset=utf-8"),
+                               ('playable.js', 'text/javascript; charset=utf-8'),
                                ("desktop.css", "text/css; charset=utf-8")):
                 self._resources["/" + name] = (mime, product.joinpath(name).read_bytes())
             if developer:
@@ -79,15 +86,24 @@ class FeatureServer:
                 expected = "http://" + authority
                 return origins == [expected] if write else not origins or origins == [expected]
 
-            def _send(self, status, body=b"", mime="text/plain; charset=utf-8"):
+            def _send(self, status, body=b"", mime="text/plain; charset=utf-8", *, extra_headers=None):
+                extra_headers = extra_headers or {}
+                if (not set(extra_headers) <= {"X-BMO-Frame-Id", "X-BMO-Captured-At", "X-BMO-Frame-Age-Ms"}
+                        or any(type(value) is not str or len(value) > 128
+                               or any(ord(char) < 32 or ord(char) > 126 for char in value)
+                               for value in extra_headers.values())):
+                    raise ValueError("invalid preview headers")
                 if isinstance(body, dict):
                     body, mime = json.dumps(body, allow_nan=False).encode(), "application/json"
+                media_policy = "'self'" if getattr(owner.desktop, 'character_life', False) or getattr(owner.host, 'character_life', False) else "'none'"
                 self.send_response(status)
                 for key, value in {"Content-Type": mime, "Content-Length": str(len(body)),
                     "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
                     "Cross-Origin-Resource-Policy": "same-origin",
                     "Referrer-Policy": "no-referrer", "X-Frame-Options": "SAMEORIGIN",
-                    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'none'; connect-src 'self'; frame-src 'self' about:; frame-ancestors 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"}.items():
+                    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src "+media_policy+"; connect-src 'self'; frame-src 'self' about:; frame-ancestors 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"}.items():
+                    self.send_header(key, value)
+                for key, value in extra_headers.items():
                     self.send_header(key, value)
                 try:
                     self.end_headers()
@@ -96,11 +112,77 @@ class FeatureServer:
                 except OSError:
                     pass
 
+            def _video(self, video_id, *, music=False):
+                getter = getattr(owner.host, 'open_music_video' if music else 'open_video', None)
+                opened = getter(video_id) if callable(getter) else None
+                if opened is None and music:
+                    self._send(404)
+                    return
+                if opened is None:
+                    # Legacy developer fixtures retain their old byte route.
+                    payload = owner.host.video_bytes(video_id)
+                    self._send(200, payload, 'application/octet-stream') if payload else self._send(404)
+                    return
+                fd, total, metadata = opened
+                try:
+                    start, end, status = 0, total-1, 200
+                    ranges = self.headers.get_all('Range', [])
+                    invalid = len(ranges) > 1
+                    if ranges and not invalid:
+                        match = re.fullmatch(r'bytes=([0-9]{0,16})-([0-9]{0,16})', ranges[0])
+                        invalid = match is None or not any(match.groups())
+                        if not invalid:
+                            left, right = match.groups()
+                            if left:
+                                start = int(left)
+                                end = min(end, int(right)) if right else end
+                            elif int(right) > 0:
+                                start = max(0, total-int(right))
+                            else:
+                                invalid = True
+                            invalid = invalid or start > end or start >= total
+                            status = 206
+                    if invalid:
+                        self.send_response(416)
+                        self.send_header('Content-Range', 'bytes */'+str(total))
+                        self.send_header('Content-Length', '0')
+                        self.send_header('Cache-Control', 'no-store')
+                        self.end_headers()
+                        return
+                    self.send_response(status)
+                    headers = {'Content-Type': 'video/mp4', 'Content-Length': str(end-start+1),
+                        'Accept-Ranges': 'bytes', 'Cache-Control': 'no-store',
+                        'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin',
+                        'Referrer-Policy': 'no-referrer',
+                        'Content-Disposition': 'inline; filename="'+video_id+'.mp4"'}
+                    if status == 206:
+                        headers['Content-Range'] = f'bytes {start}-{end}/{total}'
+                    for name, value in headers.items():
+                        self.send_header(name, value)
+                    self.end_headers()
+                    if self.command != 'HEAD':
+                        # A music fd is dup'ed from one pinned file; dup shares
+                        # its seek offset across simultaneous browser ranges.
+                        # Each response owns a position, never that shared seek.
+                        position, remaining = start, end-start+1
+                        while remaining:
+                            chunk = os.pread(fd, min(65536, remaining), position)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            position += len(chunk)
+                            remaining -= len(chunk)
+                except OSError:
+                    pass
+                finally:
+                    os.close(fd)
+
             def do_GET(self):
                 if not self._origin():
                     self._send(403)
                     return
-                path = urlsplit(self.path).path
+                request_url = urlsplit(self.path)
+                path = request_url.path
                 try:
                     if path == "/api/state":
                         self._send(200, _public_snapshot(owner.host.face_snapshot()))
@@ -112,6 +194,41 @@ class FeatureServer:
                     elif path == "/api/desktop" and owner.desktop is not None:
                         owner.host.heartbeat()
                         self._send(200, owner.desktop.startup_snapshot())
+                    elif path == "/api/preview/frame":
+                        try:
+                            query = parse_qsl(request_url.query, keep_blank_values=True,
+                                              strict_parsing=True, max_num_fields=1)
+                            after = query[0][1] if query else None
+                            if query and (query[0][0] != "after" or len(after) > 64
+                                    or after and re.fullmatch(r"[0-9]+:[0-9]+", after) is None):
+                                raise ValueError("invalid preview cursor")
+                        except ValueError:
+                            self._send(400)
+                            return
+                        # HEAD is deliberately metadata-only: it must not mark
+                        # a cached frame served or touch camera/SDK ownership.
+                        if self.command == "HEAD":
+                            self._send(204)
+                            return
+                        frame = owner.host.preview_frame(after=after or None)
+                        if frame is None:
+                            self._send(204)
+                            return
+                        if (type(frame) is not dict or type(frame.get("id")) is not str
+                                or len(frame["id"]) > 64 or re.fullmatch(r"[0-9]+:[0-9]+", frame["id"]) is None
+                                or type(frame.get("payload")) is not bytes or not frame["payload"]
+                                or frame.get("mime") not in ("image/jpeg", "image/png")
+                                or any(type(frame.get(key)) not in (int, float)
+                                       or not math.isfinite(frame[key]) or frame[key] < 0
+                                       for key in ("captured_at", "age_ms"))):
+                            raise ValueError("invalid preview frame")
+                        if frame["id"] == after:
+                            self._send(204)
+                            return
+                        self._send(200, frame["payload"], frame["mime"], extra_headers={
+                            "X-BMO-Frame-Id": frame["id"],
+                            "X-BMO-Captured-At": str(float(frame["captured_at"])),
+                            "X-BMO-Frame-Age-Ms": str(float(frame["age_ms"]))})
                     elif path == "/api/preview":
                         image = owner.host.preview_bytes()
                         self._send(200, image, "image/png") if image else self._send(404)
@@ -119,13 +236,26 @@ class FeatureServer:
                         photo_id = path.removeprefix("/api/photo/")
                         image = owner.host.photo_bytes(photo_id) if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", photo_id) else None
                         self._send(200, image, "image/png") if image else self._send(404)
+                    elif path.startswith('/api/music-video/'):
+                        media_token = path.removeprefix('/api/music-video/')
+                        if re.fullmatch(r'[A-Za-z0-9_:-]{1,128}_[0-9]{1,12}', media_token) and not request_url.query:
+                            self._video(media_token, music=True)
+                        else:
+                            self._send(404)
                     elif path.startswith("/api/video/"):
                         video_id = path.removeprefix("/api/video/")
-                        payload = owner.host.video_bytes(video_id) if re.fullmatch(r"video_[0-9a-f]{32}", video_id) else None
-                        self._send(200, payload, "application/octet-stream") if payload else self._send(404)
+                        if re.fullmatch(r'video_[0-9a-f]{32}', video_id) and not request_url.query:
+                            self._video(video_id)
+                        else:
+                            self._send(404)
                     elif path in owner._resources:
                         mime, body = owner._resources[path]
                         self._send(200, body, mime)
+                    elif path.startswith('/games/'):
+                        getter = getattr(owner.host, 'game_resources', None)
+                        resources = getter() if callable(getter) else {}
+                        item = resources.get(path) if not request_url.query else None
+                        self._send(200, item[1], item[0]) if item else self._send(404)
                     else:
                         self._send(404)
                 except Exception:
@@ -164,7 +294,7 @@ class FeatureServer:
                         self._send(202, result)
                         return
                     elif urlsplit(self.path).path == "/api/intent":
-                        if set(payload) != {"name", "target"}:
+                        if set(payload) not in ({"name", "target"}, {"name", "target", "media_mode"}):
                             raise FeatureError("invalid_request")
                         command = HostIntent(**payload)
                     else:

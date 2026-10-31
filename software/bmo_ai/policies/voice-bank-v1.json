@@ -1,0 +1,745 @@
+{
+  "version": 1,
+  "clips": [
+    {
+      "clip_id": "boot_01",
+      "category": "boot",
+      "text": "Hey, you're back! How have you been?",
+      "delivery_id": "warm_welcome",
+      "direction": "Warm, small smile; conversational, not shouting",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "boot"
+      ],
+      "target_max_seconds": 8,
+      "cooldown_seconds": 0,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "boot_02",
+      "category": "boot",
+      "text": "Oh! Hello, friend. What's our adventure today?",
+      "delivery_id": "warm_welcome",
+      "direction": "Gentle surprise turning into curiosity",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "boot"
+      ],
+      "target_max_seconds": 8,
+      "cooldown_seconds": 0,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "boot_03",
+      "category": "boot",
+      "text": "There you are. Ready for a little adventure?",
+      "delivery_id": "warm_welcome",
+      "direction": "Bright but soft, a playful invitation",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "boot"
+      ],
+      "target_max_seconds": 8,
+      "cooldown_seconds": 0,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "boot_04",
+      "category": "boot",
+      "text": "Hello again! What shall we do first?",
+      "delivery_id": "warm_welcome",
+      "direction": "Friendly, unhurried, clear question",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "boot"
+      ],
+      "target_max_seconds": 8,
+      "cooldown_seconds": 0,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "boot_05",
+      "category": "boot",
+      "text": "BMO is ready. How are you doing?",
+      "delivery_id": "warm_welcome",
+      "direction": "Quiet confidence, then attentive",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "boot"
+      ],
+      "target_max_seconds": 8,
+      "cooldown_seconds": 0,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "boot_06",
+      "category": "boot",
+      "text": "Well, hello! Got any good ideas today?",
+      "delivery_id": "warm_welcome",
+      "direction": "Playfully curious, lightly smiling",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "boot"
+      ],
+      "target_max_seconds": 8,
+      "cooldown_seconds": 0,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "boot_07",
+      "category": "boot",
+      "text": "Welcome back. Let's make something nice.",
+      "delivery_id": "warm_welcome",
+      "direction": "Warm and relaxed; no exaggerated cheer",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "boot"
+      ],
+      "target_max_seconds": 8,
+      "cooldown_seconds": 0,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "boot_08",
+      "category": "boot",
+      "text": "Hi, friend. We can take it easy today.",
+      "delivery_id": "warm_welcome",
+      "direction": "Especially gentle; suitable for quiet mode",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "boot"
+      ],
+      "target_max_seconds": 8,
+      "cooldown_seconds": 0,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_01",
+      "category": "idle",
+      "text": "Hmm. What should we make next?",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_02",
+      "category": "idle",
+      "text": "I have room for one more good idea.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_03",
+      "category": "idle",
+      "text": "Maybe a very small adventure.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_04",
+      "category": "idle",
+      "text": "This is a good little day.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_05",
+      "category": "idle",
+      "text": "I like when a plan comes together.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_06",
+      "category": "idle",
+      "text": "A tiny victory is still a victory.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_07",
+      "category": "idle",
+      "text": "Hmm. Just thinking.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_08",
+      "category": "idle",
+      "text": "No rush. We have a little time.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_09",
+      "category": "idle",
+      "text": "A little quiet can be nice.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_10",
+      "category": "idle",
+      "text": "One little step at a time.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "sad"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_11",
+      "category": "idle",
+      "text": "We can have a quiet moment.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "sad"
+      ],
+      "allowed_contexts": [
+        "settled"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "idle_12",
+      "category": "idle",
+      "text": "Hmph. I will give that another little think.",
+      "delivery_id": "quiet_thought",
+      "direction": "Quiet, gentle, short natural thought; no theatrical emotion",
+      "allowed_emotions": [
+        "angry"
+      ],
+      "allowed_contexts": [
+        "playful_annoyance"
+      ],
+      "target_max_seconds": 6,
+      "cooldown_seconds": 1800,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_01",
+      "category": "reaction",
+      "text": "Woo-hoo!",
+      "delivery_id": "short_reaction",
+      "direction": "Brief delighted cheer, soft character, no scream",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "playful",
+        "celebration"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_02",
+      "category": "reaction",
+      "text": "Yay!",
+      "delivery_id": "short_reaction",
+      "direction": "Small genuine celebration",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "playful",
+        "celebration"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_03",
+      "category": "reaction",
+      "text": "Hehe.",
+      "delivery_id": "short_reaction",
+      "direction": "Short natural chuckle, not reading syllables flatly",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "playful",
+        "celebration"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_04",
+      "category": "reaction",
+      "text": "Ha! That's funny.",
+      "delivery_id": "short_reaction",
+      "direction": "One light laugh; restrained",
+      "allowed_emotions": [
+        "happy"
+      ],
+      "allowed_contexts": [
+        "playful",
+        "celebration"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_05",
+      "category": "reaction",
+      "text": "Oh!",
+      "delivery_id": "short_reaction",
+      "direction": "Small gasp, then relaxed",
+      "allowed_emotions": [
+        "surprised"
+      ],
+      "allowed_contexts": [
+        "dialogue"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_06",
+      "category": "reaction",
+      "text": "Whoa…",
+      "delivery_id": "short_reaction",
+      "direction": "Curious wonder rather than fear",
+      "allowed_emotions": [
+        "surprised"
+      ],
+      "allowed_contexts": [
+        "dialogue"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_07",
+      "category": "reaction",
+      "text": "Hmph!",
+      "delivery_id": "short_reaction",
+      "direction": "Playful pout, not threatening",
+      "allowed_emotions": [
+        "angry"
+      ],
+      "allowed_contexts": [
+        "acting"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_08",
+      "category": "reaction",
+      "text": "Hey!",
+      "delivery_id": "short_reaction",
+      "direction": "Mild cartoon protest, not hostile shouting",
+      "allowed_emotions": [
+        "angry"
+      ],
+      "allowed_contexts": [
+        "acting"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_09",
+      "category": "reaction",
+      "text": "Oh…",
+      "delivery_id": "short_reaction",
+      "direction": "Voice catching softly; touched, not miserable",
+      "allowed_emotions": [
+        "crying"
+      ],
+      "allowed_contexts": [
+        "acting"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_10",
+      "category": "reaction",
+      "text": "Hmm…",
+      "delivery_id": "short_reaction",
+      "direction": "Gentle sniffle/close-to-tears delivery",
+      "allowed_emotions": [
+        "crying"
+      ],
+      "allowed_contexts": [
+        "acting"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_11",
+      "category": "reaction",
+      "text": "Oh, dear…",
+      "delivery_id": "short_reaction",
+      "direction": "One short theatrical sob, no prolonged wailing",
+      "allowed_emotions": [
+        "crying"
+      ],
+      "allowed_contexts": [
+        "acting"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    },
+    {
+      "clip_id": "reaction_12",
+      "category": "reaction",
+      "text": "Hmm?",
+      "delivery_id": "short_reaction",
+      "direction": "Curious upward intonation",
+      "allowed_emotions": [
+        "neutral"
+      ],
+      "allowed_contexts": [
+        "dialogue"
+      ],
+      "target_max_seconds": 3,
+      "cooldown_seconds": 300,
+      "weight": 1,
+      "voice_id": "106f41ea392c4cc48c6eee76f69ff17e",
+      "name_mode": "beemo",
+      "gain": 0.25,
+      "audio_sha256": null,
+      "approved": false,
+      "lip_cues": [],
+      "status": "AUDIO_NOT_GENERATED"
+    }
+  ]
+}

@@ -25,7 +25,8 @@ NOTES = (
     (.18, .70, 523.25, .20),
     (.40, .78, 659.25, .16),
 )
-CODES = frozenset(("startup_sound_invalid", "startup_sound_unsafe", "startup_sound_storage_failed"))
+CODES = frozenset(("startup_sound_invalid", "startup_sound_unsafe", "startup_sound_storage_failed",
+                   "startup_sound_missing"))
 
 
 class StartupSoundError(RuntimeError):
@@ -96,7 +97,7 @@ def _read_payload(path):
         _close(directory)
 
 
-def startup_chime_file(*, home=None):
+def startup_chime_file(*, home=None, allow_synthesized=True):
     """Use an owned local WAV or atomically cache one original offline chime.
 
     The descriptor walk refuses directory symlinks and existing data is never
@@ -104,7 +105,8 @@ def startup_chime_file(*, home=None):
     No audio device is opened here; playback remains in the greeting focus owner.
     """
     root = Path.home() if home is None else Path(home)
-    if not root.is_absolute() or ".." in root.parts or "\0" in str(root):
+    if (type(allow_synthesized) is not bool or not root.is_absolute()
+            or ".." in root.parts or "\0" in str(root)):
         raise StartupSoundError("startup_sound_unsafe")
     custom = root / ".config" / "bmo" / "startup_chime.wav"
     try:
@@ -112,6 +114,11 @@ def startup_chime_file(*, home=None):
         return custom
     except FileNotFoundError:
         pass
+    # Character Life's user-supplied recording must never silently become the
+    # old three-note cache. Missing transfer is a quiet, explicit state; no
+    # cache lookup, generation or write is permitted by this policy.
+    if not allow_synthesized:
+        raise StartupSoundError("startup_sound_missing")
     cache = root / ".cache" / "bmo" / "startup-chime-v1"
     target = cache / "boot.wav"
     try:
@@ -158,11 +165,11 @@ def startup_chime_file(*, home=None):
 
 
 @contextmanager
-def startup_chime_asset(*, home=None):
+def startup_chime_asset(*, home=None, allow_synthesized=True):
     """Play a verified private snapshot, never a mutable user-selected path."""
     path = None
     try:
-        payload = _read_payload(startup_chime_file(home=home))
+        payload = _read_payload(startup_chime_file(home=home, allow_synthesized=allow_synthesized))
         path = audio._new_wav(audio.AudioSynthesisError)
         path.write_bytes(payload)
         yield path, audio._wav_info(path)

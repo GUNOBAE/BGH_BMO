@@ -11,9 +11,14 @@ from .config import BMOConfig
 from .core import BMOBrain, VOICE_LANGUAGE_INSTRUCTIONS
 
 
-POLICY_SOURCE_COMMIT = "707c66b8876130be75ad216fa10aaabf2bdcdb56"
-POLICY_SOURCE_PATH = "docs/voice-policy-v1/system-prompt.en.txt"
-POLICY_BLOB_SHA = "a63a8e5c2c768b14b878aa1ca8468323a05fe554"
+# The user requested a character-style revision after the 2026-10-30 field test.
+# The exact source is the pinned blob below; do not attribute new bytes to the
+# preserved baseline commit or invent a self-referential containing commit SHA.
+POLICY_SOURCE_COMMIT = None
+POLICY_BASE_COMMIT = "707c66b8876130be75ad216fa10aaabf2bdcdb56"
+POLICY_REVISION = "character-life-20261030-v2"
+POLICY_SOURCE_PATH = "docs/character-life-v1/system-prompt.en.txt"
+POLICY_BLOB_SHA = "2b2b5263253ffbce8c3f6c37ec312c06a221ff64"
 DEFAULT_LANGUAGE_POLICY = "english_voice"
 _POLICY_PATH = Path(__file__).with_name("policies") / "system-prompt.en.txt"
 
@@ -51,7 +56,7 @@ def load_voice_policy():
     """Verify Git's blob identity before using the separately shipped prompt.
 
     Comparing the runtime file with another mutable copy would allow both to
-    drift together. The fixed blob ID identifies the approved source bytes.
+    drift together. The fixed blob ID identifies the versioned source bytes.
     Failures contain neither file contents nor underlying filesystem errors.
     """
     try:
@@ -109,5 +114,8 @@ def effective_config(config, *, language_policy=DEFAULT_LANGUAGE_POLICY, emotion
         emotion_mode=emotion_mode,
         policy_source_commit=POLICY_SOURCE_COMMIT,
         policy_source_path=POLICY_SOURCE_PATH,
+        policy_blob_sha=POLICY_BLOB_SHA,
+        policy_revision=POLICY_REVISION,
+        policy_base_commit=POLICY_BASE_COMMIT,
         audio_owner="python_alsa",
     )

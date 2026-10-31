@@ -13,7 +13,7 @@ import re
 import struct
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 from . import audio
 
@@ -24,6 +24,10 @@ AARON_BMO_VOICE_ID = "106f41ea392c4cc48c6eee76f69ff17e"
 SOFT_AARON_DIRECTION = "[gentle, warm, slightly lower pitch, still lightly playful] "
 DELIVERY_MODES = frozenset(("soft", "plain"))
 
+
+class _NoFreeRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        raise audio.AudioSynthesisError("Free-only speech refuses HTTP redirects.", "fish_redirect")
 
 
 # The Fish WAV transport may use placeholder sizes instead of actual bytes.
@@ -86,6 +90,9 @@ def synthesize_wav(
     download_timeout: float = 60.0,
     cancel_check=None,
     api_key=None,
+    on_timing=None,
+    clock=time.monotonic,
+    free_only=False,
 ):
     """Call Fish once and return a validated temporary WAV path.
 
@@ -93,6 +100,8 @@ def synthesize_wav(
     retry or switch providers. The explicit model header prevents accidental
     use of Fish's paid default when requesting the free model.
     """
+    if type(free_only) is not bool or free_only and model != "s2.1-pro-free":
+        raise audio.AudioValidationError("Free-only speech requires the exact free model.", "invalid_fish_model")
     if not isinstance(text, str):
         raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
     if not text.strip():
@@ -121,10 +130,19 @@ def synthesize_wav(
     )
     path = audio._new_wav(audio.AudioSynthesisError)
     succeeded = False
+    def observed(code):
+        if on_timing is not None:
+            try:
+                stamp = clock()
+                if type(stamp) in (int, float) and math.isfinite(stamp) and stamp >= 0:
+                    on_timing("fish", code, at=stamp)
+            except Exception:
+                pass  # Observation cannot retry or break a paid request.
     try:
         deadline = time.monotonic() + download_timeout
         try:
-            with urlopen(request, timeout=timeout) as response:
+            opener = build_opener(_NoFreeRedirect()).open if free_only else urlopen
+            with opener(request, timeout=timeout) as response:
                 try:
                     out = path.open("wb")
                 except OSError:
@@ -134,18 +152,24 @@ def synthesize_wav(
                     while True:
                         if time.monotonic() >= deadline:
                             raise audio.AudioSynthesisError("Fish speech download timed out.", "audio_download_timeout")
-                        chunk = response.read(65536)
+                        # The first body-byte observation must not wait for a
+                        # 64KiB read to fill. Later reads retain the bounded WAV
+                        # download path; this is not an acoustic TTFA measure.
+                        chunk = response.read(1 if count == 0 else 65536)
                         if time.monotonic() >= deadline:
                             raise audio.AudioSynthesisError("Fish speech download timed out.", "audio_download_timeout")
                         if not chunk:
                             break
                         if not isinstance(chunk, bytes) or count + len(chunk) > audio.MAX_AUDIO_BYTES:
                             raise audio.AudioSynthesisError("Fish speech download is invalid or too large.", "speech_download_too_large")
+                        if count == 0:
+                            observed("audio_first_byte")
                         try:
                             out.write(chunk)
                         except OSError:
                             raise audio.AudioSynthesisError("Cannot save synthesized audio. Check storage.", "audio_storage_failed") from None
                         count += len(chunk)
+                observed("audio_downloaded")
         except HTTPError as error:
             raise _error_for_http_status(error.code) from None
         except URLError:
@@ -160,6 +184,7 @@ def synthesize_wav(
             raise audio.AudioValidationError("Synthesized speech exceeds five minutes.", "speech_audio_too_long")
         if cancel_check is not None:
             cancel_check()
+        observed("audio_validated")
         succeeded = True
         return path
     finally:

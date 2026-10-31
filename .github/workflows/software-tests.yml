@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '${{ matrix.python }}'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pip install -r software/requirements-lock.txt
       - run: python -m pip check
       - run: python -m unittest discover -s tests -v
@@ -35,6 +36,7 @@ jobs:
       - run: python -m pip install -r software/requirements-integration-dev.txt
       - run: python -m pip check
       # Ephemeral CI runner only. This does not install OS packages on the Pi.
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m playwright install --with-deps chromium
       - run: python -B software/checks/check_offline_shell_browser.py --chromium
         env:
@@ -45,7 +47,31 @@ jobs:
       - run: python -B software/checks/check_ptt_vad_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_ptt_vad_browser.py --vad-mode webrtc --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_character_life_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_field_expression_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_field_wake_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
       - run: python -B software/checks/check_camera_media_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_photo_subtitles_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_full_batch_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_v10_media_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_playable_games_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
       - run: python -B software/checks/check_bmo_release_e2e.py --chromium --skip-media

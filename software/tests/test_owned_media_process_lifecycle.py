@@ -57,6 +57,23 @@ class OwnedMediaProcessLifecycleTests(unittest.TestCase):
         finally:
             runner.process = runner._pgid = None
 
+    def test_pause_resume_only_signal_owned_group_and_stop_resumes_before_term(self):
+        runner = self.runner()
+        runner.start(None)
+        process = runner.process
+        with patch("bmo_ai.features.games.os.killpg", wraps=os.killpg) as signaler:
+            runner.pause()
+            runner.pause()
+            runner.resume()
+            runner.resume()
+            runner.pause()
+            runner.stop()
+        signals = [call.args for call in signaler.call_args_list]
+        self.assertEqual(signals[:4], [(process.pid, signal.SIGSTOP), (process.pid, signal.SIGCONT),
+                                     (process.pid, signal.SIGSTOP), (process.pid, signal.SIGCONT)])
+        self.assertEqual(signals[4], (process.pid, signal.SIGTERM))
+        self.assertIsNotNone(process.returncode)
+
     def test_uncertain_group_retains_child_ownership_and_can_be_retried(self):
         runner = self.runner(stop_timeout=.01)
         runner.start(None)

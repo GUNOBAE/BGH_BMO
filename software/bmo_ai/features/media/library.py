@@ -133,15 +133,27 @@ def _safe_metadata(root, name):
                 result[key] = value
             return result
         data = json.loads(raw, object_pairs_hook=unique)
-        if (type(data) is not dict or set(data) != {"version", "asset", "license_reviewed", "license_id"}
-                or type(data["version"]) is not int or data["version"] != 1
-                or data["license_reviewed"] is not True or not valid_id(data["license_id"])
-                or type(data["asset"]) is not dict):
+        if type(data) is not dict or type(data.get("version")) is not int:
+            raise FeatureError("invalid_media_metadata")
+        if data["version"] == 1:
+            if (set(data) != {"version", "asset", "license_reviewed", "license_id"}
+                    or data["license_reviewed"] is not True or not valid_id(data["license_id"])):
+                raise FeatureError("invalid_media_metadata")
+        elif data["version"] == 2:
+            if (set(data) != {"version", "asset", "private_use_confirmed", "provenance"}
+                    or data["private_use_confirmed"] is not True
+                    or type(data["provenance"]) is not dict
+                    or data["provenance"].get("source") != "user_provided"
+                    or data["provenance"].get("public_distribution_rights") != "NOT_VERIFIED"):
+                raise FeatureError("invalid_media_metadata")
+        else:
+            raise FeatureError("invalid_media_metadata")
+        if type(data.get("asset")) is not dict:
             raise FeatureError("invalid_media_metadata")
         asset = MediaAsset(**data["asset"])
         if (name != asset.id + _META_SUFFIX or asset.media_type != "audio/wav"
                 or asset.path != asset.id + "-" + asset.sha256[:12] + ".wav"
-                or asset.cue_path is not None):
+                or data["version"] == 1 and asset.cue_path is not None):
             raise FeatureError("invalid_media_metadata")
         return asset, raw, before
     except FeatureError:
@@ -178,6 +190,12 @@ def load_library(content_root):
             asset, _, _ = _safe_metadata(root, name)
             with AssetHandle(content_root, asset):
                 pass
+            if asset.video_path is not None:
+                from .assets import _verified_fd
+                descriptor = _verified_fd(content_root, asset.video_path, asset.video_sha256)
+                os.close(descriptor)
+                with AssetHandle(content_root, asset.playback_asset("video")):
+                    pass
             result.append(asset)
         return tuple(result)
     finally:

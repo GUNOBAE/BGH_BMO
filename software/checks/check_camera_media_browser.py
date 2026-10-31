@@ -9,6 +9,7 @@ import stat
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 SOFTWARE=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(SOFTWARE))
@@ -36,6 +37,12 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     page=browser.new_page(viewport={'width':800,'height':480},accept_downloads=True)
                     page.set_default_timeout(8000)
                     page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
+                    preview_requests={'latest':0,'legacy':0}
+                    def preview_requested(request):
+                        path=urlsplit(request.url).path
+                        if path=='/api/preview/frame':preview_requests['latest']+=1
+                        elif path=='/api/preview':preview_requests['legacy']+=1
+                    page.on('request',preview_requested)
                     page.add_init_script("""window.__audioCalls=0;HTMLMediaElement.prototype.play=function(){
                         window.__audioCalls++;throw Error('Browser audio forbidden')};
                         window.__padCalls=0;window.__padButtons=[];window.__padConnected=true;
@@ -204,17 +211,35 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     panel('camera-menu','camera-dialog')
                     page.locator('#camera-preview').click();wait_state(lambda s:s['camera']['preview_available'])
                     page.locator('#camera-image').wait_for(state='visible')
+                    page.wait_for_function("""()=>{const c=document.querySelector('#camera-image'),p=BMODesktop.previewEvidence;
+                        return c instanceof HTMLCanvasElement&&c.dataset.frameId&&c.width>0&&c.height>0
+                          &&p.displayed>0&&p.last_displayed_id===c.dataset.frameId
+                          &&c.getContext('2d').getImageData(0,0,1,1).data[3]>0;}""")
+                    assert preview_requests['latest']>0 and preview_requests['legacy']==0
+                    assert page.evaluate('()=>BMODesktop.previewEvidence.max_pending')==1
                     page.locator('#camera-track').click()
                     wait_state(lambda s:s['camera']['tracking'] and s['gaze']['owner']=='camera')
                     page.locator('#camera-off').click();wait_state(lambda s:not s['camera']['on'])
+                    page.wait_for_function('()=>!BMODesktop.previewEvidence.active&&BMODesktop.previewEvidence.pending===0')
                     page.locator('#photo-take').click();wait_state(lambda s:s['mode']=='photo')
+                    countdown=wait_state(lambda s:s['photo_phase']=='countdown')
+                    page.wait_for_function("""()=>{const c=document.querySelector('#photo-preview-image');
+                        return !c.hidden&&c instanceof HTMLCanvasElement&&c.dataset.frameId
+                          &&BMODesktop.previewEvidence.last_displayed_id===c.dataset.frameId
+                          &&c.getContext('2d').getImageData(0,0,1,1).data[3]>0;}""")
+                    assert countdown['photo_countdown']>4
                     state=wait_state(lambda s:bool(s['photo'] and s['photo']['completed']))
                     assert state['photo']['simulated'] and not state['photo']['executed']
                     status,png=fixture.request('/api/photo/'+state['photo']['photo_id'])
                     assert status==200 and png.startswith(b'\x89PNG')
+                    state=wait_state(lambda s:s['photo_phase']=='photo_review' and not s['conversation_busy']
+                                     and s['audio_owner'] is None and s['test_fixture']['synthesis']==1)
+                    assert not state['camera']['on']
+                    page.locator('#photo-result-image').wait_for(state='visible')
+                    page.wait_for_function("()=>document.querySelector('#photo-result-image').naturalWidth>0&&!BMODesktop.previewEvidence.active&&BMODesktop.previewEvidence.pending===0")
                     page.locator('#foreground-back').click();wait_state(lambda s:s['mode']=='conversation')
                     assert fixture.features()['emotion']=='sad'
-                    checks.append('requested synthetic preview/tracking/photo use the same broker and outer shell; photo countdown/return preserve emotion')
+                    checks.append('cached binary latest frames are drawn to canvas with one pending fetch; visible paint gates five-second countdown, OFF/review stop the pipeline, saved PNG review and one feedback TTS then Back preserve emotion')
 
                     panel('system-menu','system-dialog')
                     assert '실행하지 않았어요' in page.locator('#system-readiness').inner_text()
@@ -223,11 +248,11 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     page.locator('#system-dialog .dialog-close').click()
                     assert page.evaluate('()=>window.__audioCalls')==0
                     audit=fixture.features()['test_fixture']
-                    assert audit['brain']==audit['synthesis']==audit['stt']==0 and audit['greeting_calls']==1
+                    assert audit['brain']==audit['stt']==0 and audit['synthesis']==1 and audit['greeting_calls']==1
                     checks.append('diagnostics distinguish unmeasured power/current-firmware status and never run telemetry, mic, paid API or browser audio')
                     code,counts,error=fixture.finish()
                     assert code==0,error
-                    assert counts['players']==counts['reaped']==1
+                    assert counts['players']==counts['reaped']==2
                     assert counts['browsers']==counts['browser_reaped']==1 and counts['forbidden']==0
                     assert saved.read_bytes()==payload
                     checks.append('normal app exit cleans owned mock processes while keeping the completed selected-directory video unchanged')

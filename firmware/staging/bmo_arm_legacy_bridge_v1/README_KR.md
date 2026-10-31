@@ -89,3 +89,92 @@ PYTHONPATH=software python3 -m unittest -v \
 ```
 
 **현재 NOT_RUN:** Pi 실기 B1 USB handshake, helper 로딩, 실제 모터 움직임, 정지 검증, 전체 앱 통합 재검수. Linux/CI 합성 통과를 실물 검증과 혼동하지 않는다.
+
+## 2026-10-31 현재 후보의 OFF → 검토 후보 → 감독 전환 도구
+
+위 문서의 과거 전원·연결 기록은 현재 조건을 확인한 증거가 아니다. 이번
+현장 관측은 `REMOTE_ENABLED=False`, `transport=NOT_OPENED`이고, 아래 절차는
+**Cloud에서 실행하지 않았다**. `arm_prepare`는 읽기 전용 확인 도구이며
+활성화 도구가 아니다. 새 `bmo_ai.arm_candidate`는 별도의 검토·백업·복귀
+경로를 제공한다. 기본 실행은 dry-run이며 보드 쓰기·포트 열기·USB reset을
+하지 않는다. 저장소의 `REMOTE_ENABLED=False` 원본도 그대로다.
+
+정확한 입력/출력 전체 파일 SHA256:
+
+- 현재 OFF 템플릿: `4e30cb8dd29f3af03867828da2fee7e1ea1c1e5099be725e7daa11b98f67ebae`
+- 단일 flag 치환 enabled 후보: `0f69420e2e19500e40a925f0ad71033d86780b8c5933302713795103d1fa4a2e`
+- helper: `14fc42886a39f5b74fb7bc28e7eecf0914801b05e1fe5bd74cfdb3df0f0fcbfe`
+
+후보는 `REMOTE_ENABLED = False` 한 곳만 `True`로 바꾼다. 다른 바이트,
+보정, GP7/GP8, GPIO, PWM, 좌우, B1, `boot.py`, helper를 수정하지 않는다.
+현재 board code/helper가 위 바이트와 다르면 중단하며 임의 마이그레이션을
+하지 않는다. 기존 `boot.py`는 CDC 설정을 검사하고 정확한 SHA를 인수
+기록에 보관하며 덮어쓰지 않는다.
+
+### 1. 실제 장치에 쓰지 않고 후보와 검토 기록 준비
+
+Pi의 후보 앱을 정상 종료한다. 아래 `--prepare`는 보드를 읽고 private
+후보/인수 기록만 만든다. 이미 존재하는 후보 파일은 덮지 않으므로 재검토는
+새 디렉터리를 쓴다. dry-run에는 `--prepare`를 생략한다.
+
+```bash
+cd /home/bgh/BMO_CHARACTER_LIFE
+PYTHONPATH=software .venv-device/bin/python -m bmo_ai.arm_candidate \
+  --prepare --mount /media/bgh/CIRCUITPY \
+  --work-directory /home/bgh/BMO_private/arm-candidate-20261031
+
+diff -u firmware/staging/bmo_arm_legacy_bridge_v1/code.py \
+  /home/bgh/BMO_private/arm-candidate-20261031/enabled_code.py
+sha256sum /home/bgh/BMO_private/arm-candidate-20261031/enabled_code.py
+```
+
+diff의 종료값 1은 위 한 줄의 예상 차이를 뜻한다. 후보 생성은 청취·실물
+승인이나 움직임 PASS가 아니다. `review.json`은 당시 board code/helper/boot
+SHA와 mount를 고정한다. 보드 내용이 그 뒤 달라지면 apply가 중단한다.
+
+### 2. 현재 물리 조건을 확인한 Pi 감독자만 apply
+
+**보드 쓰기는 자동 reload를 일으켜 `set_arms(0)`를 실행할 수 있다.**
+사용자 입회, 양팔 서보 전원 분리/전기적 격리, 움직일 공간, 즉시 물리
+전원 차단 수단을 현재 세션에서 확인한다. 아래 플래그를 자동으로 채우는
+wrapper나 서비스는 만들지 않는다. 확인되지 않은 조건은 해당 물리 단계만
+보류한다. 앱/기존 serial owner를 종료한 상태에서 진행한다.
+
+아래 명령은 다섯 조건을 모두 실제 확인하고 위 diff/SHA를 검토한 뒤에만
+Pi 감독자가 실행한다. backup에는 적용 직전 code/helper/boot와 개별 SHA가
+보관되며, 백업·재검사 후 `code.py`만 변경한다. 자동 reset/reload 명령은
+보내지 않는다. 쓰기/검증 실패 시 재시도나 자동 복귀 쓰기를 하지 말고,
+서보 전원을 격리한 채 보관된 backup과 현재 파일을 먼저 대조한다.
+
+```bash
+PYTHONPATH=software .venv-device/bin/python -m bmo_ai.arm_candidate \
+  --apply --mount /media/bgh/CIRCUITPY \
+  --work-directory /home/bgh/BMO_private/arm-candidate-20261031 \
+  --reviewed-code-sha 0f69420e2e19500e40a925f0ad71033d86780b8c5933302713795103d1fa4a2e \
+  --user-present --servo-power-isolated --clearance-verified \
+  --physical-cutoff-ready --reload-risk-acknowledged
+```
+
+### 3. 감독 세션, named action 한 번, 정지, GP7 보존
+
+정적 검증 성공은 실제 연결/모터 도달 성공이 아니다. reload와 현재 보드
+상태를 감독자가 확인하고, 물리 차단 수단과 공간을 유지하며 서보 재연결을
+별도로 판단한다. 아래 앱은 기존 보정/단일 B1 adapter를 쓰고 자동 감정 팔
+옵션은 켜지 않는다. 메뉴/명시 요청의 named action 한 번, HOLD/STOP,
+GP7 수동 토글과 GP8 복귀를 감독하에 확인한다. software STOP은 전원
+차단이 아니며 ACK는 관절 위치 도달 증거가 아니다.
+
+```bash
+./launch-character-life --arms-supervised --arm-legacy-bridge \
+  --arm-reviewed-code-sha 0f69420e2e19500e40a925f0ad71033d86780b8c5933302713795103d1fa4a2e \
+  --arm-power-off-ready
+```
+
+### 4. OFF 복귀
+
+앱을 정상 종료하고 다시 현재 사용자 입회·서보 전원 격리·공간·물리 차단
+수단을 확인한다. 위 apply 명령의 `--apply`만 `--rollback`으로 바꾸면
+보관한 OFF code를 복원한다. rollback에도 같은 다섯 확인과 정확한
+reviewed enabled SHA가 필요하다. 현재 enabled code/helper/boot 또는
+백업이 달라지면 조용히 덮지 않고 중단한다. backup은 복귀 뒤에도 남는다.
+`BMO_REAL_ROBOT`와 OS/서비스는 이 도구가 수정하지 않는다.

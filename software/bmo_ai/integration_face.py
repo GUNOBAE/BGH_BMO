@@ -184,6 +184,14 @@ def _public_snapshot(value):
     # Prepared/terminal snapshots cannot accidentally hand out old cues.
     if out["playback"] != "started":
         out["cues"] = []
+    if 'caption' in value:
+        from .captions import clean_caption, MODES
+        caption = value.get('caption')
+        mode = caption.get('mode') if type(caption) is dict else 'off'
+        mode = mode if mode in MODES else 'off'
+        visible = out['playback'] == 'started' and out['phase'] == 'speaking' and mode != 'off'
+        out['caption'] = dict(mode=mode, language=mode if mode != 'off' else '',
+            text=clean_caption(caption.get('text')) if visible else '')
     return out
 
 

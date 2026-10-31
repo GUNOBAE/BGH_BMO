@@ -25,16 +25,20 @@
       this.pollGeneration = 0;
       this.raf = null;
       this.frameWindow = null;
+      this.entrance = null;
+      this.entranceState = {status: "idle", target: "expression_layers"};
       this.resetFace();
       this.onFramePageHide = () => this.close();
       this.onLoad = () => {
         if (this.closed) return;
+        this.cancelEntrance("frame_reloaded");
         this.resetFace();
         this.bindFrame();
         if (this.state) this.applyFace();
       };
       this.onVisibility = () => {
         // Poll before rendering after a suspended tab; never replay old cues.
+        this.cancelEntrance("visibility_changed");
         this.suspend();
         this.pollGeneration++;
         clearTimeout(this.timer);
@@ -58,6 +62,86 @@
 
     get face() {
       try { return this.frame.contentWindow?.BMOFace; } catch (_) { return null; }
+    }
+
+    presentExpression({reducedMotion = false, duration = 550} = {}) {
+      // The approved background rectangle is a SIBLING of lookRoot. A temporary
+      // external SVG group moves only that expression subtree: native gaze,
+      // blinking, mouth, brows and tears retain every original transform/path.
+      this.cancelEntrance("superseded");
+      let doc, svg, root, version;
+      try {
+        doc = this.frame.contentDocument;
+        svg = doc?.getElementById("face");
+        root = doc?.getElementById("lookRoot");
+        version = this.face?.getState().version;
+      } catch (_) {}
+      if (this.closed || !svg || !root || root.parentNode !== svg
+          || svg.namespaceURI !== "http://www.w3.org/2000/svg"
+          || version !== "13.2") {
+        this.entranceState = {status: "artwork_unavailable", target: "expression_layers"};
+        return Promise.resolve({...this.entranceState});
+      }
+      if (reducedMotion || doc.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+        this.entranceState = {status: "reduced_motion", target: "expression_layers"};
+        return Promise.resolve({...this.entranceState});
+      }
+      let layer, offset;
+      const originalNext = root.nextSibling;
+      const restore = () => {
+        if (layer && root.parentNode === layer) {
+          svg.insertBefore(root, originalNext?.parentNode === svg ? originalNext : null);
+        }
+        layer?.remove();
+      };
+      try {
+        layer = doc.createElementNS(svg.namespaceURI, "g");
+        layer.setAttribute("data-bmo-expression-entrance", "v1");
+        svg.insertBefore(layer, root);
+        layer.appendChild(root);
+        // R10 owns its viewBox/zoom. No canvas/iframe/body/main transform or
+        // zoom is added; setup errors restore the original tree too.
+        const box = svg.viewBox.baseVal, bounds = layer.getBBox();
+        // A full viewBox also covers native blink/emotion shape expansion.
+        offset = Math.max(box.height, box.y + box.height - bounds.y + 8);
+        if (!Number.isFinite(offset) || offset <= 0) throw Error("Expression geometry unavailable");
+      } catch (_) {
+        restore();
+        this.entranceState = {status: "animation_unavailable", target: "expression_layers"};
+        return Promise.resolve({...this.entranceState});
+      }
+      const milliseconds = Number.isFinite(duration) ? Math.max(0, Math.min(550, duration)) : 550;
+      this.entranceState = {status: "running", target: "expression_layers", duration_ms: milliseconds,
+                            offset_units: offset};
+      return new Promise(resolve => {
+        let settled = false, animation;
+        const finish = status => {
+          if (settled) return;
+          settled = true;
+          // Restore the exact original parent/order, never the gaze transform.
+          restore();
+          animation?.cancel();
+          this.entrance = null;
+          this.entranceState = {...this.entranceState, status};
+          resolve({...this.entranceState});
+        };
+        this.entrance = {layer, finish, animation: null};
+        try {
+          animation = layer.animate([{transform: `translateY(${offset}px)`}, {transform: "translateY(0px)"}],
+            {duration: milliseconds, easing: "cubic-bezier(.2,.7,.2,1)", fill: "both"});
+          this.entrance.animation = animation;
+          animation.finished.then(() => finish("completed"), () => finish("cancelled"));
+        } catch (_) {
+          finish("animation_unavailable");
+        }
+      });
+    }
+
+    cancelEntrance(reason = "cancelled") {
+      const entrance = this.entrance;
+      if (!entrance) return;
+      entrance.finish(reason);
+      entrance.animation?.cancel();
     }
 
     bindFrame() {
@@ -205,6 +289,7 @@
 
     close() {
       if (this.closed) return;
+      this.cancelEntrance("closed");
       this.suspend();
       this.closed = true;
       this.pollGeneration++;

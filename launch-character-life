@@ -1,0 +1,18 @@
+#!/bin/sh
+# One existing Desktop owner: conversation plus requested camera actions.
+# Camera opens only when an action is requested. Arm admission stays explicit.
+set -eu
+bmo_character_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+bmo_character_python=${BMO_PYTHON:-"$bmo_character_dir/.venv-device/bin/python"}
+if [ ! -x "$bmo_character_python" ]; then
+    printf '%s\n' 'BMO needs this checkout’s .venv-device/bin/python or an explicit BMO_PYTHON.' >&2
+    exit 2
+fi
+cd "$bmo_character_dir/software"
+exec "$bmo_character_python" -B -m bmo_ai.desktop_app \
+    --live --frontend chromium --screen-profile r10 \
+    --character-life --ptt-microphone --ptt-vad-mode webrtc --ptt-trace \
+    --playable-games \
+    --camera-supervised --photo-directory "$HOME/.local/share/bmo/photos" \
+    --camera-video-supervised --video-directory "$HOME/.local/share/bmo/videos" \
+    "$@"

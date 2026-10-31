@@ -2,6 +2,7 @@
 (() => {"use strict";
   const token=document.querySelector('meta[name="bmo-command-token"]').content;
   const $=id=>document.getElementById(id);let state=null,closed=false,timer=null,controller=null,lastGame=null,lastGaze=null,pollGeneration=0;
+  let photoPreview=null,photoPreviewAck=null;
   const post=async(path,payload,nonce=crypto.randomUUID())=>{
     const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce,payload})});
     if(!response.ok)throw new Error('요청을 처리할 수 없습니다.');return response.json();};
@@ -23,7 +24,18 @@
     $('result').textContent=resultMessage(next.last_result);$('media-status').textContent=next.media.state==='paused'?'모의 일시 정지':'합성 파일의 무음 재생 시뮬레이션';
     const countdown=next.photo_countdown;$('photo-status').textContent=countdown!==null?`합성 사진 저장까지 ${Math.ceil(countdown)}`:next.photo?.completed?'합성 사진 파일 저장 확인':'실제 카메라는 꺼져 있습니다.';
     $('photo-result').hidden=!next.photo?.photo_id;if(next.photo?.photo_id)$('photo-result').src='/api/photo/'+encodeURIComponent(next.photo.photo_id);
-    $('preview-panel').hidden=!next.camera.preview;if(next.camera.preview)$('preview').src='/api/preview?t='+Date.now();else $('preview').removeAttribute('src');
+    $('preview-panel').hidden=!next.camera.preview;
+    if(next.camera.preview){
+      const pending=next.mode==='photo'&&next.photo_phase==='preparing'&&typeof next.photo_preview_token==='string';
+      if(pending){
+        const key=JSON.stringify([next.mode_generation,next.photo_request_id,next.photo_preview_token]);
+        if(!photoPreview||photoPreview.key!==key){
+          photoPreview={key,generation:next.mode_generation,request_id:next.photo_request_id,preview_token:next.photo_preview_token};
+          $('preview').src='/api/preview?photo='+encodeURIComponent(next.photo_preview_token)+'&sequence='+next.sequence;
+        }
+        if($('preview').complete&&$('preview').naturalWidth)previewDisplayed();
+      }else{photoPreview=null;$('preview').src='/api/preview?t='+Date.now();}
+    }else{photoPreview=null;$('preview').removeAttribute('src');}
     $('track-button').disabled=denied||next.camera.tracking;$('camera-off').disabled=!next.camera.on;
     if(mode==='game'&&lastGame!==next.games.active_id){lastGame=next.games.active_id;$('game-title').textContent='모의 게임 · '+lastGame;$('game-frame').srcdoc='<!doctype html><html><body style="background:#12353a;color:#d7f5d4;font:24px system-ui;text-align:center"><p>합성 게임 실행 중</p><p>실제 게임 자산은 아직 없습니다.</p></body></html>';}
     if(mode!=='game'){lastGame=null;$('game-frame').removeAttribute('srcdoc');}
@@ -33,6 +45,19 @@
     else if(face&&gaze.apply){const key=JSON.stringify([gaze.owner,gaze.x,gaze.y,next.mode_generation]);if(key!==lastGaze){face.look(gaze.x,gaze.y);face.lookEyes(gaze.x*.15,gaze.y*.15);if(gaze.owner==='reaction')face.blink();lastGaze=key;}}
     else if(gaze.owner==='native')lastGaze=null;
   }
+  function previewVisible(image){const bounds=image.getBoundingClientRect();return !document.hidden&&image.isConnected&&!image.closest('[hidden]')&&bounds.width>0&&bounds.height>0&&getComputedStyle(image).visibility!=='hidden';}
+  function previewDisplayed(){
+    const current=photoPreview,image=$('preview');
+    if(!current||photoPreviewAck===current.key||!image.naturalWidth||!previewVisible(image))return;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      if(closed||photoPreview!==current||photoPreviewAck===current.key||!previewVisible(image)
+        ||state?.mode!=='photo'||state.photo_phase!=='preparing'||state.mode_generation!==current.generation
+        ||state.photo_request_id!==current.request_id)return;
+      photoPreviewAck=current.key;
+      control('photo_preview_ready',{generation:current.generation,request_id:current.request_id,preview_token:current.preview_token}).catch(showError);
+    }));
+  }
+  $('preview').addEventListener('load',previewDisplayed);
   async function poll(){if(closed||document.hidden)return;const generation=pollGeneration,request=new AbortController();controller=request;try{const response=await fetch('/api/features',{cache:'no-store',signal:request.signal});if(!response.ok)throw new Error();const next=await response.json();if(generation===pollGeneration&&!closed&&!document.hidden)render(next);}catch(error){if(error.name!=='AbortError')$('result').textContent='연결을 확인 중입니다. 실제 장치는 자동으로 켜지지 않습니다.';}finally{if(controller===request)controller=null;if(!closed&&generation===pollGeneration&&!document.hidden)timer=setTimeout(poll,80);}}
   document.querySelectorAll('[data-intent]').forEach(button=>button.onclick=()=>intent(button.dataset.intent).catch(showError));
   $('controls-toggle').onclick=()=>{const hidden=document.body.classList.toggle('controls-hidden');$('controls-toggle').setAttribute('aria-expanded',String(!hidden));$('controls-toggle').textContent=hidden?'메뉴':'메뉴 숨기기';};

@@ -89,6 +89,7 @@ class OwnedProcessRunner:
         self.capabilities = frozenset({"audio_stop", "runner_" + backend})
         # A desktop process does not automatically receive browser pad events.
         self.process = self._pgid = None
+        self._paused = False
 
     def start(self, item):
         if not self.verified:
@@ -101,6 +102,7 @@ class OwnedProcessRunner:
                 start_new_session=True, pass_fds=self.pass_fds,
                 env={"PATH": os.defpath, "LANG": "C.UTF-8"})
             self._pgid = self.process.pid
+            self._paused = False
             deadline = time.monotonic() + self.startup_timeout
             while time.monotonic() < deadline:
                 if self._exit_status() is not None:
@@ -155,6 +157,11 @@ class OwnedProcessRunner:
         if process is None:
             return
         try:
+            # A stopped owned player cannot handle a graceful quit or SIGTERM
+            # until resumed. Resume only this still-pinned process group.
+            if self._paused:
+                self._signal(signal.SIGCONT)
+                self._paused = False
             if self.graceful_quit is not None and self._exit_status() is None:
                 try:
                     self.graceful_quit(process)
@@ -175,6 +182,20 @@ class OwnedProcessRunner:
         except (OSError, subprocess.TimeoutExpired, FeatureError):
             raise FeatureError("cleanup_failed") from None
         self.process = self._pgid = None
+
+    def pause(self):
+        if self.process is None or self._exit_status() is not None:
+            raise FeatureError("media_inactive")
+        if not self._paused:
+            self._signal(signal.SIGSTOP)
+            self._paused = True
+
+    def resume(self):
+        if self.process is None or self._exit_status() is not None:
+            raise FeatureError("media_inactive")
+        if self._paused:
+            self._signal(signal.SIGCONT)
+            self._paused = False
 
     close = stop
 

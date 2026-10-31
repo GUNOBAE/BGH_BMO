@@ -138,12 +138,14 @@ def host_factory(**settings):
             counts['brain']+=1;time.sleep(.15)
             return super().create(**request)
     replies=[dict(version=1,speech='A synthetic desktop response.',emotion='crying',gesture='none',intent=None)]*3
+    if scenario=='character':
+        replies=[dict(version=1,speech='A synthetic character response.',emotion='neutral',gesture='none',intent=None)]*12
     if scenario=='release':
         replies=[dict(version=1,speech='A synthetic cheerful reply.',emotion='happy',gesture='wave',intent=None),
                  dict(version=1,speech='A synthetic surprised reply.',emotion='surprised',gesture='shrug',intent=None),
                  dict(version=1,speech='A synthetic happy reply.',emotion='happy',gesture='none',intent=None)]
     client=Client(replies)
-    if scenario.startswith('ptt') or scenario=='release':
+    if scenario.startswith('ptt') or scenario in ('release','character'):
         from bmo_ai.features.input.microphone import SyntheticPcmSource
         class Source(SyntheticPcmSource):
             def __init__(self):
@@ -156,9 +158,22 @@ def host_factory(**settings):
                 if (root/'fail-mic').exists():
                     from bmo_ai.features.input.microphone import MicError
                     raise MicError('microphone_tool_unavailable')
+                if scenario=='ptt_webrtc':
+                    from bmo_ai.features.input.microphone import PcmFrame
+                    from bmo_ai.conversation import TurnCancelled
+                    from bmo_ai.ptt_replay import load_public_reference_pcm16k
+                    # Licensed public PCM only: actual C WebRTC VAD, never
+                    # room audio. All STT/provider/player boundaries stay fake.
+                    pcm=load_public_reference_pcm16k(target_rms=.02)+bytes(32000*2)
+                    for sequence,offset in enumerate(range(0,len(pcm)-1279,1280)):
+                        if self._closed:raise TurnCancelled()
+                        if kwargs.get('cancel_check'):kwargs['cancel_check']()
+                        time.sleep(.04)
+                        yield PcmFrame(pcm[offset:offset+1280],sequence,clock(),kwargs['generation'])
+                    return
                 for frame in super().frames(*args,**kwargs):
                     if scenario=='ptt_slow':time.sleep(.03)
-                    elif scenario in ('ptt','release'):time.sleep(.01)
+                    elif scenario in ('ptt','release','character'):time.sleep(.01)
                     yield frame
             def close(self):
                 if not self.closed_once:
@@ -229,6 +244,17 @@ def host_factory(**settings):
 
 def greeting_factory(*,config,simulate):
     assert simulate
+    if scenario in ('character','ptt_webrtc'):
+        from bmo_ai.voice_bank import VoiceBank
+        from bmo_ai.integration_voice import synthetic_wav
+        from bmo_ai import audio
+        bank=VoiceBank(root/'character-bank',config,simulate=True)
+        raw=synthetic_wav()
+        try:
+            for clip in ('boot_01','idle_01'):
+                record=bank.publish(clip,raw,simulated=True)
+                bank.approve(clip,record['sha256'],listening_approved=True)
+        finally:audio._discard(raw,suppress=True)
     cache_path=root/'greeting'
     if scenario=='greeting_missing':cache=GreetingCache(cache_path,GreetingSpec.from_config(config))
     elif not (cache_path/'greeting.cache').exists():
@@ -256,6 +282,12 @@ def greeting_factory(*,config,simulate):
 
 def on_started(app):
     apps.append(app)
+    if scenario=='character':
+        def presence_clock():
+            try:offset=float((root/'presence-clock.txt').read_text())
+            except FileNotFoundError:offset=0.
+            return time.monotonic()+offset
+        app._presence.clock=presence_clock
     print('DESKTOP_TEST_READY '+json.dumps({'url':app.server.url}),flush=True)
 
 with ExitStack() as guards:
@@ -307,8 +339,12 @@ class DesktopFixture:
         environment = {"PATH": os.defpath, "HOME": str(self.root), "LC_ALL": "C.UTF-8",
             "PYTHONPATH": str(SOFTWARE), "PYTHONDONTWRITEBYTECODE": "1", "BMO_PYTHON": str(wrapper),
             "BMO_TEST_ROOT": str(self.root), "BMO_TEST_PROFILE": profile, "BMO_TEST_SCENARIO": scenario}
-        command = [*entry_command, "--windowed", "--demo-assets", "--screen-profile", profile,
+        command = [*entry_command, "--windowed", "--screen-profile", profile,
                    "--face-file", str(self.face)]
+        if scenario == 'playable':
+            command.extend(['--playable-games', '--usb-gamepad'])
+        else:
+            command.append('--demo-assets')
         if scenario=='media':command.extend(['--video-directory',str(self.root/'video-content')])
         if developer:command.append("--developer")
         command.extend(extra_args)
@@ -501,6 +537,17 @@ def run(profile="ci-synthetic", face=None, chromium="/usr/bin/chromium"):
                     audit = fixture.features()["test_fixture"]
                     assert audit["brain"] == audit["synthesis"] == 1 and audit["history_messages"] > 0 and audit["dialogue_cache"]
                     assert audit["greeting_calls"] == 1
+                    # Audio ended is visible before the worker's completion
+                    # receipt/AudioFocus release. Repeat intentionally rejects
+                    # busy turns; bind this assertion to actual owned cleanup,
+                    # rather than racing that short terminal publication gap.
+                    deadline=time.monotonic()+6
+                    while time.monotonic()<deadline:
+                        completed=fixture.features()
+                        if (not completed['conversation_busy']
+                                and completed['test_fixture']['dialogue_cache']):break
+                        page.wait_for_timeout(20)
+                    else:raise AssertionError('Dialogue worker did not finish before explicit repeat')
                     page.evaluate("()=>BMODesktop.control('repeat')")
                     page.wait_for_function("()=>BMOIntegration.state?.playback==='started'")
                     page.wait_for_function("()=>BMOIntegration.state?.playback==='ended'")

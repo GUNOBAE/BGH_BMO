@@ -6,7 +6,7 @@ one greeting worker. No key, device, process or network is opened on import.
 from collections import deque
 import hashlib
 from queue import Empty, Full, Queue
-from threading import Event, Lock, Thread
+from threading import Event, RLock, Thread
 import time
 from uuid import uuid4
 
@@ -79,16 +79,36 @@ def public_code(code, default="startup_failed"):
 
 class DesktopRuntime:
     def __init__(self, *, clock=time.monotonic, simulate=False, developer=False,
-                 startup_timeout=15., greeting_timeout=30., disconnect_timeout=5., require_face_presented=False):
+                 startup_timeout=15., greeting_timeout=30., disconnect_timeout=5., require_face_presented=False,
+                 character_life=False, presence_mode="off", silent_start=False):
         if any(type(value) not in (float, int) or not 0 < value <= 120 for value in
                (startup_timeout, greeting_timeout, disconnect_timeout)):
             raise FeatureError("invalid_desktop_timeout")
         self.clock, self.simulate, self.developer = clock, simulate, developer
+        if type(character_life) is not bool or type(silent_start) is not bool or presence_mode not in ("normal", "quiet", "sleep", "off"):
+            raise FeatureError("invalid_character_configuration")
+        self.character_life = character_life
+        self.silent_start = silent_start
+        self._presence = None
+        if character_life:
+            from .character_presence import PresenceScheduler
+            self._presence = PresenceScheduler(clock=clock, mode=presence_mode)
+        self._requested_presence_mode = None
+        self._cutscene_category = "boot"
+        self._cutscene_heard = False
+        self._idle_restore_code = None
+        self._last_idle_code = None
+        self._boot_attempts = self._idle_attempts = 0
+        self._pending_user_input = False
+        self._input_waiting = False
+        self._input_epoch = 0
+        self._deferred_input_result = None
+        self._wake_attempted = False
         self.startup_timeout, self.greeting_timeout = startup_timeout, greeting_timeout
         self.disconnect_timeout = disconnect_timeout
         self.run_id = uuid4().hex
         self.host = self.server = self.browser = self.greeting = None
-        self._lock = Lock()
+        self._lock = RLock()
         self._exit, self._retry, self._cancel = Event(), Event(), Event()
         self._user_cancel = Event()
         self._face_signal = Event()
@@ -166,15 +186,23 @@ class DesktopRuntime:
         with self._lock:
             return {"version": 1, "run_id": self.run_id, "phase": self._phase, "code": self._code,
                 "server_ready": self.server is not None, "engine_ready": self.host is not None,
-                "face_ready": self._face_signal.is_set(), "greeting_attempts": self._attempt,
+                "face_ready": self._face_signal.is_set(),
+                "greeting_attempts": self._boot_attempts if self.character_life else self._attempt,
                 "progress_percent": self._progress_percent,
                 "progress_stage": self._progress_stage,
                 "progress_status": "error" if self._phase == "error" else "complete" if self._progress_percent == 100 else "loading",
                 "progress_error": self._code if self._phase == "error" else None,
                 "face_presented": self._face_presented.is_set(),
                 "greeting_played": self._ever_played,
+                "startup_chime_status": getattr(getattr(self.greeting, "greeting_player", self.greeting),
+                                                "startup_chime_status", "NOT_ATTEMPTED"),
                 "developer_enabled": self.developer, "external_api_ready": "NOT_CHECKED",
-                "live_verified": False, "exit_requested": self.exiting}
+                "live_verified": False, "exit_requested": self.exiting,
+                "character_life": {"enabled": self.character_life,
+                    "presence": self._presence.snapshot() if self._presence else {"mode": "off"},
+                    "last_idle_code": self._last_idle_code,
+                    "voice_bank": self.greeting.bank.snapshot() if self.character_life
+                        and hasattr(self.greeting, "bank") else {"status": "AUDIO_NOT_GENERATED"}}}
 
     def queue_desktop_control(self, nonce, payload):
         if (self._closed or not request_id_ok(nonce) or type(payload) is not dict
@@ -200,6 +228,13 @@ class DesktopRuntime:
             self._exit.set()
         elif action == "retry_greeting" and value is None:
             self._retry.set()  # Cached playback only, never synthesis.
+        elif action == "presence_mode" and self.character_life and value in ("normal", "quiet", "sleep", "off"):
+            with self._lock:
+                self._requested_presence_mode = value
+        elif action == "wake_off" and value is None and self.character_life:
+            # Owner poll performs the join/close; HTTP never touches a device.
+            with self._lock:
+                self._wake_off_requested = True
         else:
             raise FeatureError("invalid_desktop_control")
         return {"status": "accepted", "code": "queued"}
@@ -227,6 +262,7 @@ class DesktopRuntime:
                         digest = hashlib.sha256(value[key].encode()).hexdigest()[:24]
                         value[key] = f"desktop:{self._presentation_epoch}:{digest}"
             if self._overlay is not None:
+                value['caption'] = dict(mode='off', language='', text='')
                 value.update(self._overlay)
                 value["position"] = (max(0., self.clock() - self._greeting_started)
                                      if self._greeting_started is not None else 0.)
@@ -237,6 +273,14 @@ class DesktopRuntime:
             return self.host.snapshot()
         return {"version": 1, "simulation": self.simulate, "engine_ready": False}
 
+    def game_resources(self):
+        """Only admitted immutable packaged assets, never a browser path read."""
+        resources = getattr(self.host, "game_resources", None)
+        return resources() if callable(resources) else {}
+
+    def preview_frame(self, after=None):
+        return self.host.preview_frame(after=after) if self.host else None
+
     def preview_bytes(self):
         return self.host.preview_bytes() if self.host is not None else None
 
@@ -246,38 +290,88 @@ class DesktopRuntime:
     def video_bytes(self, video_id):
         return self.host.video_bytes(video_id) if self.host is not None else None
 
+    def open_music_video(self, token):
+        return self.host.open_music_video(token) if self.host is not None else None
+
+    def open_video(self, video_id):
+        return self.host.open_video(video_id) if self.host is not None else None
+
     def queue_command(self, nonce, command):
+        if isinstance(command, HostControl) and command.action == 'volume' and self.host is not None:
+            if command.value['muted'] or command.value['level'] == 0:
+                with self._lock:
+                    self._output_mute_requested = True
+            return self.host.queue_command(nonce, command)
         if (isinstance(command, HostControl) and command.action in ("stop", "cancel")):
             with self._lock:
                 self._cancel.set()
                 self._user_cancel.set()
             if self.host is not None:
                 return self.host.queue_command(nonce, command)
+        priority_input = isinstance(command, HostControl) and command.action in ("ptt", "question")
+        if self.character_life and priority_input and self.host is not None and self._ready and self._phase != "error":
+            with self._lock:
+                if self._presence:
+                    self._presence.cancel()
+                if self._pending_user_input and command.action == "ptt":
+                    return dict(self._deferred_input_result)
+                result = self.host.queue_command(nonce, command)
+                self._input_epoch += 1
+                self._input_waiting = True
+                self._greeting_suppressed = self._auto_attempted = True
+                self._retry.clear()
+                if self._worker is not None:
+                    self._pending_user_input = True
+                    self._deferred_input_result = result
+                    self._cancel.set()
+                    self.greeting.cancel()
+                return result
         if self.host is None or not self._ready or self._worker is not None or self._phase == "error":
             raise FeatureError("desktop_not_ready")
         return self.host.queue_command(nonce, command)
 
-    def _start_greeting(self):
+    def _start_greeting(self, category="boot"):
+        # Serialize admission with HTTP priority input. The worker only takes
+        # this re-entrant lock for bounded event/result publication.
+        with self._lock:
+            return self._start_cutscene(category)
+
+    def _start_cutscene(self, category):
         if self._require_face_presented and not self._face_presented.is_set():
             return
         if self._worker is not None or self.host is None or self.greeting is None or self.host.session.busy:
             return
         with self._lock:
+            if self.character_life and self._input_waiting:
+                if category == "idle":
+                    self._presence.completed(False)
+                return
             if self._user_cancel.is_set():
                 self._greeting_suppressed = True
                 return
             self._cancel.clear()
         self._attempt += 1
+        self._cutscene_category = category
+        self._cutscene_heard = False
+        if category == "idle":
+            self._idle_restore_code = self._code
+        if category == "boot":
+            self._boot_attempts += 1
+        else:
+            self._idle_attempts += 1
         attempt = self._attempt
         try:
-            self._lease = self.host.audio.acquire("greeting", stop=self.cancel_greeting)
+            self._lease = self.host.audio.acquire("greeting" if category == "boot" else "idle", stop=self.cancel_greeting)
         except FeatureError:
+            if category == "idle" and self._presence:
+                self._presence.completed(False)
             self._state("ready", "greeting_audio_busy")
             return
         self._result = None
         self._greeting_started = None
         self._greeting_timed_out = False
-        self._state("greeting", "loading_cached_greeting")
+        if category == "boot":
+            self._state("greeting", "loading_cached_greeting")
         self._greeting_deadline = self.clock() + self.greeting_timeout
         def check():
             if self._cancel.is_set() or self._user_cancel.is_set() or self._closed:
@@ -291,17 +385,27 @@ class DesktopRuntime:
                 # A subsequent cancellation may retire UI events, but cannot
                 # undo the fact that the Python player already started.
                 with self._lock:
-                    self._ever_played = True
+                    self._cutscene_heard = True
+                    if category == "boot":
+                        self._ever_played = True
             if kind == "prepared":
                 safe["cues"] = fields.get("cues", [])
+                from .expression_contract import FACE_EMOTIONS
+                emotion = fields.get("emotion")
+                safe["emotion"] = emotion if emotion in FACE_EMOTIONS else "happy"
             try:
                 self._events.put_nowait(safe)
             except Full:
                 self._cancel.set()
         def play():
             try:
-                self.greeting.play(emit=emit, cancel_check=check)
-                result = (True, "greeting_completed")
+                if category == "idle":
+                    played = self.greeting.play_idle(self.host.session.snapshot()["emotion"],
+                        emit=emit, cancel_check=check)
+                    result = (bool(played and played.get("completed")), "idle_completed")
+                else:
+                    self.greeting.play(emit=emit, cancel_check=check)
+                    result = (True, "greeting_completed")
             except TurnCancelled:
                 result = (False, "greeting_cancelled")
             except Exception as error:
@@ -316,15 +420,36 @@ class DesktopRuntime:
             self._worker = None
             self.host.audio.release(self._lease)
             self._lease = None
+            if category == "idle" and self._presence:
+                self._presence.completed(False)
             self._state("ready", "greeting_worker_failed")
 
     def cancel_greeting(self):
         self._cancel.set()
+        if self.character_life and self.greeting is not None:
+            self.greeting.cancel()
         return self._worker is None or not self._worker.is_alive()
 
     def poll(self):
         if self._closed or self.exiting:
             return
+        if self.character_life:
+            with self._lock:
+                requested, self._requested_presence_mode = self._requested_presence_mode, None
+                mute_output = getattr(self, '_output_mute_requested', False)
+                self._output_mute_requested = False
+                wake_off = getattr(self, "_wake_off_requested", False)
+                self._wake_off_requested = False
+            if mute_output:
+                self.cancel_greeting()
+                self._presence.cancel()
+            if requested is not None:
+                self._presence.set_mode(requested)
+                if requested != "normal" and self._cutscene_category == "idle":
+                    self.cancel_greeting()
+            if wake_off and self.host is not None:
+                self.host.disable_wake_word()
+                self._wake_attempted = True
         if (self._phase == "error" and self._code == "browser_disconnected"
                 and self._last_browser is not None
                 and self.clock() - self._last_browser <= self.disconnect_timeout
@@ -372,7 +497,11 @@ class DesktopRuntime:
             self.fail("face_ready_timeout")
         if self._ready and presented and not self._auto_attempted and self._phase != "error":
             self._auto_attempted = True
-            self._start_greeting()
+            if self.silent_start:
+                self._greeting_suppressed = True
+                self._state('ready', 'greeting_cancelled')
+            else:
+                self._start_greeting()
         if (self._ready and self._greeting_suppressed and self._worker is None
                 and self._phase != "error" and self._code != "greeting_completed"):
             self._state("ready", "greeting_cancelled")
@@ -391,10 +520,12 @@ class DesktopRuntime:
             with self._lock:
                 if event["kind"] == "prepared":
                     self._overlay = dict(turn_id="startup", utterance_id=self.run_id + ":greeting:" + str(self._attempt),
-                        source="cached_greeting", phase="idle", playback="prepared", emotion="happy", cues=event["cues"])
+                        source="cached_idle" if self._cutscene_category == "idle" else "cached_greeting",
+                        phase="idle", playback="prepared", emotion=event.get("emotion", "happy"), cues=event["cues"])
                 elif event["kind"] == "started" and self._overlay is not None:
                     self._greeting_started = event["at"]
-                    self._ever_played = True
+                    if self._cutscene_category == "boot":
+                        self._ever_played = True
                     self._overlay.update(phase="speaking", playback="started")
                 elif event["kind"] in ("ended", "cancelled", "error") and self._overlay is not None:
                     self._overlay.update(phase="idle", playback=event["kind"], cues=[])
@@ -418,10 +549,40 @@ class DesktopRuntime:
                         result = (False, "greeting_timeout")
                 if self._phase == "error" and self._code == "browser_disconnected":
                     self._disconnect_restore_code = result[1]
+                elif self._cutscene_category == "idle" and self._presence:
+                    self._presence.completed(bool(result[0] and self._cutscene_heard))
+                    self._last_idle_code = result[1]
+                    if self._phase != "error" or self._code == "greeting_timeout":
+                        self._state("ready", self._idle_restore_code or "greeting_completed")
                 elif self._phase != "error" or self._code == "greeting_timeout":
                     self._state("ready", result[1])
-        if self.host is not None:
+        if self.host is not None and not (self.character_life and self._worker is not None and self._pending_user_input):
+            input_epoch = self._input_epoch
             self.host.poll()
+            if self._worker is None:
+                with self._lock:
+                    self._pending_user_input = False
+                    self._deferred_input_result = None
+                    if self._input_epoch == input_epoch:
+                        self._input_waiting = False
+        if self.character_life and self.host is not None and self._ready and self._worker is None and self._phase == "ready":
+            if not self._wake_attempted and not self.host.session.busy:
+                self._wake_attempted = True
+                self.host.enable_wake_word()
+            snapshot = self.host.session.snapshot()
+            plan = snapshot.get("character") or {}
+            with self._lock:
+                if (not self._input_waiting and self.host.volume.snapshot()['effective_level'] > 0
+                        and self._presence.due(emotion=snapshot["emotion"], phase=snapshot["phase"],
+                        activity_mode=self.host.modes.mode, conversation_busy=self.host.session.busy,
+                        audio_busy=self.host.audio.owner is not None,
+                        game_active=self.host.modes.mode in ("game", "game_menu"),
+                        video_active=self.host.video.snapshot()["recording"],
+                        sensitive=bool(plan.get("sensitive_context")))):
+                    if callable(getattr(self.greeting, "play_idle", None)):
+                        self._start_greeting("idle")
+                    else:
+                        self._presence.completed(False)
         if (self._phase != "error" and self._last_browser is not None
                 and self.clock() - self._last_browser > self.disconnect_timeout):
             self._cancel.set()
