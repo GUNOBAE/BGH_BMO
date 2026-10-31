@@ -57,7 +57,11 @@ def main(argv=None):
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     except FeatureError as error:
-        print(json.dumps({"status": "REJECTED", "code": error.code, "playback": "NOT_RUN"}))
+        from .features.media.seed import MediaDecodeError
+        report = {"status": "REJECTED", "code": error.code, "playback": "NOT_RUN"}
+        if isinstance(error, MediaDecodeError):
+            report["diagnostic"] = error.diagnostic
+        print(json.dumps(report))
         return 2
 
 

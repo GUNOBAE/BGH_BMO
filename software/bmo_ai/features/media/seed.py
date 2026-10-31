@@ -89,15 +89,29 @@ def _limits():
     resource.setrlimit(resource.RLIMIT_AS, (768 * 1024 * 1024, 768 * 1024 * 1024))
 
 
-def _run(command, *, timeout=20, pass_fds=()):
+class MediaDecodeError(FeatureError):
+    """Bounded stage/exit facts only; never child stderr, argv or paths."""
+    def __init__(self, code, *, stage, outcome, returncode=None):
+        super().__init__(code)
+        self.diagnostic = dict(stage=stage, outcome=outcome, returncode=returncode,
+            signal=-returncode if returncode is not None and returncode < 0 else None)
+
+
+def _run(command, *, timeout=20, pass_fds=(), stage="decode_video"):
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, timeout=timeout, check=False, pass_fds=pass_fds,
             env={"PATH": os.defpath, "LC_ALL": "C.UTF-8"}, preexec_fn=_limits)
-    except (OSError, subprocess.TimeoutExpired):
-        raise FeatureError("media_decode_unavailable") from None
-    if result.returncode or len(result.stdout) > 65536:
-        raise FeatureError("media_decode_failed")
+    except subprocess.TimeoutExpired:
+        raise MediaDecodeError("media_decode_timeout", stage=stage, outcome="timeout") from None
+    except OSError:
+        raise MediaDecodeError("media_decode_unavailable", stage=stage, outcome="unavailable") from None
+    if result.returncode:
+        raise MediaDecodeError("media_decode_failed", stage=stage, outcome="nonzero_exit",
+                               returncode=result.returncode)
+    if len(result.stdout) > 65536:
+        raise MediaDecodeError("media_decode_failed", stage=stage, outcome="stdout_limit",
+                               returncode=result.returncode)
     return result.stdout
 
 
@@ -106,7 +120,8 @@ def _probe(path, *, video):
     try:
         data = _run(["ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe", "-f", "mov" if video else "mp3",
             "-i", "/proc/self/fd/" + str(descriptor), "-show_entries",
-            "stream=codec_type,codec_name,width,height,channels,sample_rate:format=duration", "-of", "json"], pass_fds=(descriptor,))
+            "stream=codec_type,codec_name,width,height,channels,sample_rate:format=duration", "-of", "json"],
+            pass_fds=(descriptor,), stage="probe_video" if video else "probe_mp3")
         payload = json.loads(data)
         streams, duration = payload["streams"], float(payload["format"]["duration"])
         audio = [s for s in streams if s.get("codec_type") == "audio"]
@@ -130,14 +145,20 @@ def _probe(path, *, video):
 def _decode(path, output=None, *, video):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        args = ["ffmpeg", "-nostdin", "-v", "error", "-threads", "2", "-protocol_whitelist", "file,pipe", "-f", "mov" if video else "mp3",
-                "-i", "/proc/self/fd/" + str(descriptor)]
+        args = ["ffmpeg", "-nostdin", "-v", "error", "-xerror",
+                "-filter_threads", "1", "-filter_complex_threads", "1",
+                # This threads option belongs to the input decoders.
+                "-threads", "1", "-protocol_whitelist", "file,pipe", "-f", "mov" if video else "mp3",
+                "-i", "/proc/self/fd/" + str(descriptor),
+                # After -i, separately bound the output encoders (also null).
+                "-threads", "1"]
         if output is None:
             # Decode all the MP4, including its video stream, before importing.
             args += ["-t", "120", "-f", "null", "-"]
         else:
             args += ["-map", "0:a:0", "-vn", "-t", "120", "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", "-f", "wav", "-n", str(output)]
-        _run(args, pass_fds=(descriptor,))
+        _run(args, pass_fds=(descriptor,),
+             stage="extract_video_audio" if output is not None else "decode_video" if video else "decode_mp3")
     finally:
         os.close(descriptor)
 
