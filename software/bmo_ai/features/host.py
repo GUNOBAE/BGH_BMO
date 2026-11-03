@@ -85,6 +85,15 @@ class HostControl:
                 and (self.value.get('event') in EVENT_CANDIDATES if self.action == 'voice_select' else
                     type(self.value.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}', self.value['sha256']) is not None
                     and (self.action == 'voice_preview' or self.value.get('listening_approved') is True)))
+        elif self.action == 'voice_batch_accept':
+            valid = self.value is True
+        elif self.action == 'voice_batch_disable':
+            valid = self.value is None
+        elif self.action == 'voice_batch_event':
+            from ..voice_pack import EVENT_CANDIDATES
+            valid = (type(self.value) is dict and set(self.value) == {'event', 'enabled'}
+                     and type(self.value['event']) is str and self.value['event'] in EVENT_CANDIDATES
+                     and type(self.value['enabled']) is bool)
         elif self.action == 'seek':
             valid = type(self.value) in (int, float) and math.isfinite(self.value) and 0 <= self.value <= 600
         elif self.action == "preview":
@@ -1095,7 +1104,8 @@ class FeatureHost(ProductVideoFlow):
         if (self.compound.active is not None
                 and self.compound.active['index'] < len(self.compound.active['steps'])-1):
             return False  # One preparation reply; no intermediate voice pileup.
-        if not self._photo_feedback_enabled or not self._voice_pack_public.get('approved', 0) or self.volume.snapshot()['effective_level'] <= 0:
+        if (not self._photo_feedback_enabled or not (self._voice_pack_public.get('approved', 0)
+                or self._voice_pack_public.get('batch_released', 0)) or self.volume.snapshot()['effective_level'] <= 0):
             return False
         try:
             selected = self.voice_pack.select_event(event)
@@ -1446,6 +1456,25 @@ class FeatureHost(ProductVideoFlow):
                 self.voice_pack.approve(value['candidate_id'], value['sha256'],
                     listening_approved=value['listening_approved'])
                 self._reload_voice_pack()
+            elif action == 'voice_batch_accept':
+                if self.modes.mode != 'conversation' or self.session.busy or self.audio.owner is not None:
+                    raise FeatureError('voice_busy')
+                self.voice_pack.accept_batch(user_accepted=True)
+                self._reload_voice_pack()
+                return self._remember(HostResult(request, 'succeeded', 'voice_batch_accepted',
+                    simulated=self.runtime.simulate, completed=True, completion='batch_authorized'))
+            elif action == 'voice_batch_disable':
+                self.voice_pack.disable_batch()
+                self._local_events.clear()
+                self._reload_voice_pack()
+                return self._remember(HostResult(request, 'succeeded', 'voice_batch_disabled',
+                    simulated=self.runtime.simulate, completed=True, completion='batch_revoked'))
+            elif action == 'voice_batch_event':
+                self.voice_pack.enable_event(value['event'], enabled=value['enabled'])
+                self._local_events.clear()
+                self._reload_voice_pack()
+                return self._remember(HostResult(request, 'succeeded', 'voice_batch_event_updated',
+                    simulated=self.runtime.simulate, completed=True, completion='event_policy_updated'))
             elif action == 'voice_preview':
                 if self.session.busy or self.audio.owner is not None or self.modes.mode != 'conversation':
                     raise FeatureError('voice_busy')
