@@ -222,6 +222,86 @@ class VoicePackV10Tests(unittest.TestCase):
         self.assertEqual(V10_WAKE_SHA256, '28ea53663ab2fb0218ce04138b9698957772c6c84444f9e3a7119f2b7ea329bf')
         self.assertEqual(V10_COUNTDOWN_SHA256, '7444e92dade1ac3129aaebfc77aa700b26366bd284c4172e62d14397c372d2e4')
 
+    def test_batch_release_requires_actual_sample_player_starts_and_keeps_individual_listened_zero(self):
+        from bmo_ai.voice_pack import BATCH_RELEASE_IDS, BATCH_PREVIEW_IDS, BATCH_PREVIEW_MINIMUM
+        self.imported(V10_IDS)
+        self.assertEqual(len(BATCH_RELEASE_IDS), 61)
+        plan = self.pack.batch_status()
+        self.assertTrue(plan['ready'])
+        self.assertEqual((plan['batch_selected'],plan['release_candidate_count']), (60,61))
+        self.assertEqual(plan['extra_release_ids'], ['MUSIC_PLAYLIST_FINISHED'])
+        self.assertEqual(len(plan['sample_ids']), 10)
+        self.assertFalse(plan['batch_user_accepted'])
+        self.assertIsNone(self.pack.load_event('music_selected'))
+        with self.assertRaises(VoiceBankError):
+            self.pack.accept_batch()
+        with self.assertRaises(VoiceBankError):
+            self.pack.accept_batch(user_accepted=True)
+        self.assertFalse((self.pack.directory/'batch_release.json').exists())
+        for clip in BATCH_PREVIEW_IDS[:BATCH_PREVIEW_MINIMUM]:
+            row = next(r for r in self.pack.inventory() if r['clip_id'] == clip)
+            self.pack.mark_played(row['id'], row['variants']['raw']['sha256'], review_requested=True)
+        self.assertEqual(self.pack.batch_status()['preview_played'], 5)
+        result = self.pack.accept_batch(user_accepted=True)
+        state = self.pack.snapshot()
+        self.assertEqual(result['status'], 'BATCH_ACCEPTED')
+        self.assertEqual((state['batch_released'],state['approved'],state['listened'],state['played']),
+                         (61,0,0,5))
+        self.assertTrue(state['batch']['batch_user_accepted'])
+        self.assertFalse(state['automatic_approval'])
+        self.assertTrue(state['wake_ack_available'])
+        for event, expected in [('music_selected','M04'), ('music_exit','M10'),
+                                ('music_finished','MUSIC_PLAYLIST_FINISHED'),
+                                ('photo_ready','PH_READY_03'), ('photo_countdown','PH_COUNTDOWN_05S'),
+                                ('video_ready','VIDEO_PREP_ACTING'), ('game_start','G02'),
+                                ('reaction_chuckle','RX01'), ('wake_ack','wake_ack_01')]:
+            with self.subTest(event=event):
+                self.assertEqual(self.pack.select_event(event), expected)
+                with self.pack.load_event(event) as asset:
+                    self.assertEqual(asset.clip_id, expected)
+                    self.assertEqual(asset.source_model, 'drama-3')
+        with self.pack.load_countdown() as asset:
+            self.assertEqual(asset.info['duration_seconds'], 5)
+        with self.pack.load_event('music_selected') as asset:
+            self.pack.mark_played(asset.candidate_id, asset.sha256)
+        self.assertEqual(self.pack.snapshot()['played'], 6)
+        self.assertEqual(self.pack.snapshot()['listened'], 0)
+        self.assertFalse((self.pack.directory/'approvals.json').exists())
+        self.assertFalse((self.pack.directory/'listened.json').exists())
+
+    def test_batch_event_optout_rollback_and_provenance_tamper_fail_closed(self):
+        from bmo_ai.voice_pack import BATCH_PREVIEW_IDS, BATCH_PREVIEW_MINIMUM
+        self.imported(V10_IDS)
+        for clip in BATCH_PREVIEW_IDS[:BATCH_PREVIEW_MINIMUM]:
+            row = next(r for r in self.pack.inventory() if r['clip_id'] == clip)
+            self.pack.mark_played(clip, row['variants']['raw']['sha256'], review_requested=True)
+        self.pack.accept_batch(user_accepted=True)
+        self.pack.enable_event('music_selected', enabled=False)
+        self.assertIsNone(self.pack.select_event('music_selected'))
+        self.assertIsNone(self.pack.load_event('music_selected'))
+        self.assertEqual(self.pack.select_event('music_exit'), 'M10')
+        self.pack.enable_event('music_selected', enabled=True)
+        self.assertEqual(self.pack.select_event('music_selected'), 'M04')
+        data = json.loads((self.pack.directory/'pack.json').read_text())
+        next(r for r in data['candidates'] if r['clip_id'] == 'M04')['text'] += ' altered'
+        (self.pack.directory/'pack.json').write_text(json.dumps(data))
+        self.assertIsNone(self.pack.load_event('music_selected'))
+        self.assertEqual(self.pack.snapshot()['batch_released'], 60)
+        self.pack.disable_batch()
+        self.assertFalse(self.pack.snapshot()['batch']['batch_user_accepted'])
+        self.assertEqual(self.pack.snapshot()['batch_released'], 0)
+        self.assertIsNone(self.pack.load_event('music_finished'))
+        self.assertEqual(self.pack.snapshot()['approved'], 0)
+        self.assertEqual(self.pack.snapshot()['listened'], 0)
+
+    def test_batch_cannot_enable_on_partial_or_legacy_import(self):
+        self.imported()
+        state = self.pack.snapshot()['batch']
+        self.assertFalse(state['ready'])
+        self.assertEqual(state['batch_selected'], 0)
+        with self.assertRaises(VoiceBankError):
+            self.pack.accept_batch(user_accepted=True)
+
     def test_source_metadata_change_invalidates_individual_listening_and_played_attestations(self):
         def edit(rows, _):
             rows[-1]['local_edit'] = True
