@@ -39,6 +39,13 @@ INITIAL_V10_IDS = frozenset(('G01 G02 G03 G04 G07 M01 M04 M10 MUSIC_CHOOSE_MODE 
     'VIDEO_REVIEW_EXIT VIDEO_CAMERA_BUSY VIDEO_NOT_RECORDING VIDEO_LIMIT_REACHED TRACK_START TRACK_STOP '
     'TRACK_UNAVAILABLE SYSTEM_VOLUME_UP SYSTEM_VOLUME_DOWN SYSTEM_VOLUME_MAX SYSTEM_NOTHING_TO_REPEAT '
     'PHOTO_FOCUS_UNCERTAIN PHOTO_REFOCUS_ONCE SYSTEM_STORAGE_FULL SYSTEM_SAVED_FILE_OPEN_FAILED SYSTEM_CAMERA_OFF').split())
+# An explicit *release* (not a claim of individual listening) includes the exact
+# initial60 and the one essential natural-music-end clip outside that shortlist.
+BATCH_RELEASE_IDS = frozenset(INITIAL_V10_IDS | {'MUSIC_PLAYLIST_FINISHED'})
+BATCH_PREVIEW_IDS = ('M04', 'M10', 'MUSIC_PLAYLIST_FINISHED', 'PH_READY_03',
+    'PH_COUNTDOWN_05S', 'PH_REVIEW_02', 'VIDEO_PREP_ACTING', 'G02', 'RX01', 'wake_ack_01')
+BATCH_PREVIEW_MINIMUM = 5
+
 MAX_ZIP = 512 * 1024 * 1024
 MAX_WAV = 8 * 1024 * 1024
 MAX_INDEX = 2 * 1024 * 1024
@@ -518,6 +525,146 @@ class OrganizedVoicePack:
             return raw
         finally:
             _close(fd)
+
+
+    def _batch_plan(self, record):
+        """Deterministic v10 mapping; inventory/plan alone authorizes no playback."""
+        if record['version'] != 10:
+            raise VoiceBankError('voice_pack_batch_v10_only')
+        rows = {row['clip_id']: row for row in record['candidates']}
+        if not BATCH_RELEASE_IDS.issubset(rows):
+            raise VoiceBankError('voice_pack_batch_incomplete')
+        events = {}
+        for event, preferred in EVENT_CANDIDATES.items():
+            for clip_id in preferred:
+                if clip_id in BATCH_RELEASE_IDS and self._matches(rows[clip_id], event):
+                    events[event] = clip_id
+                    break
+        return dict(ids=sorted(BATCH_RELEASE_IDS), events=events,
+                    samples=[name for name in BATCH_PREVIEW_IDS if name in rows])
+
+    def _batch_release(self, root, record):
+        value = self._read(root, 'batch_release.json', optional=True)
+        if value is None:
+            return {}
+        if (type(value) is not dict or set(value) != {'version', 'archive_sha256', 'accepted', 'items', 'events'}
+                or value['version'] != 1 or type(value['accepted']) is not bool
+                or type(value['archive_sha256']) is not str or not _SHA.fullmatch(value['archive_sha256'])
+                or type(value['items']) is not dict or len(value['items']) > 224
+                or type(value['events']) is not dict or len(value['events']) > len(EVENT_CANDIDATES)
+                or any(type(k) is not str or not _ID.fullmatch(k) or type(v) is not dict
+                    or set(v) != {'sha256', 'provenance'}
+                    or any(type(d) is not str or not _SHA.fullmatch(d) for d in v.values())
+                    for k, v in value['items'].items())
+                or any(k not in EVENT_CANDIDATES or type(v) is not str or not _ID.fullmatch(v)
+                    for k, v in value['events'].items())):
+            raise VoiceBankError('voice_pack_batch_invalid')
+        # Import/source metadata changes revoke the release, not the user's
+        # review history. No fallback to a different, unpinned package.
+        if not value['accepted'] or value['archive_sha256'] != record['archive_sha256']:
+            return {}
+        return value
+
+    def _released(self, release, row, variant, archive_sha256):
+        if not release:
+            return False
+        return release['items'].get(row['id']) == dict(
+            sha256=row['variants'][variant]['sha256'],
+            provenance=self._provenance(row, variant, archive_sha256))
+
+    def _authorized(self, approvals, release, row, variant, archive_sha256):
+        return (self._approved(approvals, row, variant, archive_sha256)
+                or self._released(release, row, variant, archive_sha256))
+
+    def _disabled_events(self, root):
+        value = self._read(root, 'disabled_events.json', optional=True)
+        if value is None:
+            return []
+        if type(value) is not list or len(value) > len(EVENT_CANDIDATES) or len(value) != len(set(value)) or any(
+                type(event) is not str or event not in EVENT_CANDIDATES for event in value):
+            raise VoiceBankError('voice_pack_manifest_invalid')
+        return value
+
+    def batch_status(self):
+        """Never conflate verified player-start with individual listening approval."""
+        with self._root() as root:
+            record = self._index(root)
+            release = self._batch_release(root, record)
+            played = self._observations(root, 'played.json')
+            try:
+                plan = self._batch_plan(record)
+            except VoiceBankError as error:
+                return dict(ready=False, code=error.code, batch_selected=0,
+                            batch_user_accepted=False, preview_played=0, preview_required=BATCH_PREVIEW_MINIMUM)
+            rows = {row['id']:row for row in record['candidates']}
+            samples = [name for name in plan['samples'] if self._approved(
+                played, rows[name], 'raw', record['archive_sha256'])]
+            disabled = self._disabled_events(root)
+            return dict(ready=True, batch_selected=len(INITIAL_V10_IDS),
+                        extra_release_ids=sorted(BATCH_RELEASE_IDS-INITIAL_V10_IDS),
+                        release_candidate_count=len(plan['ids']),
+                        event_mapping=plan['events'], sample_ids=plan['samples'],
+                        preview_played=len(samples), preview_required=BATCH_PREVIEW_MINIMUM,
+                        batch_user_accepted=bool(release),
+                        disabled_events=disabled)
+
+    def accept_batch(self, *, user_accepted=False):
+        """One explicit opt-in; no writes to approvals.json or listened.json."""
+        if user_accepted is not True:
+            raise VoiceBankError('voice_pack_batch_user_consent_required')
+        with self._root(lock=True) as root:
+            record = self._index(root)
+            plan = self._batch_plan(record)
+            rows = {row['id']:row for row in record['candidates']}
+            played = self._observations(root, 'played.json')
+            heard = sum(self._approved(played, rows[cid], 'raw', record['archive_sha256'])
+                        for cid in plan['samples'])
+            if heard < BATCH_PREVIEW_MINIMUM:
+                raise VoiceBankError('voice_pack_batch_preview_required')
+            # Verify each actual PCM now, not merely the public manifest.
+            items = {}
+            for cid in plan['ids']:
+                row = rows[cid]
+                variant = row['variants']['raw']
+                self._payload(root, variant['file'], variant['sha256'])
+                items[cid] = dict(sha256=variant['sha256'],
+                    provenance=self._provenance(row, 'raw', record['archive_sha256']))
+            selection = self._mapping(root, 'selection.json')
+            # Respect explicit existing manual overrides.
+            for event, cid in plan['events'].items():
+                selection.setdefault(event, cid)
+            # Publish event mapping first; without a release it never grants
+            # permission. Both files use private atomic replace and locking.
+            self._write(root, 'selection.json', _json(selection), replace=True)
+            self._write(root, 'batch_release.json', _json(dict(version=1, accepted=True,
+                archive_sha256=record['archive_sha256'], items=items, events=plan['events'])), replace=True)
+        return dict(status='BATCH_ACCEPTED', batch_user_accepted=True,
+                    batch_selected=len(INITIAL_V10_IDS), additional=len(BATCH_RELEASE_IDS-INITIAL_V10_IDS),
+                    individually_listened_automatically=0, event_mapping=plan['events'])
+
+    def disable_batch(self):
+        """One-step rollback of only the bundle; individual approvals survive."""
+        with self._root(lock=True) as root:
+            record = self._index(root)
+            value = self._read(root, 'batch_release.json', optional=True)
+            if value is not None:
+                self._batch_release(root, record)  # validate before mutating
+                value['accepted'] = False
+                self._write(root, 'batch_release.json', _json(value), replace=True)
+        return dict(status='BATCH_DISABLED', batch_user_accepted=False)
+
+    def enable_event(self, event, *, enabled):
+        if event not in EVENT_CANDIDATES or type(enabled) is not bool:
+            raise VoiceBankError('voice_pack_event_invalid')
+        with self._root(lock=True) as root:
+            self._index(root)
+            disabled = set(self._disabled_events(root))
+            if enabled:
+                disabled.discard(event)
+            else:
+                disabled.add(event)
+            self._write(root, 'disabled_events.json', _json(sorted(disabled)), replace=True)
+        return dict(event=event, enabled=enabled)
 
     def inventory(self):
         try:
