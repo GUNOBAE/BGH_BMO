@@ -39,6 +39,17 @@ function error(message){
   musicErrorTimer=setTimeout(()=>{delete notice.dataset.musicError;notice.hidden=true;},4200);
  }
 }
+function syncShowcaseGames(){
+ const hide=$('demo-games-hide').checked;
+ $('games').hidden=hide;
+ $('games-readiness').dataset.showcaseHidden=String(hide);
+}
+try{$('demo-games-hide').checked=localStorage.getItem('bmo-showcase-games-hidden')==='true';}catch(_){}
+$('demo-games-hide').onchange=()=>{
+ try{localStorage.setItem('bmo-showcase-games-hidden',String($('demo-games-hide').checked));}catch(_){}
+ syncShowcaseGames();
+};
+syncShowcaseGames();
 function menu(){cancelPTT();window.BMOPlayableGames?.suspend('menu');if(!$('menu').open)$('menu').showModal();}
 function isTextInput(target){return !!(target?.isContentEditable||target?.closest?.('input,select,textarea'));}
 function restoreFaceFocus(){
