@@ -769,6 +769,31 @@ $('camera-track').onclick=()=>intent(featureState?.camera?.tracking===true||feat
 $('camera-off').onclick=()=>control('camera_off').catch(()=>error('카메라 종료를 확인해 주세요.'));
 $('arms-stop').onclick=()=>intent('stop_arms').then(result=>{$('arms-result').textContent=result.code||'팔 중지를 요청했어요. 실제 전원과 위치는 별도로 확인해 주세요.';}).catch(()=>error('팔 중지 상태를 확인해 주세요.'));
 $('provider-recheck').onclick=()=>control('provider_recheck').catch(()=>error('음성 상태 초기화를 완료하지 못했어요.'));
+$('voice-batch-preview').onclick=()=>auditionVoiceBatch();
+$('voice-batch-preview-stop').onclick=()=>{
+ batchPreviewAbort=true;control('cancel').catch(()=>{});
+ $('voice-result').textContent='대표 미리듣기 중단을 요청했어요.';
+};
+$('voice-batch-consent').onchange=()=>{if(featureState)renderVoiceBatch(featureState,featureState.voice_pack);};
+$('voice-batch-enable').onclick=()=>{
+ if(!$('voice-batch-consent').checked||$('voice-batch-enable').disabled)return;
+ $('voice-batch-enable').disabled=true;
+ control('voice_batch_accept',true).then(()=>{
+  $('voice-result').textContent='검증된 V10 묶음을 상황별 재생으로 활성화했어요. 개별 청취 기록은 변경하지 않았어요.';
+  $('voice-batch-consent').checked=false;
+ }).catch(()=>{$('voice-result').textContent='활성화 실패. 대표 미리 재생 5개 이상, 현재 대화·PCM·SHA 상태를 확인해 주세요.';});
+};
+$('voice-batch-disable').onclick=()=>control('voice_batch_disable').then(()=>{
+ $('voice-result').textContent='V10 묶음 재생권한을 비활성화했어요. 개별 청취 승인 및 재생 기록은 보존해요.';
+}).catch(()=>{$('voice-result').textContent='묶음 비활성화를 확인하지 못했어요.';});
+for(const [id,enabled] of [['voice-batch-event-disable',false],['voice-batch-event-enable',true]])
+ $(id).onclick=()=>{
+  const event=$('voice-batch-event-name').value;if(!event)return;
+  $(id).disabled=true;control('voice_batch_event',{event,enabled})
+   .then(()=>{$('voice-result').textContent=event+' 이벤트 음성 '+(enabled?'ON':'OFF');})
+   .catch(()=>{$('voice-result').textContent='이벤트 재생 정책을 변경하지 못했어요.';});
+ };
+
 function setVolume(source='master'){
  const prefix=source==='music'?'music':'master';
  const serial=++volumeSerial,value={level:Number($(prefix+'-volume').value),muted:$(prefix+'-mute').checked};volumePending=value;
