@@ -671,6 +671,7 @@ class OrganizedVoicePack:
             with self._root() as root:
                 record = self._index(root)
                 approvals = self._approvals(root)
+                release = self._batch_release(root, record)
                 selection = self._mapping(root, 'selection.json')
                 listened = self._observations(root, 'listened.json')
                 played = self._observations(root, 'played.json')
@@ -679,12 +680,14 @@ class OrganizedVoicePack:
                     variants = {name: dict(sha256=value['sha256'], baked_gain=value['baked_gain'],
                         duration_seconds=value['duration_seconds'], approved=self._approved(approvals, row, name, record['archive_sha256']),
                         listened=self._approved(listened, row, name, record['archive_sha256']),
-                        played=self._approved(played, row, name, record['archive_sha256']))
+                        played=self._approved(played, row, name, record['archive_sha256']),
+                        batch_released=self._released(release, row, name, record['archive_sha256']))
                         for name, value in row['variants'].items()}
                     values.append(dict(id=row['id'], clip_id=row['clip_id'], text=row['text'],
                         source_model=row['source_model'], variants=variants,
                         imported=True, approved=any(v['approved'] for v in variants.values()),
                         listened=any(v['listened'] for v in variants.values()), played=any(v['played'] for v in variants.values()),
+                        batch_released=any(v['batch_released'] for v in variants.values()),
                         nonverbal=row.get('nonverbal', False), initial_priority=row.get('initial_priority', False),
                         handoff_metadata=row.get('handoff_metadata', {}), cue_review=row['cue_review'],
                         events=[event for event in EVENT_CANDIDATES if self._matches(row, event)],
@@ -709,13 +712,19 @@ class OrganizedVoicePack:
                 audit = record.get('import_audit', [])
                 selection = self._mapping(root, 'selection.json')
         wake = next((v for v in values if v['clip_id'] == 'wake_ack_01'), None)
+        batch = (self.batch_status() if values and version == 10 else
+                 dict(ready=False, code='voice_pack_batch_v10_only' if values else 'voice_pack_asset_pending',
+                      batch_selected=0, batch_user_accepted=False,
+                      preview_played=0, preview_required=BATCH_PREVIEW_MINIMUM,
+                      event_mapping={}, sample_ids=[], disabled_events=[]))
         return dict(version=version, status='IMPORTED' if values else 'ASSET_PENDING', candidates=len(values),
                     initial_priority=sum(v['initial_priority'] for v in values),
                     listened=sum(v['listened'] for v in values), played=sum(v['played'] for v in values),
-                    approved=sum(v['approved'] for v in values), generated=False, automatic_approval=False,
+                    approved=sum(v['approved'] for v in values), batch_released=sum(v['batch_released'] for v in values),
+                    batch=batch, generated=False, automatic_approval=False,
                     live_model_changed=False, wake_ack_registered=wake is not None,
                     wake_ack_available=bool(wake and wake['text'] == "Yeah? What's up?" and wake['source_model'] == 'drama-3'
-                        and wake['variants'].get('raw', {}).get('approved')
+                        and (wake['variants'].get('raw', {}).get('approved') or wake['variants'].get('raw', {}).get('batch_released'))
                         and wake['variants']['raw']['duration_seconds'] <= 3.),
                     startup_override=False, import_audit=audit,
                     archive_sha256=digest, expected_v8_sha256=V8_ARCHIVE_SHA256, expected_v10_sha256=V10_ARCHIVE_SHA256,
@@ -755,7 +764,7 @@ class OrganizedVoicePack:
             if row is None:
                 raise VoiceBankError('voice_pack_clip_invalid')
             variant = next((name for name, item in row['variants'].items() if item['sha256'] == sha256), None)
-            if variant is None or (review_requested is not True and not self._approved(self._approvals(root), row, variant, record['archive_sha256'])):
+            if variant is None or (review_requested is not True and not self._authorized(self._approvals(root), self._batch_release(root, record), row, variant, record['archive_sha256'])):
                 raise VoiceBankError('voice_pack_listening_approval_required')
             self._payload(root, row['variants'][variant]['file'], sha256)
             played = self._observations(root, 'played.json')
@@ -770,7 +779,9 @@ class OrganizedVoicePack:
         with self._root() as root:
             record = self._index(root)
             approvals = self._approvals(root)
+            release = self._batch_release(root, record)
             chosen = self._mapping(root, 'selection.json')
+            disabled = self._disabled_events(root)
             if candidate_id is not None:
                 row = next((r for r in record['candidates'] if r['id'] == candidate_id), None)
                 if row is None or not self._matches(row, event):
@@ -779,9 +790,13 @@ class OrganizedVoicePack:
                 with self._root(lock=True) as locked:
                     chosen[event] = candidate_id
                     self._write(locked, 'selection.json', _json(chosen), replace=True)
+                    if event in disabled:
+                        self._write(locked, 'disabled_events.json', _json(sorted(set(disabled)-{event})), replace=True)
+            if event in disabled and candidate_id is None:
+                return None
             candidates = [row for row in record['candidates'] if self._matches(row, event)
                           and (event not in chosen or chosen[event] == row['id'])
-                          and any(self._approved(approvals, row, name, record['archive_sha256']) for name in row['variants'])]
+                          and any(self._authorized(approvals, release, row, name, record['archive_sha256']) for name in row['variants'])]
             return self.chooser([r['id'] for r in candidates]) if candidates else None
 
     @staticmethod
@@ -802,8 +817,9 @@ class OrganizedVoicePack:
             record = self._index(root)
             row = next(r for r in record['candidates'] if r['id'] == candidate)
             approvals = self._approvals(root)
+            release = self._batch_release(root, record)
             variant = next((row['variants'][name] for name in ('preview_gain025', 'raw')
-                            if name in row['variants'] and self._approved(approvals, row, name, record['archive_sha256'])), None)
+                            if name in row['variants'] and self._authorized(approvals, release, row, name, record['archive_sha256'])), None)
             if variant is None:
                 raise VoiceBankError('voice_pack_listening_approval_required')
             raw = self._payload(root, variant['file'], variant['sha256'])
