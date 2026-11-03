@@ -29,6 +29,12 @@ body[data-photo-screen="true"] #subtitles{left:18px;right:190px;bottom:14px}
 #arms-status,#arms-result,#voice-readiness{max-width:580px;font-size:16px}#arms-gestures{display:flex;flex-wrap:wrap;max-width:600px}
 #voice-list{max-width:600px;font-size:15px}#voice-list select{font:inherit;max-width:320px;background:#20494e;color:inherit;padding:6px}
 .voice-candidate{border-top:1px solid #527b73;padding:8px 0}.voice-variant{padding:4px 0}.voice-variant p{font-size:12px;overflow-wrap:anywhere}.voice-variant label{display:block;font-size:14px}.voice-variant button{font-size:14px}
+#voice-batch{border:1px solid #527b73;border-radius:8px;padding:10px;margin:12px 0;max-width:680px}
+#voice-batch h3{margin:5px 0 10px;font-size:18px}
+#voice-batch p{font-size:14px;margin:8px 0}
+.voice-batch-consent{display:block;margin:10px 0;font-size:15px}
+#voice-batch-event{display:flex;flex-wrap:wrap;align-items:center}
+#voice-batch-event-name{font:inherit;max-width:260px;background:#20494e;color:#fff}
 #game-surface{position:fixed;inset:0;background:#0b2835;z-index:2;display:grid;grid-template-rows:minmax(0,1fr) 62px;justify-items:center;padding:6px;gap:4px}
 #game-canvas{display:block;width:min(100%,calc((100vh - 80px)*1.6667));height:100%;max-height:100%;object-fit:contain;image-rendering:pixelated}
 #game-toolbar{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;font-size:15px}#game-toolbar button{font-size:15px;margin:0;padding:8px}
