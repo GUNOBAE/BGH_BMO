@@ -262,7 +262,9 @@ class VoicePackV10Tests(unittest.TestCase):
                     self.assertEqual(asset.source_model, 'drama-3')
         with self.pack.load_countdown() as asset:
             self.assertEqual(asset.info['duration_seconds'], 5)
-        with self.pack.load_event('music_selected') as asset:
+        # M04 was already heard in representative preview; test a fresh event
+        # so distinct player-start observations increase by exactly one.
+        with self.pack.load_event('video_saved') as asset:
             self.pack.mark_played(asset.candidate_id, asset.sha256)
         self.assertEqual(self.pack.snapshot()['played'], 6)
         self.assertEqual(self.pack.snapshot()['listened'], 0)
