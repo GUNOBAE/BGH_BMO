@@ -434,7 +434,7 @@ function renderMusic(next){
  }else player.pause();
 }
 
-let batchPreviewRunning=false,batchPreviewAbort=false,batchEventNamesKey=null;
+let batchPreviewRunning=false,batchPreviewAbort=false,batchPreviewCompleted=false,batchPreviewArchive=null,batchEventNamesKey=null;
 async function auditionVoiceBatch(){
  if(batchPreviewRunning)return;
  const pack=featureState?.voice_pack,batch=pack?.batch;
@@ -443,7 +443,7 @@ async function auditionVoiceBatch(){
  const candidates=new Map((pack.inventory||[]).map(item=>[item.id,item]));
  const samples=(batch.sample_ids||[]).filter(id=>candidates.get(id)?.variants?.raw?.sha256);
  if(samples.length<5)return;
- batchPreviewRunning=true;batchPreviewAbort=false;$('voice-batch-preview-stop').disabled=false;
+ batchPreviewRunning=true;batchPreviewAbort=false;batchPreviewCompleted=false;$('voice-batch-preview-stop').disabled=false;
  try{
   for(let index=0;index<samples.length;index++){
    if(batchPreviewAbort)break;
@@ -466,6 +466,7 @@ async function auditionVoiceBatch(){
    if(batchPreviewAbort)break;
    if(!finished)throw Error('preview_completion_unverified');
   }
+  if(!batchPreviewAbort)batchPreviewCompleted=true;
   $('voice-result').textContent=batchPreviewAbort?'대표 미리듣기를 중단했어요. 청취 완료 기록을 만들지 않았어요.':
    '대표 클립 연속 재생이 끝났어요. 실제 개별 청취 승인은 별도이며, 묶음 사용 승인은 아래에서 결정하세요.';
  }catch(_){
@@ -477,6 +478,7 @@ async function auditionVoiceBatch(){
 }
 function renderVoiceBatch(next,bank){
  const batch=bank?.batch||{},ready=bank?.version===10&&batch.ready===true;
+ if(bank?.archive_sha256!==batchPreviewArchive){batchPreviewArchive=bank?.archive_sha256||null;batchPreviewCompleted=false;}
  $('voice-batch').hidden=!ready;
  if(!ready)return;
  const mapping=batch.event_mapping||{},disabled=batch.disabled_events||[],accepted=batch.batch_user_accepted===true;
@@ -487,7 +489,7 @@ function renderVoiceBatch(next,bank){
  $('voice-batch-preview').disabled=batchPreviewRunning||accepted||next.mode!=='conversation'
   ||next.conversation_busy||next.audio_owner!==null||next.volume?.effective_level===0;
  $('voice-batch-preview-stop').disabled=!batchPreviewRunning;
- $('voice-batch-enable').disabled=accepted||batchPreviewRunning||!$('voice-batch-consent').checked
+ $('voice-batch-enable').disabled=accepted||batchPreviewRunning||!batchPreviewCompleted||!$('voice-batch-consent').checked
   ||(batch.preview_played||0)<(batch.preview_required||5)||next.mode!=='conversation'||next.conversation_busy||next.audio_owner!==null;
  $('voice-batch-disable').disabled=!accepted;
  const key=JSON.stringify(mapping);
@@ -787,7 +789,7 @@ $('voice-batch-preview-stop').onclick=()=>{
 };
 $('voice-batch-consent').onchange=()=>{if(featureState)renderVoiceBatch(featureState,featureState.voice_pack);};
 $('voice-batch-enable').onclick=()=>{
- if(!$('voice-batch-consent').checked||$('voice-batch-enable').disabled)return;
+ if(!batchPreviewCompleted||!$('voice-batch-consent').checked||$('voice-batch-enable').disabled)return;
  $('voice-batch-enable').disabled=true;
  control('voice_batch_accept',true).then(()=>{
   $('voice-result').textContent='검증된 V10 묶음을 상황별 재생으로 활성화했어요. 개별 청취 기록은 변경하지 않았어요.';
