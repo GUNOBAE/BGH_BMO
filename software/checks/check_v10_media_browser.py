@@ -137,6 +137,9 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     panel('music-menu');page.locator('[data-song-id=space_potatoes] [data-media-mode='+mode+']').click()
                     wait(lambda state:state['mode']=='music' and state['media']['variant']==mode)
                     page.wait_for_function('mode=>BMODesktop.features?.mode==="music"&&BMODesktop.features.media.variant===mode',arg=mode)
+                def reveal():
+                    page.locator('#music-surface').click(position={'x':5,'y':5})
+                    assert page.locator('#music-toolbar').is_visible()
                 page.goto(fixture.url,wait_until='domcontentloaded')
                 try:
                     page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'&&BMODesktop.features?.mode==='conversation'")
@@ -165,6 +168,10 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.locator('#music-dialog .dialog-close').click()
                 start('video')
                 player=page.locator('#music-video');player.wait_for(state='visible')
+                assert page.locator('#music-toolbar').is_hidden(), 'The showcase toolbar must not remain visible'
+                assert page.locator('#notice').is_hidden(), 'Stale camera notices must not cover playback'
+                box=page.locator('#music-video-view').bounding_box()
+                assert box and box['height']>=479 and box['width']>=799,box
                 page.wait_for_function("()=>document.querySelector('#music-video').readyState>=2")
                 decoded=player.evaluate('v=>({w:v.videoWidth,h:v.videoHeight,duration:v.duration,muted:v.muted,volume:v.volume,error:v.error?.code||null})')
                 assert decoded['w']==160 and decoded['h']==90 and decoded['duration']>7.9 and decoded['muted'] and decoded['volume']==0 and decoded['error'] is None,decoded
@@ -174,6 +181,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert b'ftyp' in response.body()
                 checks.append('one stable song offers face/video; actual embedded-audio MP4 decodes through muted product video and verified Range route')
                 baseline=fixture.features()['test_fixture']
+                reveal()
                 page.locator('#music-volume').fill('0');page.locator('#music-volume').dispatch_event('change')
                 wait(lambda state:state['volume']['level']==0)
                 page.locator('#music-mute').check();wait(lambda state:state['volume']['muted'])
@@ -182,8 +190,9 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert player.evaluate('v=>v.muted&&v.volume===0')
                 page.locator('#music-toggle').focus()
                 page.keyboard.down('Enter');page.keyboard.down('Enter')
-                wait(lambda state:state['media']['state']=='paused')
+                assert fixture.features()['media']['state']=='playing', 'GP8 should act on release, not keydown'
                 page.keyboard.up('Enter')
+                wait(lambda state:state['media']['state']=='paused')
                 page.wait_for_function("()=>document.querySelector('#music-video').paused")
                 page.locator('#music-seek').fill('2');page.locator('#music-seek').dispatch_event('change')
                 wait(lambda state:state['media']['state']=='paused' and abs(state['media']['position']-2)<.01)
@@ -193,7 +202,8 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 (Path(directory)/'media-clock.txt').write_text('.5')
                 wait(lambda state:abs(state['media']['position']-.5)<.01)
                 page.wait_for_function("()=>Math.abs(document.querySelector('#music-video').currentTime-.5)<.4")
-                page.keyboard.down('Enter');wait(lambda state:state['media']['state']=='paused')
+                page.keyboard.down('Enter');page.keyboard.up('Enter')
+                wait(lambda state:state['media']['state']=='paused')
                 page.wait_for_function("()=>document.querySelector('#music-video').paused")
                 page.evaluate('()=>{window.__injectLateMusicRejection=true;}')
                 page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='playing')
@@ -206,6 +216,8 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 checks.append('real GP8 edges pause once; seek/replay follow owner clock; Escape detaches decoder, ignores its delayed play rejection, and held key release cannot start PTT')
                 (Path(directory)/'media-clock.txt').write_text('0')
                 start('face')
+                assert page.locator('#music-toolbar').is_hidden()
+                reveal()
                 assert page.locator('#music-video-view').is_hidden()
                 assert player.evaluate("v=>!v.hasAttribute('src')")
                 (Path(directory)/'media-clock.txt').write_text('.35')
@@ -217,8 +229,18 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.locator('#face').click(position={'x':400,'y':200});page.keyboard.press('Enter')
                 wait(lambda state:state['test_fixture']['brain']==baseline['brain']+1 and not state['conversation_busy'])
                 assert page.evaluate('()=>window.__browserAudioCalls')==0
+                # Long GP8 must stop exactly once and consume its own key-up.
+                start('video')
+                previous_brain=fixture.features()['test_fixture']['brain']
+                page.keyboard.down('Enter')
+                page.wait_for_timeout(1650)
+                wait(lambda state:state['mode']=='conversation')
+                page.keyboard.up('Enter')
+                page.wait_for_timeout(250)
+                assert fixture.features()['test_fixture']['brain']==previous_brain,'Long GP8 release leaked into PTT'
+                assert player.evaluate("v=>v.paused&&!v.hasAttribute('src')")
                 assert not errors,errors
-                checks.append('face mode samples supplied whole-mix mouth approximation; pause closes mouth, Back releases music and next actual GP8 dialogue works')
+                checks.append('full-screen video hides controls/notice until touched; short GP8 pause, long GP8 stop without PTT leak; face mouth and conversation remain functional')
                 code,counts,error=fixture.finish()
                 assert code==0 and counts['forbidden']==0 and counts['players']==counts['reaped'] and counts['max_players']==1,error
             finally:browser.close()
