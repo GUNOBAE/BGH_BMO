@@ -422,12 +422,83 @@ function renderMusic(next){
   }
  }else player.pause();
 }
+
+let batchPreviewRunning=false,batchPreviewAbort=false,batchEventNamesKey=null;
+async function auditionVoiceBatch(){
+ if(batchPreviewRunning)return;
+ const pack=featureState?.voice_pack,batch=pack?.batch;
+ if(!batch?.ready||batch.batch_user_accepted||featureState?.mode!=='conversation'||featureState.conversation_busy
+  ||featureState.audio_owner!==null||featureState.volume?.effective_level===0)return;
+ const candidates=new Map((pack.inventory||[]).map(item=>[item.id,item]));
+ const samples=(batch.sample_ids||[]).filter(id=>candidates.get(id)?.variants?.raw?.sha256);
+ if(samples.length<5)return;
+ batchPreviewRunning=true;batchPreviewAbort=false;$('voice-batch-preview-stop').disabled=false;
+ try{
+  for(let index=0;index<samples.length;index++){
+   if(batchPreviewAbort)break;
+   const id=samples[index],sha256=candidates.get(id).variants.raw.sha256;
+   $('voice-result').textContent='대표 클립 미리듣기 '+(index+1)+'/'+samples.length+' · '+id;
+   await control('voice_preview',{candidate_id:id,sha256});
+   let sawOwner=false,finished=false;
+   for(let tick=0;tick<240;tick++){
+    if(batchPreviewAbort)break;
+    await new Promise(resolve=>setTimeout(resolve,150));
+    const response=await fetch('/api/features',{cache:'no-store'});
+    if(!response.ok)throw Error('preview_snapshot_unavailable');
+    const now=await response.json();
+    if(now.mode!=='conversation')throw Error('preview_interrupted');
+    const busy=now.conversation_busy||now.audio_owner!==null;
+    sawOwner=sawOwner||busy;
+    const observed=now.voice_pack?.inventory?.find(item=>item.id===id)?.played===true;
+    if(!busy&&(sawOwner||tick>=4&&observed)){finished=true;break;}
+   }
+   if(batchPreviewAbort)break;
+   if(!finished)throw Error('preview_completion_unverified');
+  }
+  $('voice-result').textContent=batchPreviewAbort?'대표 미리듣기를 중단했어요. 청취 완료 기록을 만들지 않았어요.':
+   '대표 클립 연속 재생이 끝났어요. 실제 개별 청취 승인은 별도이며, 묶음 사용 승인은 아래에서 결정하세요.';
+ }catch(_){
+  $('voice-result').textContent=batchPreviewAbort?'대표 미리듣기를 중단했어요.':
+   '일부 미리듣기가 완료되지 않았어요. 현재 오디오 출력과 대화 상태를 확인해 주세요.';
+ }finally{
+  batchPreviewRunning=false;batchPreviewAbort=false;$('voice-batch-preview-stop').disabled=true;
+ }
+}
+function renderVoiceBatch(next,bank){
+ const batch=bank?.batch||{},ready=bank?.version===10&&batch.ready===true;
+ $('voice-batch').hidden=!ready;
+ if(!ready)return;
+ const mapping=batch.event_mapping||{},disabled=batch.disabled_events||[],accepted=batch.batch_user_accepted===true;
+ $('voice-batch-summary').textContent='초기 '+(batch.batch_selected||0)+'개 + 음악 자연종료 '+(batch.extra_release_ids?.length||0)+
+  '개 별도 포함 · 대표 미리 재생 시작 '+(batch.preview_played||0)+'/'+(batch.sample_ids?.length||0)+
+  ' · 활성화 '+(accepted?'ON':'OFF')+' · 개별 청취 승인 '+(bank.approved||0)+' · 실제 개별 청취 기록 '+(bank.listened||0)+
+  ' · 현재 묶음 재생권한 '+(bank.batch_released||0)+'개';
+ $('voice-batch-preview').disabled=batchPreviewRunning||accepted||next.mode!=='conversation'
+  ||next.conversation_busy||next.audio_owner!==null||next.volume?.effective_level===0;
+ $('voice-batch-preview-stop').disabled=!batchPreviewRunning;
+ $('voice-batch-enable').disabled=accepted||batchPreviewRunning||!$('voice-batch-consent').checked
+  ||(batch.preview_played||0)<(batch.preview_required||5)||next.mode!=='conversation'||next.conversation_busy||next.audio_owner!==null;
+ $('voice-batch-disable').disabled=!accepted;
+ const key=JSON.stringify(mapping);
+ if(batchEventNamesKey!==key){
+  batchEventNamesKey=key;$('voice-batch-event-name').replaceChildren();
+  for(const [event,id] of Object.entries(mapping)){
+   const option=document.createElement('option');option.value=event;option.textContent=event+' → '+id;
+   $('voice-batch-event-name').append(option);
+  }
+ }
+ const event=$('voice-batch-event-name').value;
+ $('voice-batch-event-disable').disabled=!accepted||!event||disabled.includes(event);
+ $('voice-batch-event-enable').disabled=!accepted||!event||!disabled.includes(event);
+}
+
 function renderVoiceBank(next){
  const bank=next.voice_pack||next.voice_bank;
  if(!bank){$('voice-readiness').textContent='private 음성팩 전달과 개별 청취 승인 상태를 아직 확인하지 못했어요.';return;}
  const items=bank.inventory||bank.items||bank.clips||[];
+ renderVoiceBatch(next,bank);
  $('voice-readiness').textContent=bank.status==='ASSET_PENDING'?'private 음성팩 전달·가져오기를 기다려요. 가져온 자산은 아직 없어요.':
-  (bank.code||bank.status||'VOICE_PACK_UNVERIFIED')+' · 등록 '+items.length+'개 · 초기 우선 '+(bank.initial_selection_count||items.filter(item=>item.initial_priority===true||item.priority===true).length)+'개 · 개별 승인 '+(bank.approved||0)+'개';
+  (bank.code||bank.status||'VOICE_PACK_UNVERIFIED')+' · 등록 '+items.length+'개 · 초기 우선 '+(bank.initial_selection_count||items.filter(item=>item.initial_priority===true||item.priority===true).length)+'개 · 개별 승인 '+(bank.approved||0)+'개 · 묶음 재생허용 '+(bank.batch_released||0)+'개';
  for(const button of $('voice-list').querySelectorAll('button[data-voice-event]'))
   button.disabled=button.dataset.assetReady!=='true'||next.mode!=='conversation'||next.conversation_busy||next.audio_owner!==null
    ||next.volume?.effective_level===0;
@@ -437,7 +508,7 @@ function renderVoiceBank(next){
   if(typeof item.id!=='string')continue;
   const row=document.createElement('section');row.className='voice-candidate';row.dataset.candidate=item.id;
   const title=document.createElement('p');title.textContent=(item.text||item.title||item.id)+' · '+item.id+' · '+(item.source_model||'출처 미확인');row.append(title);
-  const status=document.createElement('p');status.className='voice-status';status.textContent='등록됨 · '+(item.initial_priority===true||item.priority===true?'초기 연결 우선 · ':'')+'청취 '+(item.listened===true?'기록됨':'미기록')+' · 승인 '+(item.approved===true?'있음':'없음')+' · 선택 '+(item.selected_events?.length||0)+'개 · 재생 '+(item.played===true?'시작 기록됨':Number.isInteger(item.play_count)&&item.play_count>0?item.play_count+'회':'미기록');row.append(status);
+  const status=document.createElement('p');status.className='voice-status';status.textContent='등록됨 · '+(item.initial_priority===true||item.priority===true?'초기 연결 우선 · ':'')+'청취 '+(item.listened===true?'기록됨':'미기록')+' · 개별 승인 '+(item.approved===true?'있음':'없음')+' · 묶음 허용 '+(item.batch_released===true?'ON':'OFF')+' · 선택 '+(item.selected_events?.length||0)+'개 · 재생 '+(item.played===true?'시작 기록됨':Number.isInteger(item.play_count)&&item.play_count>0?item.play_count+'회':'미기록');row.append(status);
   const events=Array.isArray(item.events)?item.events:bank.event_names||[];
   if(events.length){
    const label=document.createElement('label');label.textContent='연결할 이벤트 ';
@@ -446,11 +517,11 @@ function renderVoiceBank(next){
    if(Array.isArray(item.selected_events)&&item.selected_events.length)select.value=item.selected_events[0];
    const assign=document.createElement('button');assign.textContent='선택';assign.onclick=()=>{
     assign.disabled=true;control('voice_select',{event:select.value,candidate_id:item.id})
-     .then(()=>{$('voice-result').textContent='이벤트 후보를 선택했어요. 개별 승인 전에는 재생하지 않아요.';})
+     .then(()=>{$('voice-result').textContent='이벤트 후보를 선택했어요. 개별 또는 묶음 사용 승인 후 재생할 수 있어요.';})
      .catch(()=>{$('voice-result').textContent='이 자산은 해당 이벤트에 연결할 수 없어요.';}).finally(()=>{assign.disabled=false;});};
    const play=document.createElement('button');play.textContent='승인된 선택 음성 재생';play.dataset.voiceEvent=select.value;
    const updatePlay=()=>{
-    const ready=item.approved===true&&Array.isArray(item.selected_events)&&item.selected_events.includes(select.value);
+    const ready=(item.approved===true||item.batch_released===true)&&Array.isArray(item.selected_events)&&item.selected_events.includes(select.value);
     play.dataset.voiceEvent=select.value;play.dataset.assetReady=String(ready);
     play.disabled=!ready||featureState?.mode!=='conversation'||featureState?.conversation_busy||featureState?.audio_owner!==null
      ||featureState?.volume?.effective_level===0;
@@ -458,7 +529,7 @@ function renderVoiceBank(next){
    select.onchange=updatePlay;updatePlay();
    play.onclick=()=>{if(play.disabled)return;play.disabled=true;control('voice_event',select.value)
     .then(()=>{$('voice-result').textContent='승인된 선택 음성의 재생을 요청했어요. 새 음성은 생성하지 않아요.';})
-    .catch(()=>{$('voice-result').textContent='이벤트 선택·개별 승인·출력 상태를 확인해 주세요.';});};
+    .catch(()=>{$('voice-result').textContent='이벤트 선택·재생 승인·출력 상태를 확인해 주세요.';});};
    label.append(select);row.append(label,assign,play);
   }
   for(const [name,variant] of Object.entries(item.variants||{})){
