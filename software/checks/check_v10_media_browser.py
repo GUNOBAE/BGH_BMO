@@ -139,7 +139,18 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     page.wait_for_function('mode=>BMODesktop.features?.mode==="music"&&BMODesktop.features.media.variant===mode',arg=mode)
                 def reveal():
                     page.locator('#music-surface').click(position={'x':5,'y':5})
-                    assert page.locator('#music-toolbar').is_visible()
+                    page.wait_for_timeout(80)
+                    evidence=page.evaluate("""() => ({
+                        mode:BMODesktop.features?.mode,
+                        currentMode:BMODesktop.features?.mode,
+                        rootHidden:document.querySelector('#music-surface').hidden,
+                        controlFlag:document.querySelector('#music-surface').dataset.controlsVisible,
+                        computedVisibility:getComputedStyle(document.querySelector('#music-toolbar')).visibility,
+                        computedOpacity:getComputedStyle(document.querySelector('#music-toolbar')).opacity,
+                        target:document.elementFromPoint(5,5)?.id,
+                        videoHidden:document.querySelector('#music-video-view').hidden
+                    })""")
+                    assert page.locator('#music-toolbar').is_visible(), evidence
                 page.goto(fixture.url,wait_until='domcontentloaded')
                 try:
                     page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'&&BMODesktop.features?.mode==='conversation'")
