@@ -426,12 +426,16 @@ function renderMusic(next){
  }
  if(media.state==='playing'&&media.output_started!==false){
   if(player.ended&&duration>0&&position>=duration-.2)return;
-  if(player.paused&&mediaPlayPending!==mediaVideoKey){
-   const playbackKey=mediaVideoKey;mediaPlayPending=playbackKey;
-   player.play().catch(()=>{if(!closed&&playbackKey===mediaVideoKey&&mediaVideoFailure!==playbackKey){mediaVideoFailure=playbackKey;control('pause').catch(()=>{});error('음악 영상을 재생하지 못했어요. 음악을 멈추고 파일·codec 상태를 확인해 주세요.');}})
-    .finally(()=>{if(mediaPlayPending===playbackKey)mediaPlayPending=null;});
+  if(player.paused&&mediaPlayPending?.key!==mediaVideoKey){
+   const playbackKey=mediaVideoKey,attempt={key:playbackKey};mediaPlayPending=attempt;
+   player.play().catch(()=>{if(!closed&&mediaPlayPending===attempt&&playbackKey===mediaVideoKey&&mediaVideoFailure!==playbackKey){mediaVideoFailure=playbackKey;control('pause').catch(()=>{});error('음악 영상을 재생하지 못했어요. 음악을 멈추고 파일·codec 상태를 확인해 주세요.');}})
+    .finally(()=>{if(mediaPlayPending===attempt)mediaPlayPending=null;});
   }
- }else player.pause();
+ }else{
+  // pause() can reject play() without changing the owner's seek generation.
+  // Retire that attempt before pausing so it cannot poison a later resume.
+  mediaPlayPending=null;player.pause();
+ }
 }
 
 let batchPreviewRunning=false,batchPreviewAbort=false,batchPreviewCompleted=false,batchPreviewArchive=null,batchEventNamesKey=null;
@@ -449,8 +453,9 @@ async function auditionVoiceBatch(){
    if(batchPreviewAbort)break;
    const id=samples[index],sha256=candidates.get(id).variants.raw.sha256;
    $('voice-result').textContent='대표 클립 미리듣기 '+(index+1)+'/'+samples.length+' · '+id;
-   await control('voice_preview',{candidate_id:id,sha256});
-   let sawOwner=false,finished=false;
+   const request=await control('voice_preview',{candidate_id:id,sha256});
+   if(typeof request.request_id!=='string')throw Error('preview_request_unverified');
+   let finished=false;
    for(let tick=0;tick<240;tick++){
     if(batchPreviewAbort)break;
     await new Promise(resolve=>setTimeout(resolve,150));
@@ -458,10 +463,13 @@ async function auditionVoiceBatch(){
     if(!response.ok)throw Error('preview_snapshot_unavailable');
     const now=await response.json();
     if(now.mode!=='conversation')throw Error('preview_interrupted');
-    const busy=now.conversation_busy||now.audio_owner!==null;
-    sawOwner=sawOwner||busy;
-    const observed=now.voice_pack?.inventory?.find(item=>item.id===id)?.played===true;
-    if(!busy&&(sawOwner||tick>=4&&observed)){finished=true;break;}
+    // Only this admitted review's terminal receipt proves completion.
+    // Historic played flags or another owner's busy/idle edge are insufficient.
+    const receipt=(now.requests||[]).find(item=>item.request_id===request.request_id);
+    if(!receipt||['accepted','running'].includes(receipt.status))continue;
+    if(receipt.code!=='voice_review_completed'||receipt.completed!==true
+      ||receipt.completion!=='review_playback')throw Error('preview_interrupted');
+    finished=true;break;
    }
    if(batchPreviewAbort)break;
    if(!finished)throw Error('preview_completion_unverified');

@@ -284,6 +284,13 @@ class VoicePackV10Tests(unittest.TestCase):
         self.assertEqual(self.pack.select_event('music_exit'), 'M10')
         self.pack.enable_event('music_selected', enabled=True)
         self.assertEqual(self.pack.select_event('music_selected'), 'M04')
+        self.pack.enable_event('wake_ack', enabled=False)
+        self.assertFalse(self.pack.snapshot()['wake_ack_available'])
+        self.assertIsNone(self.pack.load_wake_ack())
+        self.pack.enable_event('wake_ack', enabled=True)
+        self.assertTrue(self.pack.snapshot()['wake_ack_available'])
+        with self.pack.load_wake_ack() as asset:
+            self.assertEqual(asset.clip_id, 'wake_ack_01')
         data = json.loads((self.pack.directory/'pack.json').read_text())
         next(r for r in data['candidates'] if r['clip_id'] == 'M04')['text'] += ' altered'
         (self.pack.directory/'pack.json').write_text(json.dumps(data))

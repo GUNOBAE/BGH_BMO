@@ -25,7 +25,9 @@ from bmo_ai.screen_profiles import SCREEN_PROFILES
 
 
 def child_source():
-    source = desktop.CHILD
+    source = replace_once(desktop.CHILD,
+        "    process=real_popen(command,**options);players.append(process);counts['players']+=1",
+        "    if (root/'fail-next-player').exists():\n        (root/'fail-next-player').unlink();command=[sys.executable,'-c','raise SystemExit(7)']\n    process=real_popen(command,**options);players.append(process);counts['players']+=1")
     source = replace_once(source, "    counts['hosts']+=1", r'''
     counts['hosts']+=1
     from bmo_ai.features.media import MediaFeature,FakeMediaBackend
@@ -48,7 +50,7 @@ def child_source():
 def prepare(directory):
     """Local deterministic media generation, with no output device or network."""
     sys.path.insert(0,str(SOFTWARE/'tests'))
-    from test_voice_pack_v10 import pcm
+    from test_voice_pack_v10 import pcm, V10_IDS
     from bmo_ai import fish_tts
     import zipfile
     root=Path(directory);music=root/'music';music.mkdir(mode=0o700)
@@ -72,8 +74,10 @@ def prepare(directory):
         video_audio_path='video-audio.wav',video_audio_sha256=sha('video-audio.wav'),video_audio_duration=video_duration)
     (music/'fixture.json').write_text(json.dumps(meta))
     rows=[];payloads={}
-    for clip,seconds,text in [('RX01',.1,''),('wake_ack_01',1.76,"Yeah? What's up?"),
-                              ('PH_COUNTDOWN_05S',5.,'Five. Four. Three. Two. One.')]:
+    for clip in V10_IDS:
+        seconds={'PH_COUNTDOWN_05S':5.,'wake_ack_01':1.76}.get(clip,.1)
+        text=('' if clip=='RX01' else "Yeah? What's up?" if clip=='wake_ack_01' else
+              'Five. Four. Three. Two. One.' if clip=='PH_COUNTDOWN_05S' else 'Synthetic fixture.')
         raw=pcm(seconds);path='audio/'+clip+'.wav';payloads[path]=raw
         rows.append(dict(clip_id=clip,spoken_text=text,file=path,sha256=hashlib.sha256(raw).hexdigest(),baked_gain=1.,
             requested_model='drama-3',voice_id=fish_tts.AARON_BMO_VOICE_ID,
@@ -159,7 +163,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     raise
                 panel('voice-menu')
                 page.locator('[data-candidate=RX01]').wait_for(state='visible')
-                assert page.locator('.voice-candidate').count()==3
+                assert page.locator('.voice-candidate').count()==142
                 bank=fixture.features()['voice_pack']
                 assert bank['version']==10 and bank['approved']==bank['listened']==bank['played']==0
                 assert '등록됨' in page.locator('[data-candidate=RX01] .voice-status').inner_text()
@@ -171,8 +175,40 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 wait(lambda state:not state['conversation_busy'] and state['audio_owner'] is None)
                 after=fixture.features();assert after['voice_pack']['approved']==0
                 assert after['test_fixture']['brain']==baseline['brain'] and after['test_fixture']['synthesis']==baseline['synthesis']
-                page.locator('#voice-dialog .dialog-close').click()
                 checks.append('v10 RX01 empty speech imports; explicit unapproved per-SHA review uses one cached player without approval or GPT/TTS')
+                # Complete this session's real owned previews before explicit release.
+                page.locator('#voice-batch-preview').click()
+                page.wait_for_function("()=>document.querySelector('#voice-batch-preview-stop').disabled",timeout=20000)
+                page.locator('#voice-batch-consent').check()
+                page.wait_for_function("()=>!document.querySelector('#voice-batch-enable').disabled")
+                page.locator('#voice-batch-enable').click()
+                bank=wait(lambda state:state['voice_pack']['batch']['batch_user_accepted'])['voice_pack']
+                assert bank['candidates']==142 and bank['batch_released']==61
+                assert bank['approved']==bank['listened']==0
+                page.locator('#voice-batch-event-name').select_option('music_selected')
+                page.locator('#voice-batch-event-disable').click()
+                wait(lambda state:'music_selected' in state['voice_pack']['batch']['disabled_events'])
+                page.locator('#voice-batch-event-enable').click()
+                wait(lambda state:'music_selected' not in state['voice_pack']['batch']['disabled_events'])
+                page.locator('#voice-batch-disable').click()
+                wait(lambda state:not state['voice_pack']['batch']['batch_user_accepted'])
+                assert fixture.features()['voice_pack']['batch_released']==0
+                # Historical played=true cannot complete a newly cancelled/failed sample.
+                for failure in ('cancel','player_error'):
+                    before_players=fixture.features()['test_fixture']['players']
+                    if failure=='player_error':(Path(directory)/'fail-next-player').touch()
+                    page.locator('#voice-batch-preview').click()
+                    wait(lambda state:state['test_fixture']['players']==before_players+1)
+                    if failure=='cancel':page.evaluate("()=>BMODesktop.control('cancel')")
+                    page.wait_for_function("()=>document.querySelector('#voice-batch-preview-stop').disabled",timeout=12000)
+                    page.locator('#voice-batch-consent').check()
+                    page.wait_for_timeout(200)
+                    assert page.locator('#voice-batch-enable').is_disabled(),failure+' completed the batch'
+                    assert fixture.features()['test_fixture']['players']==before_players+1,failure+' advanced to another sample'
+                    bank=fixture.features()['voice_pack']
+                    assert bank['approved']==bank['listened']==bank['batch_released']==0
+                checks.append('142 synthetic entries: explicit bundle release61/revoke/event OFF-ON; cancelled or failed new preview never reuses historic played evidence')
+                page.locator('#voice-dialog .dialog-close').click()
                 panel('music-menu')
                 assert page.locator('[data-song-id=space_potatoes]').count()==1
                 assert page.locator('[data-song-id=space_potatoes] button').count()==2
@@ -219,12 +255,20 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.evaluate('()=>{window.__injectLateMusicRejection=true;}')
                 page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='playing')
                 page.wait_for_function('()=>window.__musicLateRejectStarted===true')
+                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='paused')
+                page.wait_for_timeout(750)
+                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='playing')
+                page.wait_for_function("()=>!document.querySelector('#music-video').paused")
+                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='paused')
+                page.evaluate('()=>{window.__injectLateMusicRejection=true;window.__musicLateRejectStarted=false;}')
+                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='playing')
+                page.wait_for_function('()=>window.__musicLateRejectStarted===true')
                 page.keyboard.press('Escape');wait(lambda state:state['mode']=='conversation')
                 page.keyboard.up('Enter');page.wait_for_timeout(750)
                 assert page.locator('#notice').is_hidden(), 'A retired decoder play promise changed the new conversation'
                 assert fixture.features()['test_fixture']['mic_sources']==baseline['mic_sources']
                 assert player.evaluate("v=>v.paused&&!v.hasAttribute('src')")
-                checks.append('real GP8 edges pause once; seek/replay follow owner clock; Escape detaches decoder, ignores its delayed play rejection, and held key release cannot start PTT')
+                checks.append('real GP8 edges pause once; seek/replay follow owner clock; pause retires a pending decoder play attempt and resumes video; Escape detaches decoder, ignores its delayed play rejection, and held key release cannot start PTT')
                 (Path(directory)/'media-clock.txt').write_text('0')
                 start('face')
                 assert page.locator('#music-toolbar').is_hidden()

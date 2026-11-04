@@ -322,6 +322,7 @@ class FeatureHost(ProductVideoFlow):
         self.compound = CompoundActions(self)
         self._voice_lease = self._game_lease = self._music_lease = None
         self._voice_control_request = None
+        self._voice_review_request = None
         self._voice_cleanup = {}
         self._playback_lock, self._voice_started_turns = Lock(), set()
         self._active_game_request = self._active_media_request = None
@@ -693,7 +694,7 @@ class FeatureHost(ProductVideoFlow):
         if pressed and key in ('TALK', 'START'):
             return self.media.pause() if self.media.snapshot()['state'] == 'playing' else self.media.resume()
         if pressed and key in ('ESC', 'B'):
-            self._transition('conversation')
+            self.execute(HostIntent('stop_media'))
         return True
 
     def open_music_video(self, token):
@@ -845,6 +846,8 @@ class FeatureHost(ProductVideoFlow):
             self._voice_lease = None
             return False
         self._turn_generations[self.session.snapshot()['turn_id']] = self.modes.generation
+        if cached:
+            self._local_event_active = dict(event=event, scope=owner)
         return True
 
     def _start_photo_countdown(self, pending):
@@ -1161,6 +1164,14 @@ class FeatureHost(ProductVideoFlow):
             self._voice_pack_public = dict(status='BLOCKED', code=error.code if isinstance(error, VoiceBankError)
                 else 'voice_pack_unavailable', candidates=0, inventory=[], automatic_approval=False)
 
+    def _cancel_disabled_voice_event(self, event=None):
+        self._local_events.clear()
+        active = self._local_event_active
+        if active and (event is None or active['event'] == event) and self.session.busy:
+            # Retire the current cached owner through the ordinary worker
+            # cleanup. Disabling a cue must not stop unrelated dialogue/music.
+            self.cancel_conversation()
+
     def _set_volume(self, value):
         self.volume.set(level=value['level'], muted=value['muted'])
         # Muting is immediate for an owned utterance. It never starts playback
@@ -1285,7 +1296,8 @@ class FeatureHost(ProductVideoFlow):
                     self._transition("conversation")
                 else:
                     self.media.stop()
-                self._queue_local_event('music_exit')
+                if media_was_active:
+                    self._queue_local_event('music_exit')
             elif name == "take_photo":
                 self._cancel_video("video_photo_transition")
                 state = self.camera.snapshot()
@@ -1465,13 +1477,14 @@ class FeatureHost(ProductVideoFlow):
                     simulated=self.runtime.simulate, completed=True, completion='batch_authorized'))
             elif action == 'voice_batch_disable':
                 self.voice_pack.disable_batch()
-                self._local_events.clear()
+                self._cancel_disabled_voice_event()
                 self._reload_voice_pack()
                 return self._remember(HostResult(request, 'succeeded', 'voice_batch_disabled',
                     simulated=self.runtime.simulate, completed=True, completion='batch_revoked'))
             elif action == 'voice_batch_event':
                 self.voice_pack.enable_event(value['event'], enabled=value['enabled'])
-                self._local_events.clear()
+                if not value['enabled']:
+                    self._cancel_disabled_voice_event(value['event'])
                 self._reload_voice_pack()
                 return self._remember(HostResult(request, 'succeeded', 'voice_batch_event_updated',
                     simulated=self.runtime.simulate, completed=True, completion='event_policy_updated'))
@@ -1487,6 +1500,7 @@ class FeatureHost(ProductVideoFlow):
                     raise FeatureError('voice_busy')
                 turn = self.session.snapshot()['turn_id']
                 self._turn_generations[turn] = self.modes.generation
+                self._voice_review_request = (request, turn)
                 return self._remember(HostResult(request, 'accepted', 'voice_review_started',
                     simulated=self.runtime.simulate, completed=False))
             elif action == 'voice_event':
@@ -2258,6 +2272,16 @@ class FeatureHost(ProductVideoFlow):
             with self._playback_lock:
                 played = turn in self._voice_started_turns
                 self._voice_started_turns.discard(turn)
+            if self._voice_review_request and self._voice_review_request[1] == turn:
+                request, _ = self._voice_review_request
+                self._voice_review_request = None
+                ok = event.code == 'ok' and played
+                self._remember(HostResult(request,
+                    ('simulated' if self.runtime.simulate else 'succeeded') if ok else
+                    'cancelled' if event.code == 'cancelled' else 'failed',
+                    'voice_review_completed' if ok else 'voice_review_cancelled' if event.code == 'cancelled' else 'voice_review_failed',
+                    simulated=self.runtime.simulate, executed=not self.runtime.simulate and played,
+                    completed=ok, completion='review_playback' if ok else 'partial_playback' if played else 'unknown'))
             if self._voice_control_request is not None:
                 request, self._voice_control_request = self._voice_control_request, None
                 ok = event.code == "ok" or empty_wake

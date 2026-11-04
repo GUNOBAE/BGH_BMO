@@ -704,6 +704,7 @@ class OrganizedVoicePack:
         version = 8
         audit = []
         selection = {}
+        disabled_events = []
         if values:
             with self._root() as root:
                 record = self._index(root)
@@ -711,6 +712,7 @@ class OrganizedVoicePack:
                 version = record['version']
                 audit = record.get('import_audit', [])
                 selection = self._mapping(root, 'selection.json')
+                disabled_events = self._disabled_events(root)
         wake = next((v for v in values if v['clip_id'] == 'wake_ack_01'), None)
         batch = (self.batch_status() if values and version == 10 else
                  dict(ready=False, code='voice_pack_batch_v10_only' if values else 'voice_pack_asset_pending',
@@ -724,6 +726,7 @@ class OrganizedVoicePack:
                     batch=batch, generated=False, automatic_approval=False,
                     live_model_changed=False, wake_ack_registered=wake is not None,
                     wake_ack_available=bool(wake and wake['text'] == "Yeah? What's up?" and wake['source_model'] == 'drama-3'
+                        and 'wake_ack' not in disabled_events
                         and (wake['variants'].get('raw', {}).get('approved') or wake['variants'].get('raw', {}).get('batch_released'))
                         and wake['variants']['raw']['duration_seconds'] <= 3.),
                     startup_override=False, import_audit=audit,

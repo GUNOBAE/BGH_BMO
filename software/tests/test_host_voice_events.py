@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 import zipfile
 
 from bmo_ai import fish_tts
+from bmo_ai.audio import AudioPlaybackError
 from bmo_ai.desktop_app import main, parser, _config
 from bmo_ai.desktop_runtime import DesktopRuntime
 from bmo_ai.features.host import FeatureHost, FeatureSimulatedClient, HostControl
@@ -46,7 +47,9 @@ class HostVoiceEventTests(unittest.TestCase):
         entries = [('G02', 'Ooh, game time!', []), ('G06', 'Oh... game over.', []),
                    ('TRACK_ON', 'I am looking over here.', ['tracking_started']),
                    ('TRACK_OFF', 'Eyes back to home.', ['tracking_stopped']),
-                   ('M10', 'Music is all done.', [])]
+                   ('M10', 'Music is all done.', []),
+                   ('M04', 'Here comes the music.', []),
+                   ('MUSIC_PLAYLIST_FINISHED', 'That was the last song.', [])]
         rows = []
         archive = self.root/'source.zip'
         with zipfile.ZipFile(archive, 'w') as bundle:
@@ -201,6 +204,159 @@ class HostVoiceEventTests(unittest.TestCase):
         self.finish(host, mode='game_menu')
         self.assertEqual(counts['players'], 0)
         self.assertEqual(len(host.client.requests), 0)
+
+    def review(self, host, pack, request):
+        row = next(row for row in pack.inventory() if row['clip_id'] == 'M10')
+        admitted = host.queue_command(request, HostControl('voice_preview', dict(
+            candidate_id=row['id'], sha256=row['variants']['raw']['sha256'])))
+        host.poll()
+        return admitted['request_id']
+
+    def receipt(self, host, request):
+        return next(row for row in host.snapshot()['requests'] if row['request_id'] == request)
+
+    def test_review_receipt_tracks_current_playback_not_historical_played(self):
+        pack = self.pack(approve=())
+        host, counts, _, _ = self.host()
+        request = self.review(host, pack, 'review_ok')
+        self.finish(host)
+        receipt = self.receipt(host, request)
+        self.assertEqual((receipt['code'], receipt['completed'], receipt['completion']),
+                         ('voice_review_completed', True, 'review_playback'))
+        self.assertEqual((pack.snapshot()['played'], pack.snapshot()['approved']), (1, 0))
+        original = host.session.voice._player
+        host.session.voice._player = Mock(side_effect=AudioPlaybackError('Injected failure.'))
+        request = self.review(host, pack, 'review_failed')
+        self.finish(host)
+        failed = self.receipt(host, request)
+        self.assertEqual((failed['code'], failed['completed']), ('voice_review_failed', False))
+        self.assertEqual(pack.snapshot()['played'], 1)
+        self.assertEqual(counts['players'], 1)
+        self.assertIsNone(host.audio.owner)
+        host.session.voice._player = original
+        self.assertTrue(host.start_question('Can we talk after that failed preview?'))
+        self.finish(host)
+        self.assertEqual(len(host.client.requests), 1)
+        self.assertIsNone(host.audio.owner)
+
+    def test_cancelled_review_and_missing_player_start_never_complete(self):
+        pack = self.pack(approve=())
+        host, _, entered, release = self.host()
+        release.clear()
+        request = self.review(host, pack, 'review_cancel')
+        self.assertTrue(entered.wait(1))
+        host.control(HostControl('cancel'), 'cancel_review')
+        self.finish(host)
+        cancelled = self.receipt(host, request)
+        self.assertEqual((cancelled['code'], cancelled['completed']), ('voice_review_cancelled', False))
+        self.assertIsNone(host.audio.owner)
+        # A broken injected player returning without on_start cannot attest to
+        # playback just because the worker returned normally or history exists.
+        host.session.voice._player = lambda *_a, **_kw: None
+        request = self.review(host, pack, 'review_no_start')
+        self.finish(host)
+        no_start = self.receipt(host, request)
+        self.assertEqual((no_start['code'], no_start['completed']), ('voice_review_failed', False))
+        self.assertEqual(pack.snapshot()['approved'], 0)
+
+    def test_music_preparation_manual_and_natural_end_are_ordered_and_once(self):
+        pack = self.pack(approve=('M04', 'M10', 'MUSIC_PLAYLIST_FINISHED'))
+        host, counts, entered, release = self.host()
+        release.clear()
+        host.execute(HostIntent('play_song', 'fixture_song_a'), request_id='music_begin')
+        self.assertTrue(entered.wait(1))
+        self.assertEqual(host.audio.owner, 'music_preparation')
+        self.assertIsNone(host.media.snapshot()['active_id'])
+        release.set();self.finish(host, mode='music')
+        self.assertEqual(counts['players'], 1)
+        self.assertEqual(host.audio.owner, 'music')
+        host.execute(HostIntent('stop_media'), request_id='manual_end')
+        self.finish(host, mode='conversation')
+        self.assertEqual(counts['players'], 2)
+        host.execute(HostIntent('stop_media'), request_id='new_nonce_already_stopped')
+        self.finish(host)
+        self.assertEqual(counts['players'], 2)
+        host.execute(HostIntent('play_song', 'fixture_song_a'), request_id='music_again')
+        self.finish(host, mode='music')
+        self.assertEqual(counts['players'], 3)
+        self.now += 1.;self.finish(host, mode='conversation')
+        self.assertEqual(counts['players'], 4)
+        for _ in range(4):host.poll()
+        host.execute(HostIntent('stop_media'), request_id='stop_after_natural_end')
+        self.finish(host)
+        self.assertEqual(counts['players'], 4)
+        self.assertEqual({r['clip_id'] for r in pack.inventory() if r['played']},
+                         {'M04', 'M10', 'MUSIC_PLAYLIST_FINISHED'})
+        self.assertIsNone(host.audio.owner)
+        self.assertEqual(host.client.requests, [])
+
+    def test_event_off_cancels_only_current_matching_cache_then_on_restores(self):
+        self.pack()
+        host, counts, entered, release = self.host()
+        release.clear()
+        host.control(HostControl('voice_event', 'music_exit'), 'exit_preview')
+        host.poll();self.assertTrue(entered.wait(1))
+        host.control(HostControl('voice_batch_event', dict(event='tracking_started', enabled=False)), 'unrelated_off')
+        host.poll()
+        self.assertTrue(host.session.busy)
+        host.control(HostControl('voice_batch_event', dict(event='music_exit', enabled=False)), 'exit_off')
+        self.finish(host)
+        self.assertEqual(host.session.snapshot()['playback'], 'cancelled')
+        self.assertIsNone(host.audio.owner)
+        self.assertIsNone(host.voice_pack.select_event('music_exit'))
+        host.control(HostControl('voice_event', 'music_exit'), 'disabled_event')
+        self.finish(host)
+        self.assertEqual(counts['players'], 1)
+        host.control(HostControl('voice_batch_event', dict(event='music_exit', enabled=True)), 'exit_on')
+        release.set()
+        host.control(HostControl('voice_event', 'music_exit'), 'restored_event')
+        self.finish(host)
+        self.assertEqual(counts['players'], 2)
+        entered.clear();release.clear()
+        self.assertTrue(host.start_question('One unrelated dialogue turn.'))
+        deadline = time.monotonic()+2
+        while time.monotonic()<deadline and not entered.is_set():
+            host.poll();time.sleep(.002)
+        self.assertTrue(entered.is_set())
+        host.control(HostControl('voice_batch_event', dict(event='music_exit', enabled=False)), 'off_during_dialogue')
+        host.poll();self.assertTrue(host.session.busy)
+        release.set();self.finish(host)
+        self.assertEqual(host.session.snapshot()['playback'], 'ended')
+        self.assertIsNone(host.audio.owner)
+
+    def test_batch_revoke_during_preparation_cancels_song_admission(self):
+        import test_voice_pack_v10 as fixture
+        voices = fixture.VoicePackV10Tests('runTest');voices.setUp()
+        self.addCleanup(voices.doCleanups)
+        voices.imported(fixture.V10_IDS)
+        self.pack_path = voices.pack.directory
+        host, counts, entered, release = self.host()
+        # Actual injected player-start observations satisfy the existing bundle
+        # gate; they are not human listening approvals.
+        from bmo_ai.voice_pack import BATCH_PREVIEW_IDS, BATCH_PREVIEW_MINIMUM
+        rows = {r['id']:r for r in voices.pack.inventory()}
+        for index, clip in enumerate(BATCH_PREVIEW_IDS[:BATCH_PREVIEW_MINIMUM]):
+            host.control(HostControl('voice_preview', dict(candidate_id=clip,
+                sha256=rows[clip]['variants']['raw']['sha256'])), 'sample_'+str(index))
+            self.finish(host)
+        accepted = host.control(HostControl('voice_batch_accept', True), 'accept_bundle')
+        self.assertEqual(accepted.code, 'voice_batch_accepted')
+        entered.clear();release.clear()
+        host.execute(HostIntent('play_song', 'fixture_song_a'), request_id='revoked_song')
+        self.assertTrue(entered.wait(1))
+        self.assertEqual(host.audio.owner, 'music_preparation')
+        host.control(HostControl('voice_batch_disable'), 'revoke_bundle')
+        self.finish(host, mode='conversation')
+        self.assertIsNone(host.media.snapshot()['active_id'])
+        self.assertIsNone(host.audio.owner)
+        self.assertIsNone(host._pending_media_start)
+        self.assertEqual(voices.pack.snapshot()['batch_released'], 0)
+        self.assertEqual(voices.pack.snapshot()['approved'], 0)
+        self.assertEqual(voices.pack.snapshot()['listened'], 0)
+        before = counts['players']
+        release.set()
+        for _ in range(4):host.poll()
+        self.assertEqual(counts['players'], before)
 
 
 class SilentStartTests(unittest.TestCase):
