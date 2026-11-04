@@ -115,6 +115,12 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
             try:
                 page=browser.new_page(viewport={'width':800,'height':480});page.set_default_timeout(12000)
                 errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                transport_actions=[]
+                def observe_transport(request):
+                    if request.method=='POST' and request.url.endswith('/api/control'):
+                        action=request.post_data_json.get('payload',{}).get('action')
+                        if action in ('pause','resume'):transport_actions.append(action)
+                page.on('request',observe_transport)
                 page.route('**/*',lambda route:route.continue_() if route.request.url.startswith(fixture.url) else route.abort())
                 page.add_init_script("""window.__browserAudioCalls=0;window.__musicPlays=0;
                     const nativePlay=HTMLMediaElement.prototype.play;
@@ -123,7 +129,8 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                         if(this.id==='music-video'&&window.__injectLateMusicRejection){
                           window.__injectLateMusicRejection=false;window.__musicLateRejectStarted=true;
                           nativePlay.call(this).catch(()=>{});
-                          return new Promise((resolve,reject)=>setTimeout(()=>reject(Error('Synthetic retired play promise')),600));
+                          return new Promise((resolve,reject)=>{window.__rejectMusicPlay=()=>{
+                            window.__rejectMusicPlay=null;reject(Error('Synthetic retired play promise'));};});
                         }
                         return nativePlay.call(this);}
                       window.__browserAudioCalls++;throw Error('Browser audio forbidden');};""")
@@ -141,6 +148,30 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     panel('music-menu');page.locator('[data-song-id=space_potatoes] [data-media-mode='+mode+']').click()
                     wait(lambda state:state['mode']=='music' and state['media']['variant']==mode)
                     page.wait_for_function('mode=>BMODesktop.features?.mode==="music"&&BMODesktop.features.media.variant===mode',arg=mode)
+                def music_state(expected):
+                    # fixture.features() can see an applied command before the
+                    # product's separate poll renders it. Click the displayed
+                    # Play/Pause action only after that UI and decoder agree.
+                    wait(lambda state:state['mode']=='music' and state['media']['state']==expected)
+                    page.wait_for_function("""expected=>{
+                        const media=BMODesktop.features?.media,button=document.querySelector('#music-toggle');
+                        return BMODesktop.features?.mode==='music'&&media?.state===expected
+                          &&button.textContent===(expected==='playing'?'Pause':'Play')&&!button.disabled
+                          &&(media.variant!=='video'||document.querySelector('#music-video').paused===(expected==='paused'));
+                    }""",arg=expected)
+                def toggle_music(expected):
+                    music_state('paused' if expected=='playing' else 'playing')
+                    before=len(transport_actions)
+                    page.locator('#music-toggle').click()
+                    music_state(expected)
+                    assert transport_actions[before:]==['resume' if expected=='playing' else 'pause'],transport_actions[before:]
+                def reject_retired_play():
+                    before=len(transport_actions)
+                    page.evaluate("""async()=>{
+                        window.__rejectMusicPlay();
+                        await Promise.resolve();await Promise.resolve();
+                    }""")
+                    assert len(transport_actions)==before,transport_actions[before:]
                 def reveal():
                     page.locator('#music-surface').click(position={'x':5,'y':5})
                     page.wait_for_timeout(80)
@@ -239,7 +270,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.keyboard.down('Enter');page.keyboard.down('Enter')
                 assert fixture.features()['media']['state']=='playing', 'GP8 should act on release, not keydown'
                 page.keyboard.up('Enter')
-                wait(lambda state:state['media']['state']=='paused')
+                music_state('paused')
                 page.wait_for_function("()=>document.querySelector('#music-video').paused")
                 page.locator('#music-seek').fill('2');page.locator('#music-seek').dispatch_event('change')
                 wait(lambda state:state['media']['state']=='paused' and abs(state['media']['position']-2)<.01)
@@ -250,25 +281,46 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 wait(lambda state:abs(state['media']['position']-.5)<.01)
                 page.wait_for_function("()=>Math.abs(document.querySelector('#music-video').currentTime-.5)<.4")
                 page.keyboard.down('Enter');page.keyboard.up('Enter')
-                wait(lambda state:state['media']['state']=='paused')
+                music_state('paused')
                 page.wait_for_function("()=>document.querySelector('#music-video').paused")
                 page.evaluate('()=>{window.__injectLateMusicRejection=true;}')
-                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='playing')
+                toggle_music('playing')
                 page.wait_for_function('()=>window.__musicLateRejectStarted===true')
-                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='paused')
-                page.wait_for_timeout(750)
-                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='playing')
+                toggle_music('paused')
+                reject_retired_play()
+                toggle_music('playing')
                 page.wait_for_function("()=>!document.querySelector('#music-video').paused")
-                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='paused')
+                # Deterministically expose the CI boundary: the server is
+                # paused while the browser still renders playing / Pause.
+                held=[]
+                def hold_features(route):held.append(route)
+                page.route('**/api/features',hold_features)
+                action_offset=len(transport_actions)
+                try:
+                    wait(lambda _:bool(held))
+                    page.locator('#music-toggle').click()
+                    wait(lambda state:state['media']['state']=='paused')
+                    stale=page.evaluate("""()=>({state:BMODesktop.features.media.state,
+                        label:document.querySelector('#music-toggle').textContent,
+                        videoPaused:document.querySelector('#music-video').paused})""")
+                    assert stale==dict(state='playing',label='Pause',videoPaused=False),stale
+                    assert transport_actions[action_offset:]==['pause'],transport_actions[action_offset:]
+                finally:
+                    page.unroute('**/api/features',hold_features)
+                    for route in held:route.continue_()
+                music_state('paused')
                 page.evaluate('()=>{window.__injectLateMusicRejection=true;window.__musicLateRejectStarted=false;}')
-                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='playing')
+                toggle_music('playing')
                 page.wait_for_function('()=>window.__musicLateRejectStarted===true')
                 page.keyboard.press('Escape');wait(lambda state:state['mode']=='conversation')
-                page.keyboard.up('Enter');page.wait_for_timeout(750)
+                page.wait_for_function("""()=>BMODesktop.features?.mode==='conversation'
+                    &&document.querySelector('#music-video').paused&&!document.querySelector('#music-video').hasAttribute('src')""")
+                page.keyboard.up('Enter');reject_retired_play()
                 assert page.locator('#notice').is_hidden(), 'A retired decoder play promise changed the new conversation'
                 assert fixture.features()['test_fixture']['mic_sources']==baseline['mic_sources']
                 assert player.evaluate("v=>v.paused&&!v.hasAttribute('src')")
                 checks.append('real GP8 edges pause once; seek/replay follow owner clock; pause retires a pending decoder play attempt and resumes video; Escape detaches decoder, ignores its delayed play rejection, and held key release cannot start PTT')
+                checks.append('delayed feature delivery exposes backend paused / rendered Pause; toggle waits for rendered Play and decoder pause, then sends exactly one resume')
                 (Path(directory)/'media-clock.txt').write_text('0')
                 start('face')
                 assert page.locator('#music-toolbar').is_hidden()
@@ -277,7 +329,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert player.evaluate("v=>!v.hasAttribute('src')")
                 (Path(directory)/'media-clock.txt').write_text('.35')
                 page.wait_for_function("()=>document.querySelector('#face').contentWindow.BMOFace.getState().mouth==='wide'")
-                page.locator('#music-toggle').click();wait(lambda state:state['media']['state']=='paused')
+                toggle_music('paused')
                 page.wait_for_function("()=>document.querySelector('#face').contentWindow.BMOFace.getState().mouth==='closed'")
                 page.locator('#music-back').click();wait(lambda state:state['mode']=='conversation')
                 page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
