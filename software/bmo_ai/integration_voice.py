@@ -21,7 +21,7 @@ from . import audio, fish_tts, local_piper
 from .app import OFFLINE_KOREAN_UNSUPPORTED_EN, OFFLINE_NOTICE_EN
 from .conversation import TurnCancelled
 from .expression_contract import FACE_EMOTIONS
-from .expressive_voice import ExpressivePolicy
+from .expressive_voice import ExpressivePolicy, strip_written_laughter
 from .integration_face import wav_cues
 from .pronunciation import spoken_bmo_name
 from .safe_playback import attenuated_copy, validate_gain
@@ -101,7 +101,7 @@ class IntegrationVoice:
         self._queued_event = None
         self._deferred_preparation = False
 
-    def queue_event(self, event, request_id=None):
+    def queue_event(self, event, request_id=None, *, selection_context=None):
         """Queue one current host event for the next owned utterance only.
 
         The host remains responsible for actual-result admission. Pack absence
@@ -111,8 +111,11 @@ class IntegrationVoice:
         from .voice_pack import EVENT_CANDIDATES
         if event not in EVENT_CANDIDATES or request_id is not None and (type(request_id) is not str or not 0 < len(request_id) <= 128):
             raise audio.AudioValidationError('Choose a supported voice event.', 'voice_pack_event_invalid')
+        selection_context = {} if selection_context is None else dict(selection_context)
+        if set(selection_context) - {'emotion', 'context', 'recent'}:
+            raise audio.AudioValidationError('Choose a supported voice context.', 'voice_pack_event_invalid')
         with self._event_guard:
-            self._queued_event = (event, request_id)
+            self._queued_event = (event, request_id, selection_context)
 
     def discard_queued_event(self):
         with self._event_guard:
@@ -139,7 +142,7 @@ class IntegrationVoice:
         try:
             if queued[0] == 'photo_countdown':
                 return self.event_pack.load_countdown(cancel_check=check)
-            return self.event_pack.load_event(queued[0], cancel_check=check)
+            return self.event_pack.load_event(queued[0], cancel_check=check, **queued[2])
         except VoiceBankError:
             return None
 
@@ -195,6 +198,13 @@ class IntegrationVoice:
         if not notice and type(value) is dict and type(value.get('caption_payload')) is dict:
             from .captions import clean_caption
             result['caption_payload'] = {lang: clean_caption(value['caption_payload'].get(lang)) for lang in ('en', 'ko')}
+            asset = value.get('caption_asset')
+            if type(asset) is dict and set(asset) == {'clip_id', 'candidate_id', 'sha256'}:
+                import re
+                if (all(type(asset.get(key)) is str and re.fullmatch(r'[A-Za-z0-9_-]{1,96}', asset[key])
+                        for key in ('clip_id', 'candidate_id'))
+                        and type(asset.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}', asset['sha256'])):
+                    result['caption_asset'] = dict(asset)
         return result
 
     @property
@@ -294,28 +304,63 @@ class IntegrationVoice:
     def _cached_reaction(self, spoken, metadata, delivery, check):
         """A verified local prefix candidate; selection never generates audio.
 
-        Keep the original live direction when selection/loading is unavailable.
+        An imported pack owns event OFF/revoke decisions. Only an absent pack
+        preserves the pre-existing legacy/live fallback.
         A selected prefix removes its one-shot Fish cue, without a second API
         call. If later PCM composition fails, speech keeps its emotion delivery
         and reports no short reaction rather than claiming an unheard prefix.
         """
-        if (not self.character_life or self.character_bank is None or delivery is None
+        if (not self.character_life or delivery is None
                 or delivery.reaction == "none" or not delivery.mechanism.startswith("fish_character_")):
             return None, None, delivery
         from .character_director import CharacterPlan
         from .voice_bank import VoiceBank, VoiceBankError, catalog
         bank = self.character_bank
-        if (not isinstance(bank, VoiceBank) or any(
-                getattr(bank.config, key, None) != getattr(self.config, key, None)
-                for key in ("fish_voice_id", "fish_name_mode", "fish_gain", "fish_delivery"))):
-            return None, None, delivery
         asset = None
+        plain_delivery = delivery
+        pack_owns_event = self.event_pack is not None
         try:
             plan = CharacterPlan.from_public(metadata.get("character_plan"))
             if (metadata.get("emotion_validation") != "validated" or plan.sensitive_context
                     or plan.source not in ("dialogue", "acting") or plan.reaction_id != delivery.reaction
                     or plan.face_emotion != delivery.emotion
                     or delivery.reaction in ("sob", "playful_puff") and not plan.explicit_acting):
+                return None, None, delivery
+            quiet = dict(metadata, character_plan=replace(plan, reaction_id='none').public())
+            plain = self._expressive_policy.plan(spoken, quiet, model=self.config.fish_model)
+            plain_delivery = replace(delivery, text=plain.text, reaction='none')
+            context = ('acting' if plan.explicit_acting else 'correction' if delivery.reaction == 'oops'
+                else 'idea' if delivery.reaction == 'aha' else 'surprise' if delivery.reaction == 'gasp'
+                else 'curious' if delivery.reaction in ('hmm', 'ooh')
+                else 'celebration' if plan.delivery_id in ('excited', 'proud') else 'playful')
+            event = {'chuckle': 'reaction_chuckle', 'gasp': 'reaction_gasp',
+                'playful_puff': 'reaction_playful_puff', 'sob': 'reaction_sob',
+                'hmm': 'reaction_hmm', 'ooh': 'reaction_interesting',
+                'aha': 'reaction_aha', 'oops': 'reaction_oops'}.get(delivery.reaction)
+            if self.event_pack is not None and event is not None:
+                try:
+                    asset = self.event_pack.load_event(event, emotion=plan.face_emotion,
+                        context=context, cancel_check=check)
+                except VoiceBankError as error:
+                    if error.code != 'voice_pack_asset_pending':
+                        raise
+                    pack_owns_event = False
+                if asset is not None:
+                    check()
+                    if asset.info['duration_seconds'] <= 5.:
+                        return asset, asset.clip_id, replace(delivery, text=plain.text)
+                    asset.close();asset = None
+            # A configured pack owns its event OFF/revoke/missing decisions.
+            # Do not recreate a disabled local laugh with Fish or the old bank.
+            if pack_owns_event:
+                return None, None, plain_delivery
+            # New short expressions are local-cache-only, never a hidden new
+            # Fish request or an unheard reaction charged against the budget.
+            if delivery.reaction in ('hmm', 'ooh', 'aha', 'tada', 'oops'):
+                return None, None, plain_delivery
+            if (not isinstance(bank, VoiceBank) or any(
+                    getattr(bank.config, key, None) != getattr(self.config, key, None)
+                    for key in ('fish_voice_id', 'fish_name_mode', 'fish_gain', 'fish_delivery'))):
                 return None, None, delivery
             clip = {"chuckle": "reaction_03", "gasp": "reaction_05",
                     "playful_puff": "reaction_07", "sob": "reaction_11"}.get(delivery.reaction)
@@ -337,28 +382,61 @@ class IntegrationVoice:
                 asset.close()
                 return None, None, delivery
             return asset, clip, replace(delivery, text=plain.text)
+        except (TurnCancelled, KeyboardInterrupt):
+            if asset is not None:
+                asset.close()
+            raise
         except (VoiceBankError, audio.AudioError, ValueError, TypeError, OSError):
             if asset is not None:
                 asset.close()
-            return None, None, delivery
+            return None, None, (plain_delivery if pack_owns_event
+                or delivery.reaction in ('hmm', 'ooh', 'aha', 'tada', 'oops') else delivery)
 
     def _compose_reaction(self, asset, speech, check):
-        """Join already gained PCM snapshots, with no resampling or extra gain."""
+        """One owned WAV; normalize a short v10 RAW prefix, never its source.
+
+        v10 PCM is 44.1k mono whereas the live reply may use another rate. A
+        bounded PCM16 conversion avoids a second output owner. The final WAV
+        shares the reply's baked gain and MasterVolume applies exactly once.
+        Legacy bank composition retains its existing exact-format requirement.
+        """
         output = None
         try:
             check()
             with wave.open(str(asset.path), "rb") as prefix, wave.open(str(speech), "rb") as answer:
                 formats = lambda value: (value.getnchannels(), value.getsampwidth(),
                                           value.getframerate(), value.getcomptype())
-                if (formats(prefix) != formats(answer) or prefix.getcomptype() != "NONE"
-                        or prefix.getnframes()/prefix.getframerate() > 3.
-                        or (prefix.getnframes()+answer.getnframes())/answer.getframerate() > 300.):
+                packed = hasattr(asset, 'baked_gain')
+                seconds = prefix.getnframes()/prefix.getframerate()
+                if ((not packed and formats(prefix) != formats(answer)) or prefix.getcomptype() != "NONE"
+                        or seconds > (5. if packed else 3.)
+                        or seconds+answer.getnframes()/answer.getframerate() > 300.):
                     return None
+                converted = None
+                if packed:
+                    if (prefix.getsampwidth() != 2 or answer.getsampwidth() != 2
+                            or prefix.getnchannels() not in (1, 2) or answer.getnchannels() not in (1, 2)
+                            or not 8000 <= answer.getframerate() <= 96000):
+                        return None
+                    frames = prefix.getnframes();channels = prefix.getnchannels()
+                    raw = prefix.readframes(frames)
+                    samples = struct.unpack('<'+'h'*(frames*channels), raw)
+                    mono = samples if channels == 1 else tuple((samples[i]+samples[i+1])/2 for i in range(0,len(samples),2))
+                    converted = bytearray()
+                    gain = self.config.fish_gain / asset.baked_gain
+                    for frame in range(round(seconds*answer.getframerate())):
+                        if frame % 4096 == 0:check()
+                        position = frame*prefix.getframerate()/answer.getframerate()
+                        index = min(frames-1,int(position));fraction = position-int(position)
+                        sample = mono[index]*(1-fraction)+mono[min(frames-1,index+1)]*fraction
+                        value = max(-32768,min(32767,round(sample*gain)))
+                        converted.extend(struct.pack('<h',value)*answer.getnchannels())
                 output = audio._new_wav(audio.AudioPlaybackError)
                 with wave.open(str(output), "wb") as joined:
                     joined.setnchannels(answer.getnchannels());joined.setsampwidth(answer.getsampwidth())
                     joined.setframerate(answer.getframerate())
-                    for source in (prefix, answer):
+                    if converted is not None:joined.writeframesraw(converted)
+                    for source in ((answer,) if converted is not None else (prefix, answer)):
                         while True:
                             check()
                             block = source.readframes(4096)
@@ -368,13 +446,13 @@ class IntegrationVoice:
             audio._wav_info(output)
             result, output = output, None
             return result
-        except (audio.AudioError, OSError, EOFError, wave.Error, ValueError, ZeroDivisionError):
+        except (audio.AudioError, OSError, EOFError, wave.Error, ValueError, ZeroDivisionError, struct.error):
             return None
         finally:
             if output is not None:
                 audio._discard(output, suppress=True)
 
-    def play_event(self, event, *, emit=None, cancel_check=None, on_playback_start=None):
+    def play_event(self, event, *, emit=None, cancel_check=None, on_playback_start=None, selection_context=None):
         """Approved-cache-only entry for idle/utility; never falls back to TTS."""
         previous_emit, previous_check = self.emit, self.cancel_check
         try:
@@ -382,7 +460,7 @@ class IntegrationVoice:
                 self.emit = emit
             if cancel_check is not None:
                 self.cancel_check = cancel_check
-            self.queue_event(event)
+            self.queue_event(event, selection_context=selection_context)
             return self.speak('Local voice event.', on_playback_start=on_playback_start, _event_only=True) is True
         finally:
             self.emit, self.cancel_check = previous_emit, previous_check
@@ -405,6 +483,7 @@ class IntegrationVoice:
               _candidate=None):
         if not isinstance(text, str):
             raise audio.AudioValidationError("Speech input must be text.", "invalid_speech_text")
+        text = strip_written_laughter(text)
         if not text.strip():
             return
         if not self._speaking.acquire(blocking=False):
@@ -444,7 +523,8 @@ class IntegrationVoice:
                 shutil.copyfile(event_asset.path, output)
                 source, notice = 'voice_pack', False
                 playback_baked_gain = event_asset.baked_gain
-                metadata = dict(metadata, caption_payload={'en': event_asset.text, 'ko': ''})
+                metadata = dict(metadata, caption_payload=dict(getattr(event_asset, 'captions', {'en':event_asset.text,'ko':''})),
+                    caption_asset=dict(clip_id=event_asset.clip_id,candidate_id=event_asset.candidate_id,sha256=event_asset.sha256))
                 metadata.pop('character_plan', None)
             if event_asset is None and self.expressive and not _force_piper and not _notice:
                 delivery = self._expressive_policy.plan(
@@ -466,6 +546,13 @@ class IntegrationVoice:
                 if joined is not None:
                     audio._discard(output, suppress=True)
                     output, cached_reaction = joined, True
+                    if hasattr(reaction_asset, 'captions'):
+                        from .captions import caption_pair, clean_caption
+                        answer_captions = caption_pair(text, metadata.get('caption_payload'))
+                        metadata['caption_payload'] = {lang:clean_caption(' '.join(filter(None,
+                            (reaction_asset.captions.get(lang,''),answer_captions.get(lang,''))))) for lang in ('en','ko')}
+                        metadata['caption_asset'] = dict(clip_id=reaction_asset.clip_id,
+                            candidate_id=reaction_asset.candidate_id,sha256=reaction_asset.sha256)
                 else:
                     delivery = replace(delivery, reaction="none")
             expression = self._expression(notice=notice, metadata=metadata)
@@ -476,7 +563,7 @@ class IntegrationVoice:
                     voice_style=delivery.mechanism if source == "fish" else source,
                     tts_mechanism=delivery.mechanism, tts_override_soft=delivery.override_soft,
                     tts_backend=source, tts_requested_emotion=delivery.emotion)
-            if self.character_life and self.character_bank is not None:
+            if self.character_life:
                 expression.update(cached_reaction=cached_reaction,
                                   cached_reaction_id=reaction_clip if cached_reaction else None)
             info = audio._wav_info(output)
@@ -500,12 +587,16 @@ class IntegrationVoice:
                                                     review_requested=_candidate is not None)
                     except (VoiceBankError, OSError):
                         pass
+                if cached_reaction and hasattr(reaction_asset, 'candidate_id'):
+                    from .voice_bank import VoiceBankError
+                    try:self.event_pack.mark_played(reaction_asset.candidate_id, reaction_asset.sha256)
+                    except (VoiceBankError, OSError):pass
             self._play(output, source, info, cues, check, emit, owned_started, expression,
                        baked_gain=playback_baked_gain)
             check()
             if delivery is not None and source == "fish":
                 self._expressive_policy.completed(delivery)
-            if cached_reaction:
+            if cached_reaction and not hasattr(reaction_asset, 'candidate_id'):
                 try:
                     self.character_bank.completed(reaction_clip)
                 except Exception:

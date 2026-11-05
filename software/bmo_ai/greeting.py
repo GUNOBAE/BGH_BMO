@@ -11,6 +11,27 @@ from .greeting_cache import GreetingCache, GreetingError
 from .integration_voice import IntegrationVoice
 
 
+# Captions only: the existing approved startup recordings and their selection
+# remain unchanged. A transcript change cannot inherit an unrelated Korean line.
+_BOOT_CAPTIONS = {
+    'cached_greeting': ("Hey! You're back! BMO missed you!", '안녕! 돌아왔구나! 비모가 보고 싶었어!'),
+    'boot_01': ("Hey, you're back! How have you been?", '안녕, 돌아왔구나! 잘 지냈어?'),
+    'boot_02': ("Oh! Hello, friend. What's our adventure today?", '오! 안녕, 친구. 오늘은 어떤 모험을 할까?'),
+    'boot_03': ('There you are. Ready for a little adventure?', '여기 있었구나. 작은 모험을 떠날 준비 됐어?'),
+    'boot_04': ('Hello again! What shall we do first?', '또 만나서 반가워! 뭐부터 할까?'),
+    'boot_05': ('BMO is ready. How are you doing?', '비모는 준비됐어. 넌 어때?'),
+    'boot_06': ('Well, hello! Got any good ideas today?', '안녕! 오늘 좋은 생각 있어?'),
+    'boot_07': ("Welcome back. Let's make something nice.", '어서 와. 멋진 걸 만들어 보자.'),
+    'boot_08': ('Hi, friend. We can take it easy today.', '안녕, 친구. 오늘은 느긋하게 보내도 돼.'),
+}
+
+
+def boot_captions(clip_id, text):
+    from .captions import clean_caption
+    row = _BOOT_CAPTIONS.get(clip_id)
+    return dict(en=clean_caption(text), ko=row[1] if row is not None and text == row[0] else '')
+
+
 class GreetingPlayer:
     def __init__(self, config, cache, *, simulate=False, player=None, startup_chime=False,
                  chime_home=None, allow_synthesized_chime=True):
@@ -90,6 +111,9 @@ class GreetingPlayer:
             with self.cache.load(simulate=self.simulate, require_approved=not allow_unapproved,
                                  cancel_check=check) as asset:
                 expression = dict(emotion='happy', emotion_validation='validated', notice=False)
+                if asset.fingerprint == self.cache.spec.fingerprint:
+                    expression.update(caption_payload=boot_captions('cached_greeting', self.cache.spec.public()['text']),
+                        caption_asset=dict(clip_id='cached_greeting',candidate_id='cached_greeting',sha256=asset.sha256))
                 self.voice._play(asset.path, source, asset.info, asset.cues, check, emit,
                                  on_playback_start, expression)
                 check()

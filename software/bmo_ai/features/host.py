@@ -85,7 +85,7 @@ class HostControl:
                 and (self.value.get('event') in EVENT_CANDIDATES if self.action == 'voice_select' else
                     type(self.value.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}', self.value['sha256']) is not None
                     and (self.action == 'voice_preview' or self.value.get('listening_approved') is True)))
-        elif self.action == 'voice_batch_accept':
+        elif self.action in ('voice_batch_accept', 'voice_full_accept'):
             valid = self.value is True
         elif self.action == 'voice_batch_disable':
             valid = self.value is None
@@ -327,6 +327,8 @@ class FeatureHost(ProductVideoFlow):
         self._playback_lock, self._voice_started_turns = Lock(), set()
         self._active_game_request = self._active_media_request = None
         self._pending_media_start = None
+        self._presence_request = None
+        self._ui_menu = dict(sequence=0, open=False)
         self._pending_photo = self._photo_result = self._photo_restore = None
         self._photo_phase = 'idle'
         self._photo_job = None
@@ -575,7 +577,7 @@ class FeatureHost(ProductVideoFlow):
             event = {'take_photo': 'photo_ready', 'start_video': 'video_ready',
                 'start_face_tracking': 'tracking_started', 'stop_face_tracking': 'tracking_stopped',
                 'volume_up': 'volume_up', 'volume_down': 'volume_down', 'open_game_menu': 'game_menu',
-                'play_song': 'music_selected'}.get(name)
+                'play_song': 'music_selected', 'play_random': 'music_random'}.get(name)
         deferred = bool(self.character_life and event
             and (getattr(reply, 'human_photo_request', False) or getattr(reply, 'human_device_request', False))
             and callable(getattr(self.session.voice, 'defer_feature_preparation', None))
@@ -1212,11 +1214,12 @@ class FeatureHost(ProductVideoFlow):
             name = intent.name
             if (request.startswith('model_') and name in ('start_video', 'stop_video',
                     'start_face_tracking', 'stop_face_tracking', 'stop_arms', 'set_volume',
-                    'mute_audio', 'unmute_audio', 'volume_up', 'volume_down')):
+                    'mute_audio', 'unmute_audio', 'volume_up', 'volume_down',
+                    'open_menu', 'close_menu', 'set_presence', 'play_random')):
                 raise FeatureError('camera_human_action_required' if name in ('start_face_tracking', 'start_video')
                                    else 'current_user_action_required')
             media_was_active = self.media.snapshot()["active_id"] is not None
-            capability = {"launch_game": "external_games", "play_song": "music",
+            capability = {"launch_game": "external_games", "play_song": "music", "play_random": "music",
                 "take_photo": "camera", "start_video": "camera_video",
                 "start_face_tracking": "camera", "arm_gesture": "arms"}.get(name)
             packaged = name == 'launch_game' and self._packaged_games is not None and self._packaged_games.is_packaged(intent.target)
@@ -1224,15 +1227,30 @@ class FeatureHost(ProductVideoFlow):
                 self.runtime.require(capability)
                 if capability in ('camera', 'camera_video', 'arms') and not self.runtime.simulate and request.startswith("model_"):
                     raise FeatureError("camera_human_action_required")
-            if name in ("launch_game", "play_song"):
+            target = intent.target
+            if name == 'play_random':
+                import secrets
+                songs = [item for item in self.media.catalog() if item.readiness == 'READY']
+                if not songs:
+                    raise FeatureError('media_library_empty')
+                target = secrets.choice(songs).id
+            if name in ("launch_game", "play_song", "play_random"):
                 items = self.games.catalog() if name == "launch_game" else self.media.catalog()
-                item = next((item for item in items if item.id == intent.target), None)
+                item = next((item for item in items if item.id == target), None)
                 if item is None or item.readiness != "READY":
                     raise FeatureError("unknown_game" if item is None and name == "launch_game" else
                                        "unknown_media" if item is None else item.reason_code)
-                if item.simulated is not True and not packaged and not (name == "play_song" and self.runtime.music_supervised):
+                if item.simulated is not True and not packaged and not (name in ("play_song", "play_random") and self.runtime.music_supervised):
                     raise FeatureError("real_disabled")
-            if name == "open_game_menu":
+            if name in ('open_menu', 'close_menu'):
+                self._ui_menu = dict(sequence=self._ui_menu['sequence']+1, open=name == 'open_menu')
+                return self._finish_result(HostResult(request, 'simulated' if self.runtime.simulate else 'succeeded',
+                    'menu_requested', simulated=self.runtime.simulate, completed=True, completion='ui_request'))
+            elif name == 'set_presence':
+                self._presence_request = intent.target
+                return self._finish_result(HostResult(request, 'simulated' if self.runtime.simulate else 'succeeded',
+                    'presence_requested', simulated=self.runtime.simulate, completed=True, completion='setting_requested'))
+            elif name == "open_game_menu":
                 self._transition("game_menu")
                 self._queue_local_event("game_menu")
             elif name == "launch_game":
@@ -1278,18 +1296,19 @@ class FeatureHost(ProductVideoFlow):
                 return self._finish_result(HostResult(request, 'simulated' if self.runtime.simulate else 'succeeded',
                     'volume_applied', simulated=self.runtime.simulate, executed=not self.runtime.simulate,
                     completed=True, completion='output_setting_applied'))
-            elif name == "play_song":
-                if self._cached_event_available('music_selected'):
+            elif name in ("play_song", "play_random"):
+                event = 'music_random' if name == 'play_random' else 'music_selected'
+                if self._cached_event_available(event):
                     if self.modes.mode == 'music':
                         self._transition('conversation')
-                    if self._start_owned_notice('music_selected', '', owner='music_preparation', cache_only=True):
-                        self._pending_media_start = dict(target=intent.target, request_id=request,
+                    if self._start_owned_notice(event, '', owner='music_preparation', cache_only=True):
+                        self._pending_media_start = dict(target=target, request_id=request,
                             media_mode=getattr(intent, 'media_mode', None), generation=self.modes.generation,
                             epoch=self._command_epoch, deadline=self.clock()+30.,
                             turn_id=self.session.snapshot()['turn_id'], ready=False)
                         return self._finish_result(HostResult(request, 'running', 'music_preparing',
                             simulated=self.runtime.simulate, completed=False))
-                self._transition("music", {"target": intent.target, "request_id": request,
+                self._transition("music", {"target": target, "request_id": request,
                     "media_mode": getattr(intent, "media_mode", None)}, force=True)
             elif name == "stop_media":
                 if self.modes.mode == "music":
@@ -1332,7 +1351,7 @@ class FeatureHost(ProductVideoFlow):
             if name in ("start_face_tracking", "stop_face_tracking") and not self.runtime.simulate:
                 result = HostResult(request, "succeeded", "ok", simulated=False,
                                     executed=True, completed=True, completion="camera_request_applied")
-            elif name == "play_song" and self.runtime.music_supervised:
+            elif name in ("play_song", "play_random") and self.runtime.music_supervised:
                 result = HostResult(request, "running", "playback_started", simulated=False,
                                     executed=True, completed=False, completion="running")
             elif name == "stop_media" and self.runtime.music_supervised:
@@ -1468,13 +1487,16 @@ class FeatureHost(ProductVideoFlow):
                 self.voice_pack.approve(value['candidate_id'], value['sha256'],
                     listening_approved=value['listening_approved'])
                 self._reload_voice_pack()
-            elif action == 'voice_batch_accept':
+            elif action in ('voice_batch_accept', 'voice_full_accept'):
                 if self.modes.mode != 'conversation' or self.session.busy or self.audio.owner is not None:
                     raise FeatureError('voice_busy')
-                self.voice_pack.accept_batch(user_accepted=True)
+                if action == 'voice_full_accept':
+                    self.voice_pack.accept_full_use(user_accepted=True)
+                else:
+                    self.voice_pack.accept_batch(user_accepted=True)
                 self._reload_voice_pack()
                 return self._remember(HostResult(request, 'succeeded', 'voice_batch_accepted',
-                    simulated=self.runtime.simulate, completed=True, completion='batch_authorized'))
+                    simulated=self.runtime.simulate, completed=True, completion='full_authorized' if action == 'voice_full_accept' else 'batch_authorized'))
             elif action == 'voice_batch_disable':
                 self.voice_pack.disable_batch()
                 self._cancel_disabled_voice_event()
@@ -1739,6 +1761,10 @@ class FeatureHost(ProductVideoFlow):
 
     def start_question(self, message="Synthetic feature question."):
         return self._begin_conversation(message=message)
+
+    def consume_presence_request(self):
+        requested, self._presence_request = self._presence_request, None
+        return requested
 
     def _confirmation_context(self):
         pending = self._pending_confirmation
@@ -2465,6 +2491,7 @@ class FeatureHost(ProductVideoFlow):
             "capabilities": self.runtime.public(), "real_features_enabled": self.runtime.public()["real_features_enabled"],
             "mode": self.modes.mode, "mode_generation": self.modes.generation,
             "mode_error": self.modes.last_error, "audio_owner": self.audio.owner,
+            "ui_menu": dict(self._ui_menu),
             "conversation_busy": self.session.busy, "emotion": face["emotion"],
             "phase": face["phase"], "gaze": self.gaze.resolve(phase=face["phase"], generation=self.modes.generation),
             "games": {"catalog": [item.public() for item in self.games.catalog()], **self.games.snapshot()},

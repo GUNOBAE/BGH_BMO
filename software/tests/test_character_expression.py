@@ -82,7 +82,7 @@ class CharacterExpressionTests(unittest.TestCase):
             ("What shall we make?", payload(delivery="curious", gaze="curious"), "neutral", "curious", "none"),
             ("Good morning.", payload(emotion="happy", delivery="warm", gesture="wave"), "happy", "warm", "none"),
             ("Explain that calmly.", payload(emotion="neutral", reaction="sob"), "neutral", "calm", "none"),
-            ("A small smile is enough.", payload(emotion="happy", delivery="warm", reaction="chuckle", intensity="low"), "happy", "warm", "none"),
+            ("A small smile is enough.", payload(emotion="happy", delivery="warm", reaction="chuckle", intensity="low"), "happy", "warm", "chuckle"),
             ("Please act crying, my father died.", payload(emotion="crying", delivery="theatrical_crying", reaction="sob", source="acting"), "sad", "empathetic", "none"),
         ]
         self.assertEqual(len(cases), 24)

@@ -15,7 +15,8 @@ DELIVERIES = ("calm", "warm", "excited", "curious", "proud", "playfully_annoyed"
 INTENSITIES = ("low", "medium", "high")
 GAZES = ("none", "attentive", "curious", "soft_down", "celebratory")
 SOURCES = ("dialogue", "acting", "boot", "idle")
-REACTION_IDS = ("none", "chuckle", "gasp", "playful_puff", "sob")
+REACTION_IDS = ("none", "chuckle", "gasp", "playful_puff", "sob",
+                "hmm", "ooh", "aha", "tada", "oops")
 GESTURE_IDS = ("none", "wave", "celebrate", "shrug")
 _CONGRUENT = {
     "calm": ("neutral",), "warm": ("happy",), "excited": ("happy",),
@@ -145,11 +146,15 @@ class CharacterDirector:
         if delivery not in DELIVERIES or emotion not in _CONGRUENT[delivery]:
             delivery = _DEFAULT[emotion]
         congruent_reaction = {"chuckle": ("happy",), "gasp": ("surprised",),
-                              "playful_puff": ("happy", "angry"), "sob": ("crying",)}
+                              "playful_puff": ("happy", "angry"), "sob": ("crying",),
+                              "hmm": ("neutral", "surprised"), "ooh": ("neutral", "surprised", "happy"),
+                              "aha": ("neutral", "happy"), "tada": ("happy",), "oops": ("neutral", "sad",)}
         if (reaction != "none" and emotion not in congruent_reaction[reaction]
                 or reaction == "sob" and acting != "crying"
                 or reaction == "playful_puff" and acting != "angry"
-                or intensity == "low" and not acting):
+                # The local Ta-da asset claims an action succeeded. Only the
+                # Host's actual-success event may play it, never model metadata.
+                or reaction == "tada"):
             reaction = "none"
         if emotion in ("sad", "crying", "angry") or has_intent:
             gesture = "none"

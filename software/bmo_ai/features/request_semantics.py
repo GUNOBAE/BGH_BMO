@@ -7,7 +7,7 @@ reject clear non-requests; they are not a sentence allowlist or a classifier.
 import re
 
 
-KINDS = ("none", "photo", "acting", "subtitles", "video", "tracking", "arm", "volume", "media", "game", "compound")
+KINDS = ("none", "photo", "acting", "subtitles", "video", "tracking", "arm", "volume", "media", "game", "menu", "presence", "compound")
 DISPOSITIONS = ("none", "execute", "clarify")
 ACTING_EMOTIONS = ("none", "happy", "sad", "angry", "crying")
 SUBTITLE_MODES = ("unchanged", "off", "on", "en", "ko")
@@ -24,6 +24,8 @@ _DEVICE_TOPICS = {
     "media": re.compile(r"\b(?:song|music|sing|singing|play|potatoes|media|pause|resume)\b|노래|음악|불러|재생|감자", re.I),
     "game": re.compile(r"\b(?:game|games|play|launch)\b|게임|놀자", re.I),
     "volume": re.compile(r"\b(?:volume|sound|louder|loud|quieter|quiet|mute|unmute|audio)\b|볼륨|소리|음량|음소거|조용", re.I),
+    "menu": re.compile(r"\b(?:menu|settings|dialog)\b|메뉴|설정창", re.I),
+    "presence": re.compile(r"\b(?:idle|quiet|chatter|occasionally|sometimes|yourself|self.talk)\b|혼잣말|조용|가끔|혼자", re.I),
 }
 _QUOTES = re.compile(r'`[^`]*`|"[^"\n]*"|“[^”\n]*”|(?<!\w)\'[^\'\n]*\'(?!\w)')
 
@@ -69,6 +71,14 @@ def valid_interpretation(value):
     return value["subtitle_mode"] == "unchanged"
 
 
+def _informational_text(text, unquoted, kind):
+    # A request for occasional speech can begin with "Please/BMO, say ...".
+    # Quoted speech stays a meta request; this exception grants no action.
+    if kind == 'presence' and not _QUOTES.search(text):
+        return re.sub(r"^(\s*(?:(?:please|bmo|beemo)[,:]?\s+)*)say\s+", r"\1", unquoted, flags=re.I)
+    return unquoted
+
+
 def _single_request_denial(message, kind, *, subtitle_mode="unchanged", action_name=None):
     """Reject obvious negation/reporting, without granting from a phrase match."""
     if type(message) is not str or not message.strip() or len(message) > 8000:
@@ -77,8 +87,11 @@ def _single_request_denial(message, kind, *, subtitle_mode="unchanged", action_n
     unquoted = _QUOTES.sub(" ", text)
     if not unquoted.strip(" \t\n.,:;!?()") or re.match(r"\s*>", text):
         return "quoted_request"
+    # "Say something occasionally" can be a self-talk setting. Quoted
+    # speech remains a meta request; the model interpretation is still required.
+    meta_text = _informational_text(text, unquoted, kind)
     # Translation/reporting/capability questions are conversation, not actions.
-    if re.search(r"^\s*(?:(?:please|bmo|beemo)[,:]?\s+)*(?:translate|say|repeat|explain|what does|what is|what's|how (?:do|does|can)|tell me about)\b|(?:무슨\s*뜻|번역(?:해|하)|라고\s*(?:말했|했)|따라\s*말)", unquoted, re.I):
+    if re.search(r"^\s*(?:(?:please|bmo|beemo)[,:]?\s+)*(?:translate|say|repeat|explain|what does|what is|what's|how (?:do|does|can)|tell me about)\b|(?:무슨\s*뜻|번역(?:해|하)|라고\s*(?:말했|했)|따라\s*말)", meta_text, re.I):
         return "informational_request"
     if re.search(r"\b(?:yesterday|previously|last (?:time|week)|i (?:said|asked)|you (?:said|took))\b|(?:어제|지난번|전에\s*말|찍었|촬영했)", unquoted, re.I):
         return "past_request"
@@ -101,12 +114,20 @@ def _single_request_denial(message, kind, *, subtitle_mode="unchanged", action_n
         # Negative stop/mute is not the same action as a stop/mute request.
         # These checks only deny clear conflicts; the current model meaning is
         # still required and grants no runtime device permission.
-        if action_name in ("stop_face_tracking", "stop_video", "stop_arms"):
+        if action_name in ("stop_face_tracking", "stop_video", "stop_arms", "close_menu", "presence_off", "presence_quiet"):
             negative = r"\b(?:don't|do not|never)\s+(?:stop|cancel|end)\b|(?:멈추지|중지하지|끄지)\s*(?:마|말)"
+            if action_name == 'close_menu':
+                negative += r"|\b(?:don't|do not|never)\s+(?:close|hide)\b|닫지\s*(?:마|말)"
+            elif action_name.startswith('presence_'):
+                negative += r"|\b(?:don't|do not|never)\s+(?:(?:be|get|stay)\s+quiet|disable|silence)\b|\b(?:don't|do not|never)\b[^.!?;\n]{0,45}\b(?:turn|switch)\b[^.!?;\n]{0,45}\boff\b|조용히\s*하지\s*마"
+        elif action_name == 'presence_normal':
+            negative = r"\b(?:don't|do not|never|cancel)\b|(?:켜지|켜두지|말하지|말걸지)\s*(?:마|말)"
         elif action_name == "mute_audio":
             negative = r"\b(?:don't|do not|never)\s+mute\b|음소거(?:하지|하진)\s*마"
         elif action_name == "unmute_audio":
             negative = r"\b(?:don't|do not|never)\s+unmute\b|음소거[^.!?;\n]{0,15}풀지\s*마"
+        elif action_name == 'open_menu':
+            negative = r"\b(?:don't|do not|never|cancel)\b|(?:열지|보여주지)\s*(?:마|말)"
         else:
             negative = r"\b(?:don't|do not|never|cancel)\b[^.!?;\n]{0,60}|(?:하지\s*(?:마|말)|하지마|찍지\s*(?:마|말)|따라오지\s*(?:마|말)|올리지\s*(?:마|말)|내리지\s*(?:마|말)|바꾸지\s*(?:마|말))"
     else:
@@ -123,8 +144,8 @@ _CLAUSE_SPLIT = re.compile(
 _TOPIC_BY_KIND = {"photo": _PHOTO_TOPIC, "acting": _ACTING_TOPIC,
                   "subtitles": _SUBTITLE_TOPIC, **_DEVICE_TOPICS}
 _STOP_WORDS = re.compile(r"\b(?:stop|end|cancel|quit|disable)\b|멈|중지|그만|끄|꺼|따라오지\s*마", re.I)
-_STOP_ACTIONS = frozenset({"stop_face_tracking", "stop_video", "stop_arms", "stop_media", "exit_game"})
-_START_ACTIONS = frozenset({"start_face_tracking", "start_video", "arm_gesture", "play_song", "launch_game"})
+_STOP_ACTIONS = frozenset({"stop_face_tracking", "stop_video", "stop_arms", "stop_media", "exit_game", "close_menu", "presence_off", "presence_quiet"})
+_START_ACTIONS = frozenset({"start_face_tracking", "start_video", "arm_gesture", "play_song", "play_random", "launch_game", "open_menu", "presence_normal"})
 _SCOPE_PREFIX = re.compile(
     r"^\s*(?:(?:please|bmo|beemo|maybe)[,:]?\s+)*(?:"
     r"yesterday\b|previously\b|last (?:time|week)\b|i (?:said|asked)\b|you (?:said|took)\b"
@@ -173,8 +194,9 @@ def request_denial(message, kind, *, subtitle_mode="unchanged", action_name=None
     unquoted = _QUOTES.sub(" ", text)
     if re.fullmatch(r"\s*(?:cancel|never\s*mind|forget\s+it|stop|wait|취소|그만|잠깐)(?:\s+please)?\s*[.!?]*", unquoted, re.I):
         return "negated_request"
+    meta_text = _informational_text(text, unquoted, kind)
     # A top-level request to translate/explain/repeat applies to all its clauses.
-    if re.search(r"^\s*(?:(?:please|bmo|beemo)[,:]?\s+)*(?:translate|say|repeat|explain|what does|what is|what's|how (?:do|does|can)|tell me about)\b|^\s*(?:번역|따라\s*말)", unquoted, re.I):
+    if re.search(r"^\s*(?:(?:please|bmo|beemo)[,:]?\s+)*(?:translate|say|repeat|explain|what does|what is|what's|how (?:do|does|can)|tell me about)\b|^\s*(?:번역|따라\s*말)", meta_text, re.I):
         return "informational_request"
     if re.match(r"\s*>", text):
         return "quoted_request"

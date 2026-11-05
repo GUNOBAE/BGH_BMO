@@ -10,6 +10,7 @@ import ipaddress
 import json
 import math
 from pathlib import Path
+import re
 import struct
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -192,6 +193,13 @@ def _public_snapshot(value):
         visible = out['playback'] == 'started' and out['phase'] == 'speaking' and mode != 'off'
         out['caption'] = dict(mode=mode, language=mode if mode != 'off' else '',
             text=clean_caption(caption.get('text')) if visible else '')
+        asset = value.get('caption_asset')
+        if (visible and out['caption']['text'] and type(asset) is dict
+                and set(asset) == {'clip_id','candidate_id','sha256'}
+                and all(type(asset.get(key)) is str and re.fullmatch(r'[A-Za-z0-9_-]{1,96}',asset[key])
+                        for key in ('clip_id','candidate_id'))
+                and type(asset.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}',asset['sha256'])):
+            out['caption_asset'] = dict(asset)
     return out
 
 

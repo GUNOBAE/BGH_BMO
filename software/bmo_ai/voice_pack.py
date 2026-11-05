@@ -15,8 +15,10 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import random
 import secrets
 import stat
+from threading import Lock
 import wave
 import zipfile
 
@@ -93,6 +95,8 @@ EVENT_CANDIDATES = {
     'focus_retry': ('PHOTO_REFOCUS_ONCE',), 'camera_off': ('SYSTEM_CAMERA_OFF',),
     'wake_ack': ('wake_ack_01',),
 }
+from .voice_pack_context import event_groups
+EVENT_CANDIDATES.update(event_groups())
 _KNOWN_EVENT_IDS = frozenset(clip for values in EVENT_CANDIDATES.values() for clip in values)
 
 
@@ -158,6 +162,7 @@ class PackAsset:
     info: dict
     cues: tuple
     provenance: dict = field(default_factory=dict)
+    captions: dict = field(default_factory=dict)
 
     def close(self):
         audio._discard(self.path, suppress=True)
@@ -174,7 +179,10 @@ class OrganizedVoicePack:
         self.directory = Path(directory)
         if not self.directory.is_absolute() or '..' in self.directory.parts or '\0' in str(self.directory):
             raise VoiceBankError('voice_pack_storage_unsafe')
-        self.chooser = chooser or (lambda values: values[0])
+        self.chooser = chooser
+        self._shuffle = random.SystemRandom().shuffle
+        self._selection_lock = Lock()
+        self._bags, self._last_selected = {}, {}
 
     @contextmanager
     def _root(self, *, create=False, lock=False):
@@ -543,12 +551,56 @@ class OrganizedVoicePack:
         return dict(ids=sorted(BATCH_RELEASE_IDS), events=events,
                     samples=[name for name in BATCH_PREVIEW_IDS if name in rows])
 
+    def _full_plan(self, record):
+        from .voice_pack_context import context_catalog
+        if record['version'] != 10:
+            raise VoiceBankError('voice_pack_batch_v10_only')
+        expected = set(context_catalog())
+        rows = {row['clip_id']: row for row in record['candidates']}
+        if len(expected) != 142 or set(rows) != expected:
+            raise VoiceBankError('voice_pack_batch_incomplete')
+        events = {event: next(clip for clip in preferred if clip in rows)
+                  for event, preferred in EVENT_CANDIDATES.items() if any(clip in rows for clip in preferred)}
+        return dict(ids=sorted(rows), events=events, samples=[])
+
+    def _selection_origins(self, root):
+        origins = self._mapping(root, 'selection_origins.json')
+        if any(event not in EVENT_CANDIDATES or value not in
+               ('manual', 'legacy_manual', 'legacy_batch_default') for event, value in origins.items()):
+            raise VoiceBankError('voice_pack_manifest_invalid')
+        return origins
+
+    def _effective_selection(self, root, record):
+        selected = self._mapping(root, 'selection.json')
+        origins = self._selection_origins(root)
+        # Old bundle activation recorded its own deterministic defaults. Those
+        # values were not manual pins. Preserve all differing/explicit pins and
+        # retain the original file for provenance; availability never migrates.
+        self._batch_release(root, record)
+        previous = self._read(root, 'batch_release.json', optional=True) or {}
+        generated = previous.get('events', {}) if previous.get('archive_sha256') == record['archive_sha256'] else {}
+        return {event: cid for event, cid in selected.items()
+                if origins.get(event) in ('manual', 'legacy_manual') or
+                   origins.get(event) != 'legacy_batch_default' and generated.get(event) != cid}
+
+    def _migrate_selection_origins(self, root, record):
+        selected = self._mapping(root, 'selection.json')
+        origins = self._selection_origins(root)
+        self._batch_release(root, record)
+        previous = self._read(root, 'batch_release.json', optional=True) or {}
+        generated = previous.get('events', {}) if previous.get('archive_sha256') == record['archive_sha256'] else {}
+        for event, cid in selected.items():
+            origins.setdefault(event, 'legacy_batch_default' if generated.get(event) == cid else 'legacy_manual')
+        if origins:
+            self._write(root, 'selection_origins.json', _json(origins), replace=True)
+
     def _batch_release(self, root, record):
         value = self._read(root, 'batch_release.json', optional=True)
         if value is None:
             return {}
-        if (type(value) is not dict or set(value) != {'version', 'archive_sha256', 'accepted', 'items', 'events'}
-                or value['version'] != 1 or type(value['accepted']) is not bool
+        if (type(value) is not dict or set(value) != ({'version', 'archive_sha256', 'accepted', 'items', 'events', 'scope'}
+                if value.get('version') == 2 else {'version', 'archive_sha256', 'accepted', 'items', 'events'})
+                or value['version'] not in (1, 2) or value.get('scope', 'initial') not in ('initial', 'full') or type(value['accepted']) is not bool
                 or type(value['archive_sha256']) is not str or not _SHA.fullmatch(value['archive_sha256'])
                 or type(value['items']) is not dict or len(value['items']) > 224
                 or type(value['events']) is not dict or len(value['events']) > len(EVENT_CANDIDATES)
@@ -605,7 +657,8 @@ class OrganizedVoicePack:
                         release_candidate_count=len(plan['ids']),
                         event_mapping=plan['events'], sample_ids=plan['samples'],
                         preview_played=len(samples), preview_required=BATCH_PREVIEW_MINIMUM,
-                        batch_user_accepted=bool(release),
+                        batch_user_accepted=bool(release), scope=release.get('scope', 'initial'),
+                        full_user_accepted=bool(release and release.get('scope') == 'full'),
                         disabled_events=disabled)
 
     def accept_batch(self, *, user_accepted=False):
@@ -629,18 +682,39 @@ class OrganizedVoicePack:
                 self._payload(root, variant['file'], variant['sha256'])
                 items[cid] = dict(sha256=variant['sha256'],
                     provenance=self._provenance(row, 'raw', record['archive_sha256']))
-            selection = self._mapping(root, 'selection.json')
-            # Respect explicit existing manual overrides.
-            for event, cid in plan['events'].items():
-                selection.setdefault(event, cid)
-            # Publish event mapping first; without a release it never grants
-            # permission. Both files use private atomic replace and locking.
-            self._write(root, 'selection.json', _json(selection), replace=True)
+            self._migrate_selection_origins(root, record)
+            # Candidate pools are event policy, not a persisted manual pin.
             self._write(root, 'batch_release.json', _json(dict(version=1, accepted=True,
                 archive_sha256=record['archive_sha256'], items=items, events=plan['events'])), replace=True)
         return dict(status='BATCH_ACCEPTED', batch_user_accepted=True,
                     batch_selected=len(INITIAL_V10_IDS), additional=len(BATCH_RELEASE_IDS-INITIAL_V10_IDS),
                     individually_listened_automatically=0, event_mapping=plan['events'])
+
+    def accept_full_use(self, *, user_accepted=False):
+        """Explicit all-pack use permission, separate from individual listening.
+
+        The user may grant this after an earlier representative audition; this
+        does not require replaying samples or fabricate listened/approved rows.
+        """
+        if user_accepted is not True:
+            raise VoiceBankError('voice_pack_batch_user_consent_required')
+        with self._root(lock=True) as root:
+            record = self._index(root)
+            plan = self._full_plan(record)
+            rows = {row['id']: row for row in record['candidates']}
+            items = {}
+            for cid in plan['ids']:
+                row = rows[cid]
+                variant = row['variants']['raw']
+                self._payload(root, variant['file'], variant['sha256'])
+                items[cid] = dict(sha256=variant['sha256'],
+                    provenance=self._provenance(row, 'raw', record['archive_sha256']))
+            self._batch_release(root, record)
+            self._migrate_selection_origins(root, record)
+            self._write(root, 'batch_release.json', _json(dict(version=2, scope='full', accepted=True,
+                archive_sha256=record['archive_sha256'], items=items, events=plan['events'])), replace=True)
+        return dict(status='FULL_USE_ACCEPTED', full_user_accepted=True, full_released=len(items),
+                    individually_listened_automatically=0, individually_approved_automatically=0)
 
     def disable_batch(self):
         """One-step rollback of only the bundle; individual approvals survive."""
@@ -667,12 +741,13 @@ class OrganizedVoicePack:
         return dict(event=event, enabled=enabled)
 
     def inventory(self):
+        from .voice_pack_context import captions_for, context_for
         try:
             with self._root() as root:
                 record = self._index(root)
                 approvals = self._approvals(root)
                 release = self._batch_release(root, record)
-                selection = self._mapping(root, 'selection.json')
+                selection = self._effective_selection(root, record)
                 listened = self._observations(root, 'listened.json')
                 played = self._observations(root, 'played.json')
                 values = []
@@ -684,6 +759,10 @@ class OrganizedVoicePack:
                         batch_released=self._released(release, row, name, record['archive_sha256']))
                         for name, value in row['variants'].items()}
                     values.append(dict(id=row['id'], clip_id=row['clip_id'], text=row['text'],
+                        captions=captions_for(row['clip_id'], row['text']),
+                        usage={key:(context_for(row['clip_id']) or
+                            dict(status='conditional', reason='legacy_explicit_event_only'))[key]
+                            for key in ('status', 'reason')},
                         source_model=row['source_model'], variants=variants,
                         imported=True, approved=any(v['approved'] for v in variants.values()),
                         listened=any(v['listened'] for v in variants.values()), played=any(v['played'] for v in variants.values()),
@@ -699,11 +778,13 @@ class OrganizedVoicePack:
             raise
 
     def snapshot(self):
+        from .voice_pack_context import usage_report
         values = self.inventory()
         digest = None
         version = 8
         audit = []
         selection = {}
+        origins = {}
         disabled_events = []
         if values:
             with self._root() as root:
@@ -711,7 +792,8 @@ class OrganizedVoicePack:
                 digest = record['archive_sha256']
                 version = record['version']
                 audit = record.get('import_audit', [])
-                selection = self._mapping(root, 'selection.json')
+                selection = self._effective_selection(root, record)
+                origins = self._selection_origins(root)
                 disabled_events = self._disabled_events(root)
         wake = next((v for v in values if v['clip_id'] == 'wake_ack_01'), None)
         batch = (self.batch_status() if values and version == 10 else
@@ -723,6 +805,9 @@ class OrganizedVoicePack:
                     initial_priority=sum(v['initial_priority'] for v in values),
                     listened=sum(v['listened'] for v in values), played=sum(v['played'] for v in values),
                     approved=sum(v['approved'] for v in values), batch_released=sum(v['batch_released'] for v in values),
+                    full_user_accepted=batch.get('full_user_accepted', False),
+                    full_released=sum(v['batch_released'] for v in values) if batch.get('full_user_accepted') else 0,
+                    usage=usage_report() if version == 10 else None,
                     batch=batch, generated=False, automatic_approval=False,
                     live_model_changed=False, wake_ack_registered=wake is not None,
                     wake_ack_available=bool(wake and wake['text'] == "Yeah? What's up?" and wake['source_model'] == 'drama-3'
@@ -731,7 +816,8 @@ class OrganizedVoicePack:
                         and wake['variants']['raw']['duration_seconds'] <= 3.),
                     startup_override=False, import_audit=audit,
                     archive_sha256=digest, expected_v8_sha256=V8_ARCHIVE_SHA256, expected_v10_sha256=V10_ARCHIVE_SHA256,
-                    event_names=list(EVENT_CANDIDATES), selected_events=selection)
+                    event_names=list(EVENT_CANDIDATES), selected_events=selection,
+                    selection_origins=origins)
 
     def approve(self, candidate_id, sha256, *, listening_approved=False):
         if listening_approved is not True or type(sha256) is not str or not _SHA.fullmatch(sha256):
@@ -776,31 +862,54 @@ class OrganizedVoicePack:
             self._write(root, 'played.json', _json(played), replace=True)
         return dict(id=candidate_id, sha256=sha256, played=True)
 
-    def select_event(self, event, candidate_id=None):
+    def _event_candidates(self, root, record, event, *, emotion='neutral', context='settled', recent=()):
+        from .voice_pack_context import eligible
         if event not in EVENT_CANDIDATES:
             raise VoiceBankError('voice_pack_event_invalid')
-        with self._root() as root:
+        if type(recent) not in (tuple, list, set, frozenset) or len(recent) > 224 or any(type(value) is not str for value in recent):
+            raise VoiceBankError('voice_pack_event_invalid')
+        approvals = self._approvals(root)
+        release = self._batch_release(root, record)
+        if event in self._disabled_events(root):
+            return []
+        chosen = self._effective_selection(root, record)
+        candidates = [row for row in record['candidates'] if self._matches(row, event)
+                      and (event not in chosen or chosen[event] == row['id'])
+                      and row['id'] not in recent and row['clip_id'] not in recent
+                      and eligible(row['clip_id'], event, emotion=emotion, context=context)
+                      and any(self._authorized(approvals, release, row, name, record['archive_sha256']) for name in row['variants'])]
+        # Preserve the declared priority for a read-only availability result.
+        order = {clip: index for index, clip in enumerate(EVENT_CANDIDATES[event])}
+        return sorted(candidates, key=lambda row: (order.get(row['clip_id'], len(order)), row['id']))
+
+    def select_event(self, event, candidate_id=None, *, emotion='neutral', context='settled', recent=()):
+        """Inspect availability, or explicitly pin a human-selected candidate.
+
+        Queries never invoke the chooser, consume a shuffle bag, write files or
+        change playback history. Actual selection happens exactly once in load.
+        """
+        if event not in EVENT_CANDIDATES:
+            raise VoiceBankError('voice_pack_event_invalid')
+        with self._root(lock=candidate_id is not None) as root:
             record = self._index(root)
-            approvals = self._approvals(root)
-            release = self._batch_release(root, record)
-            chosen = self._mapping(root, 'selection.json')
-            disabled = self._disabled_events(root)
             if candidate_id is not None:
                 row = next((r for r in record['candidates'] if r['id'] == candidate_id), None)
                 if row is None or not self._matches(row, event):
                     raise VoiceBankError('voice_pack_event_mismatch')
-                # Selection is allowed before listening approval; playback is not.
-                with self._root(lock=True) as locked:
-                    chosen[event] = candidate_id
-                    self._write(locked, 'selection.json', _json(chosen), replace=True)
-                    if event in disabled:
-                        self._write(locked, 'disabled_events.json', _json(sorted(set(disabled)-{event})), replace=True)
-            if event in disabled and candidate_id is None:
-                return None
-            candidates = [row for row in record['candidates'] if self._matches(row, event)
-                          and (event not in chosen or chosen[event] == row['id'])
-                          and any(self._authorized(approvals, release, row, name, record['archive_sha256']) for name in row['variants'])]
-            return self.chooser([r['id'] for r in candidates]) if candidates else None
+                chosen = self._mapping(root, 'selection.json')
+                origins = self._selection_origins(root)
+                chosen[event] = candidate_id
+                origins[event] = 'manual'
+                self._write(root, 'selection.json', _json(chosen), replace=True)
+                self._write(root, 'selection_origins.json', _json(origins), replace=True)
+                disabled = set(self._disabled_events(root))
+                if event in disabled:
+                    self._write(root, 'disabled_events.json', _json(sorted(disabled-{event})), replace=True)
+            candidates = self._event_candidates(root, record, event, emotion=emotion, context=context, recent=recent)
+            return candidates[0]['id'] if candidates else None
+
+    def has_event(self, event, *, emotion='neutral', context='settled', recent=()):
+        return self.select_event(event, emotion=emotion, context=context, recent=recent) is not None
 
     @staticmethod
     def _matches(row, event):
@@ -810,26 +919,50 @@ class OrganizedVoicePack:
             return base in EVENT_CANDIDATES[event]
         return event in row['events']
 
-    def load_event(self, event, *, cancel_check=None):
+    def _next_event_choice(self, event, identifiers):
+        signature = tuple(identifiers)
+        stored = self._bags.get(event)
+        remaining = list(stored[1]) if stored and stored[0] == signature else []
+        if not remaining:
+            remaining = list(identifiers)
+            self._shuffle(remaining)
+            if len(remaining) > 1 and remaining[0] == self._last_selected.get(event):
+                remaining[0], remaining[1] = remaining[1], remaining[0]
+        candidate = self.chooser(tuple(remaining)) if self.chooser is not None else remaining[0]
+        if candidate not in remaining:
+            raise VoiceBankError('voice_pack_event_invalid')
+        if len(remaining) > 1 and candidate == self._last_selected.get(event):
+            candidate = next(value for value in remaining if value != candidate)
+        remaining.remove(candidate)
+        return candidate, (signature, remaining)
+
+    def load_event(self, event, *, emotion='neutral', context='settled', recent=(), cancel_check=None):
         if cancel_check is not None:
             cancel_check()
-        candidate = self.select_event(event)
-        if candidate is None:
-            return None
-        with self._root() as root:
-            record = self._index(root)
-            row = next(r for r in record['candidates'] if r['id'] == candidate)
-            approvals = self._approvals(root)
-            release = self._batch_release(root, record)
-            variant = next((row['variants'][name] for name in ('preview_gain025', 'raw')
-                            if name in row['variants'] and self._authorized(approvals, release, row, name, record['archive_sha256'])), None)
-            if variant is None:
-                raise VoiceBankError('voice_pack_listening_approval_required')
-            raw = self._payload(root, variant['file'], variant['sha256'])
-        return self._asset(row, variant, record, raw, cancel_check=cancel_check)
+        # A single load owns the candidate, verified PCM, captions and history
+        # update. Nothing reselects the clip after choosing its text/metadata.
+        with self._selection_lock:
+            with self._root() as root:
+                record = self._index(root)
+                candidates = self._event_candidates(root, record, event, emotion=emotion, context=context, recent=recent)
+                if not candidates:
+                    return None
+                candidate, bag = self._next_event_choice(event, [row['id'] for row in candidates])
+                row = next(row for row in candidates if row['id'] == candidate)
+                approvals = self._approvals(root)
+                release = self._batch_release(root, record)
+                variant = next((row['variants'][name] for name in ('preview_gain025', 'raw')
+                                if name in row['variants'] and self._authorized(approvals, release, row, name, record['archive_sha256'])), None)
+                if variant is None:
+                    raise VoiceBankError('voice_pack_listening_approval_required')
+                raw = self._payload(root, variant['file'], variant['sha256'])
+            asset = self._asset(row, variant, record, raw, cancel_check=cancel_check)
+            self._bags[event], self._last_selected[event] = bag, candidate
+            return asset
 
     @staticmethod
     def _asset(row, variant, record, raw, *, cancel_check=None, review_requested=False):
+        from .voice_pack_context import captions_for
         output = audio._new_wav(audio.AudioPlaybackError)
         try:
             output.write_bytes(raw)
@@ -842,7 +975,8 @@ class OrganizedVoicePack:
                              dict(archive_sha256=record['archive_sha256'], voice_id=row['voice_id'],
                                   fingerprint=OrganizedVoicePack._provenance(row, 'preview_gain025' if variant['baked_gain'] == .25 else 'raw', record['archive_sha256']),
                                   review_only=review_requested,
-                                  handoff_metadata=row.get('handoff_metadata', {})))
+                                  handoff_metadata=row.get('handoff_metadata', {})),
+                             captions_for(row['clip_id'], row['text']))
         except BaseException:
             audio._discard(output, suppress=True)
             raise
@@ -901,6 +1035,9 @@ def main(argv=None):
     imp.add_argument('archive');imp.add_argument('--sha256', default=V8_ARCHIVE_SHA256)
     imp.add_argument('--source-model', choices=sorted(_MODELS))
     commands.add_parser('list')
+    full = commands.add_parser('accept-full-use')
+    full.add_argument('--user-accepted', action='store_true')
+    commands.add_parser('disable-release')
     approve = commands.add_parser('approve');approve.add_argument('candidate_id');approve.add_argument('sha256')
     approve.add_argument('--listening-approved', action='store_true')
     select = commands.add_parser('select');select.add_argument('event', choices=sorted(EVENT_CANDIDATES));select.add_argument('candidate_id')
@@ -911,6 +1048,10 @@ def main(argv=None):
             result = pack.import_zip(args.archive, expected_sha256=args.sha256, source_model=args.source_model)
         elif args.command == 'list':
             result = dict(snapshot=pack.snapshot(), inventory=pack.inventory())
+        elif args.command == 'accept-full-use':
+            result = pack.accept_full_use(user_accepted=args.user_accepted)
+        elif args.command == 'disable-release':
+            result = pack.disable_batch()
         elif args.command == 'approve':
             result = pack.approve(args.candidate_id, args.sha256, listening_approved=args.listening_approved)
         else:

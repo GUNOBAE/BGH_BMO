@@ -94,8 +94,11 @@ class DesktopRuntime:
             from .character_presence import PresenceScheduler
             self._presence = PresenceScheduler(clock=clock, mode=presence_mode)
         self._requested_presence_mode = None
+        self._ui_active_until = 0.
+        self._ui_activity_requested = False
         self._cutscene_category = "boot"
         self._cutscene_heard = False
+        self._cutscene_charged = False
         self._idle_restore_code = None
         self._last_idle_code = None
         self._boot_attempts = self._idle_attempts = 0
@@ -127,6 +130,8 @@ class DesktopRuntime:
         self._attempt, self._sequence = 0, 0
         self._presentation_epoch = 0
         self._overlay = None
+        self._overlay_captions = {}
+        self._overlay_caption_asset = None
         self._greeting_started = None
         self._ever_played = False
         self._greeting_timed_out = False
@@ -200,6 +205,7 @@ class DesktopRuntime:
                 "live_verified": False, "exit_requested": self.exiting,
                 "character_life": {"enabled": self.character_life,
                     "presence": self._presence.snapshot() if self._presence else {"mode": "off"},
+                    "settings_active": self.clock() < self._ui_active_until,
                     "last_idle_code": self._last_idle_code,
                     "voice_bank": self.greeting.bank.snapshot() if self.character_life
                         and hasattr(self.greeting, "bank") else {"status": "AUDIO_NOT_GENERATED"}}}
@@ -231,6 +237,12 @@ class DesktopRuntime:
         elif action == "presence_mode" and self.character_life and value in ("normal", "quiet", "sleep", "off"):
             with self._lock:
                 self._requested_presence_mode = value
+        elif action == "ui_activity" and self.character_life and type(value) is bool:
+            # The GUI renews this short lease while a dialog/HUD is open.
+            # HTTP admission never touches the audio owner or worker.
+            with self._lock:
+                self._ui_active_until = self.clock()+10. if value else 0.
+                self._ui_activity_requested = self._ui_activity_requested or value
         elif action == "wake_off" and value is None and self.character_life:
             # Owner poll performs the join/close; HTTP never touches a device.
             with self._lock:
@@ -262,10 +274,19 @@ class DesktopRuntime:
                         digest = hashlib.sha256(value[key].encode()).hexdigest()[:24]
                         value[key] = f"desktop:{self._presentation_epoch}:{digest}"
             if self._overlay is not None:
-                value['caption'] = dict(mode='off', language='', text='')
                 value.update(self._overlay)
                 value["position"] = (max(0., self.clock() - self._greeting_started)
                                      if self._greeting_started is not None else 0.)
+                subtitle_state = getattr(self.host.session, 'subtitle_snapshot', None) if self.host else None
+                mode = subtitle_state().get('mode', 'off') if callable(subtitle_state) else 'off'
+                visible = (mode in ('en', 'ko') and self._overlay.get('playback') == 'started'
+                    and self._overlay.get('phase') == 'speaking' and not self._cancel.is_set()
+                    and not self._user_cancel.is_set() and not self._input_waiting)
+                text = self._overlay_captions.get(mode, '') if visible else ''
+                value['caption'] = dict(mode=mode, language=mode if text else '', text=text)
+                value.pop('caption_asset', None)
+                if text and self._overlay_caption_asset is not None:
+                    value['caption_asset'] = dict(self._overlay_caption_asset)
             return value
 
     def snapshot(self):
@@ -297,6 +318,16 @@ class DesktopRuntime:
         return self.host.open_video(video_id) if self.host is not None else None
 
     def queue_command(self, nonce, command):
+        if (isinstance(command, HostControl) and self.host is not None
+                and (command.action == 'voice_batch_disable' or command.action == 'voice_batch_event'
+                     and command.value.get('event') == 'idle' and command.value.get('enabled') is False)):
+            with self._lock:
+                self._idle_revoke_requested = True
+            return self.host.queue_command(nonce, command)
+        if isinstance(command, HostControl) and command.action == 'subtitles' and self.host is not None:
+            # Captions are a live display setting, including during a cached
+            # boot/idle utterance; they need no second audio owner.
+            return self.host.queue_command(nonce, command)
         if isinstance(command, HostControl) and command.action == 'volume' and self.host is not None:
             if command.value['muted'] or command.value['level'] == 0:
                 with self._lock:
@@ -353,6 +384,7 @@ class DesktopRuntime:
         self._attempt += 1
         self._cutscene_category = category
         self._cutscene_heard = False
+        self._cutscene_charged = False
         if category == "idle":
             self._idle_restore_code = self._code
         if category == "boot":
@@ -369,6 +401,8 @@ class DesktopRuntime:
             return
         self._result = None
         self._greeting_started = None
+        self._overlay_captions = {}
+        self._overlay_caption_asset = None
         self._greeting_timed_out = False
         if category == "boot":
             self._state("greeting", "loading_cached_greeting")
@@ -377,7 +411,8 @@ class DesktopRuntime:
             if self._cancel.is_set() or self._user_cancel.is_set() or self._closed:
                 raise TurnCancelled()
         def emit(kind, **fields):
-            # Never enqueue a private WAV path, raw text, key or provider error.
+            # Captions stay in this private projection queue, never audit/logs.
+            # No WAV path, STT text, key or provider error is forwarded.
             if kind not in ("prepared", "started", "ended", "cancelled", "error"):
                 return
             safe = {"kind": kind, "attempt": attempt, "at": self.clock()}
@@ -393,6 +428,17 @@ class DesktopRuntime:
                 from .expression_contract import FACE_EMOTIONS
                 emotion = fields.get("emotion")
                 safe["emotion"] = emotion if emotion in FACE_EMOTIONS else "happy"
+                from .captions import clean_caption
+                captions = fields.get('caption_payload')
+                if type(captions) is dict:
+                    safe['caption_payload'] = {lang: clean_caption(captions.get(lang)) for lang in ('en', 'ko')}
+                asset = fields.get('caption_asset')
+                if type(asset) is dict:
+                    import re
+                    if (all(type(asset.get(key)) is str and re.fullmatch(r'[A-Za-z0-9_-]{1,96}', asset[key])
+                            for key in ('clip_id', 'candidate_id'))
+                            and type(asset.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}', asset['sha256'])):
+                        safe['caption_asset'] = {key: asset[key] for key in ('clip_id', 'candidate_id', 'sha256')}
             try:
                 self._events.put_nowait(safe)
             except Full:
@@ -426,6 +472,9 @@ class DesktopRuntime:
 
     def cancel_greeting(self):
         self._cancel.set()
+        with self._lock:
+            self._overlay_captions = {}
+            self._overlay_caption_asset = None
         if self.character_life and self.greeting is not None:
             self.greeting.cancel()
         return self._worker is None or not self._worker.is_alive()
@@ -440,9 +489,20 @@ class DesktopRuntime:
                 self._output_mute_requested = False
                 wake_off = getattr(self, "_wake_off_requested", False)
                 self._wake_off_requested = False
+                settings_input, self._ui_activity_requested = self._ui_activity_requested, False
+                revoke_idle = getattr(self, '_idle_revoke_requested', False)
+                self._idle_revoke_requested = False
             if mute_output:
                 self.cancel_greeting()
                 self._presence.cancel()
+            if settings_input:
+                self._presence.cancel()
+                if self._cutscene_category == 'idle':
+                    self.cancel_greeting()
+            if revoke_idle:
+                self._presence.cancel()
+                if self._cutscene_category == 'idle':
+                    self.cancel_greeting()
             if requested is not None:
                 self._presence.set_mode(requested)
                 if requested != "normal" and self._cutscene_category == "idle":
@@ -522,6 +582,8 @@ class DesktopRuntime:
                     self._overlay = dict(turn_id="startup", utterance_id=self.run_id + ":greeting:" + str(self._attempt),
                         source="cached_idle" if self._cutscene_category == "idle" else "cached_greeting",
                         phase="idle", playback="prepared", emotion=event.get("emotion", "happy"), cues=event["cues"])
+                    self._overlay_captions = event.get('caption_payload', {})
+                    self._overlay_caption_asset = event.get('caption_asset')
                 elif event["kind"] == "started" and self._overlay is not None:
                     self._greeting_started = event["at"]
                     if self._cutscene_category == "boot":
@@ -529,6 +591,15 @@ class DesktopRuntime:
                     self._overlay.update(phase="speaking", playback="started")
                 elif event["kind"] in ("ended", "cancelled", "error") and self._overlay is not None:
                     self._overlay.update(phase="idle", playback=event["kind"], cues=[])
+                    self._overlay_captions = {}
+                    self._overlay_caption_asset = None
+        # A start may have been followed by GP8 cancellation before UI events
+        # were consumed. It still counts toward the audible 2/15-minute quota.
+        with self._lock:
+            if (self._cutscene_category == 'idle' and self._presence
+                    and self._cutscene_heard and not self._cutscene_charged):
+                self._presence.started()
+                self._cutscene_charged = True
         if self._worker is not None:
             if self._worker.is_alive() and self.clock() >= self._greeting_deadline:
                 self._cancel.set()
@@ -536,6 +607,8 @@ class DesktopRuntime:
                 self._state("error", "greeting_timeout")
                 with self._lock:
                     self._overlay = None
+                    self._overlay_captions = {}
+                    self._overlay_caption_asset = None
             if not self._worker.is_alive():
                 self._worker.join()
                 self._worker = None
@@ -543,6 +616,8 @@ class DesktopRuntime:
                 self._lease = None
                 with self._lock:
                     self._overlay = None
+                    self._overlay_captions = {}
+                    self._overlay_caption_asset = None
                     self._presentation_epoch += 1
                     result = self._result or (False, "greeting_failed")
                     if self._greeting_timed_out:
@@ -565,6 +640,15 @@ class DesktopRuntime:
                     self._deferred_input_result = None
                     if self._input_epoch == input_epoch:
                         self._input_waiting = False
+        if self.character_life and self.host is not None:
+            consume = getattr(self.host, 'consume_presence_request', None)
+            requested = consume() if callable(consume) else None
+            if requested in ('normal', 'quiet', 'sleep', 'off'):
+                self._presence.set_mode(requested)
+                if requested != 'normal' and self._cutscene_category == 'idle':
+                    self.cancel_greeting()
+            if self.host.volume.snapshot()['effective_level'] <= 0:
+                self.cancel_greeting()
         if self.character_life and self.host is not None and self._ready and self._worker is None and self._phase == "ready":
             if not self._wake_attempted and not self.host.session.busy:
                 self._wake_attempted = True
@@ -572,12 +656,13 @@ class DesktopRuntime:
             snapshot = self.host.session.snapshot()
             plan = snapshot.get("character") or {}
             with self._lock:
-                if (not self._input_waiting and self.host.volume.snapshot()['effective_level'] > 0
-                        and self._presence.due(emotion=snapshot["emotion"], phase=snapshot["phase"],
+                if (not self._input_waiting and self._presence.due(emotion=snapshot["emotion"], phase=snapshot["phase"],
                         activity_mode=self.host.modes.mode, conversation_busy=self.host.session.busy,
                         audio_busy=self.host.audio.owner is not None,
                         game_active=self.host.modes.mode in ("game", "game_menu"),
                         video_active=self.host.video.snapshot()["recording"],
+                        muted=self.host.volume.snapshot()['effective_level'] <= 0,
+                        settings_active=self.clock() < self._ui_active_until,
                         sensitive=bool(plan.get("sensitive_context")))):
                     if callable(getattr(self.greeting, "play_idle", None)):
                         self._start_greeting("idle")

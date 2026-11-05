@@ -13,7 +13,8 @@ GESTURES = frozenset({"none", "wave", "celebrate", "shrug"})
 INTENTS = frozenset({"open_game_menu", "launch_game", "exit_game", "return_to_face",
                      "play_song", "stop_media", "take_photo", "start_face_tracking",
                      "stop_face_tracking", "arm_gesture", "stop_arms", "start_video", "stop_video",
-                     "set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down"})
+                     "set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down",
+                     "open_menu", "close_menu", "set_presence", "play_random"})
 
 
 def valid_id(value):

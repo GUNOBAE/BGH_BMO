@@ -35,13 +35,14 @@ def _delay(chooser, low, high):
 
 
 class PresenceScheduler:
-    """Idle speech is opt-in, rare, and charged only after a heard completion."""
+    """Idle speech is opt-in, rare, and charged only after actual playback."""
     MODES = ("normal", "quiet", "sleep", "off")
     WINDOW = 15 * 60
 
     def __init__(self, *, clock=time.monotonic, interval=None, mode="off"):
         self.clock, self.interval = clock, interval or random.SystemRandom().uniform
         self._heard, self._pending = deque(), False
+        self._charged = False
         self._distress_until = 0.
         self._next_at = None
         self.set_mode(mode)
@@ -65,14 +66,14 @@ class PresenceScheduler:
         self.cancel()
 
     def cancel(self):
-        """User input wins; never count cancellation or reuse a stale admission."""
+        """User input wins; unheard cancellation never consumes the quota."""
         self._pending = False
         self._schedule(_now(self.clock))
 
     def due(self, *, emotion="neutral", phase="idle", activity_mode="conversation",
             conversation_busy=False, audio_busy=False, game_active=False,
-            video_active=False, sensitive=False):
-        values = (conversation_busy, audio_busy, game_active, video_active, sensitive)
+            video_active=False, sensitive=False, muted=False, settings_active=False):
+        values = (conversation_busy, audio_busy, game_active, video_active, sensitive, muted, settings_active)
         if any(type(value) is not bool for value in values):
             raise PresenceError()
         now = _now(self.clock)
@@ -88,15 +89,25 @@ class PresenceScheduler:
         if self._pending or now < self._next_at or len(self._heard) >= 2:
             return False
         self._pending = True
+        self._charged = False
         return True
+
+    def started(self):
+        """Owner confirms a real player start, including interrupted speech."""
+        now = _now(self.clock)
+        self._prune(now)
+        if not self._charged:
+            self._heard.append(now)
+            self._charged = True
 
     def completed(self, heard):
         if type(heard) is not bool:
             raise PresenceError()
         now = _now(self.clock)
         self._prune(now)
-        if self._pending and heard:
+        if self._pending and heard and not self._charged:
             self._heard.append(now)
+        self._charged = True
         self._pending = False
         self._schedule(now)
 
@@ -145,8 +156,10 @@ class CachedPresence:
     bank clip can fall back only before playback actually starts. Once heard,
     an error never launches a second greeting. No runtime synthesis path exists.
     """
-    def __init__(self, bank, bank_player, greeting_player):
+    def __init__(self, bank, bank_player, greeting_player, *, clock=None):
         self.bank, self.bank_player, self.greeting_player = bank, bank_player, greeting_player
+        self.clock = clock or getattr(bank, 'clock', time.monotonic)
+        self._idle_started = {}
         self._playing, self._guard = Lock(), Lock()
         self._closed = Event()
         self._generation = 0
@@ -218,24 +231,49 @@ class CachedPresence:
         check = self._enter(cancel_check)
         try:
             check()
+            now = _now(self.clock)
+            self._idle_started = {clip: when for clip, when in self._idle_started.items() if now-when < 1800.}
+            recent = tuple(self._idle_started)
             pack = getattr(getattr(self.bank_player, 'voice', None), 'event_pack', None)
             if pack is not None:
+                selection_context = dict(emotion=emotion, context=context, recent=recent)
+                absent = False
                 try:
-                    chosen = pack.select_event('idle')
-                except VoiceBankError:
-                    chosen = None
-                if chosen is not None:
-                    result = self.bank_player.play_event('idle', emit=emit, cancel_check=check,
-                                                        on_playback_start=on_playback_start)
-                    if result.get('completed'):
-                        return result
-            try:
-                clip = self.bank.select("idle", emotion=emotion, context=context)
-                check()
-                if clip is None:
+                    available = pack.has_event('idle', **selection_context)
+                except VoiceBankError as error:
+                    available = False
+                    absent = error.code == 'voice_pack_asset_pending'
+                if available:
+                    selected = None
+                    def observed(kind, **fields):
+                        nonlocal selected
+                        asset = fields.get('caption_asset')
+                        if kind == 'prepared' and type(asset) is dict:
+                            selected = asset.get('clip_id')
+                        if kind == 'started' and type(selected) is str:
+                            # A cancelled/partial clip was still heard; don't
+                            # immediately recycle it at the next idle chance.
+                            self._idle_started[selected] = _now(self.clock)
+                        emit(kind, **fields)
+                    return self.bank_player.play_event('idle', emit=observed, cancel_check=check,
+                        on_playback_start=on_playback_start, selection_context=selection_context)
+                # A configured pack owns its idle authorization, including
+                # event OFF/full release withdrawal. Never bypass it with a
+                # separately approved legacy clip.
+                if not absent:
                     return None
+            try:
+                clip = self.bank.select("idle", emotion=emotion, context=context, recent=recent)
+                check()
+                if clip is None or clip in recent:
+                    return None
+                def began():
+                    check()
+                    self._idle_started[clip] = _now(self.clock)
+                    if on_playback_start is not None:
+                        on_playback_start()
                 return self.bank_player.play(clip, emit=emit, cancel_check=check,
-                    on_playback_start=on_playback_start)
+                    on_playback_start=began)
             except VoiceBankError:
                 check()
                 return None

@@ -112,8 +112,7 @@ class OrganizedVoicePackTests(unittest.TestCase):
         self.assertIsNone(self.pack.select_event('video_saved'))
         with self.assertRaises(VoiceBankError):
             self.pack.select_event('video_saved', row['id'])
-        with self.assertRaises(VoiceBankError):
-            self.pack.select_event('boot')
+        self.assertIsNone(self.pack.select_event('boot'))
         with self.pack.load_event('photo_saved') as asset:
             path = asset.path
             self.assertEqual(path.read_bytes(), self.preview)

@@ -2,6 +2,7 @@
 from pathlib import Path
 import tempfile
 from threading import Event, Thread
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -89,6 +90,7 @@ class PresenceSchedulerTests(unittest.TestCase):
         cases = [dict(phase="listening"), dict(phase="thinking"), dict(phase="speaking"),
             dict(emotion="angry"), dict(emotion="crying"), dict(conversation_busy=True),
             dict(audio_busy=True), dict(game_active=True), dict(video_active=True),
+            dict(muted=True), dict(settings_active=True),
             dict(activity_mode="game_menu"), dict(activity_mode="photo"), dict(activity_mode="music")]
         for settings in cases:
             with self.subTest(settings=settings):
@@ -98,6 +100,15 @@ class PresenceSchedulerTests(unittest.TestCase):
         for mode in ("quiet", "sleep", "off"):
             value = self.scheduler(mode);self.clock.now += 421
             self.assertFalse(value.due())
+
+    def test_actual_starts_count_once_even_when_cancelled_before_owner_observes_start(self):
+        value = self.scheduler()
+        for now in (180, 360):
+            self.clock.now = now;self.assertTrue(value.due())
+            value.cancel();value.started();value.started();value.completed(False)
+        self.assertEqual(value.snapshot()['heard_in_15_minutes'], 2)
+        self.clock.now = 540
+        self.assertFalse(value.due())
 
     def test_recent_distress_and_user_input_reset_idle_without_counting_a_clip(self):
         value = self.scheduler();self.clock.now = 180
@@ -192,6 +203,54 @@ class CachedPresenceTests(unittest.TestCase):
             self.assertTrue(self.player.cancelled);self.assertTrue(self.greeting.cancelled)
         finally:
             release.set();worker.join(2)
+
+    def test_v10_idle_context_readiness_and_actual_start_cooldown_survive_cancel(self):
+        clock = Clock()
+        self.value.clock = clock
+        self.bank.clips['idle'] = None
+        class Pack:
+            def __init__(self):self.queries=[]
+            def has_event(self, event, **context):
+                self.queries.append((event, context))
+                return any(clip not in context['recent'] for clip in ('C02', 'C05'))
+            def select_event(self, *_args, **_kwargs):
+                raise AssertionError('Availability must not select a clip')
+        pack = Pack();self.player.voice = SimpleNamespace(event_pack=pack)
+        played=[];cancel_after_start=[True]
+        def play_event(event, *, emit, cancel_check, on_playback_start=None, selection_context=None):
+            clip = next(clip for clip in ('C02', 'C05') if clip not in selection_context['recent'])
+            played.append((event, clip, selection_context))
+            emit('prepared', caption_asset=dict(clip_id=clip,candidate_id=clip,sha256='a'*64))
+            cancel_check();emit('started')
+            if cancel_after_start[0]:raise TurnCancelled()
+            emit('ended');return dict(completed=True)
+        self.player.play_event = play_event
+        with self.assertRaises(TurnCancelled):self.value.play_idle('happy', emit=self.emit)
+        self.assertEqual(played[0][1], 'C02')
+        cancel_after_start[0] = False;clock.now = 100
+        self.assertTrue(self.value.play_idle('happy', emit=self.emit)['completed'])
+        self.assertEqual(played[1][1], 'C05')
+        self.assertEqual(played[1][2], dict(emotion='happy',context='settled',recent=('C02',)))
+        clock.now = 1799
+        self.assertIsNone(self.value.play_idle('happy', emit=self.emit))
+        self.assertEqual(len(played), 2)
+        clock.now = 1800
+        self.assertTrue(self.value.play_idle('happy', emit=self.emit)['completed'])
+        self.assertEqual(played[-1][1], 'C02')
+        self.assertEqual(self.greeting.calls, [])
+
+    def test_missing_pack_preserves_legacy_idle_but_corrupt_or_disabled_pack_does_not(self):
+        def missing(*_args, **_kwargs): raise VoiceBankError('voice_pack_asset_pending')
+        self.player.voice = SimpleNamespace(event_pack=SimpleNamespace(has_event=missing))
+        self.assertTrue(self.value.play_idle(emit=self.emit)['completed'])
+        self.assertEqual(self.player.calls, ['idle_01'])
+        self.value._idle_started.clear()
+        def corrupt(*_args, **_kwargs): raise VoiceBankError('voice_pack_manifest_invalid')
+        self.player.voice.event_pack.has_event = corrupt
+        self.assertIsNone(self.value.play_idle(emit=self.emit))
+        self.player.voice.event_pack.has_event = lambda *_args, **_kwargs: False
+        self.assertIsNone(self.value.play_idle(emit=self.emit))
+        self.assertEqual(self.player.calls, ['idle_01'])
 
     def test_production_bank_player_uses_approved_private_synthetic_assets_without_answer_cache(self):
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))

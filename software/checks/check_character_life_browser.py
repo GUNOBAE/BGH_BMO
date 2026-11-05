@@ -93,8 +93,8 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert after_idle["test_fixture"]["max_players"] == after_idle["test_fixture"]["max_mics"] == 1
                     assert after_idle["test_fixture"]["initial_history"] == 0
                     assert before_idle["history_messages"] <= after_idle["test_fixture"]["history_messages"]
-                    assert fixture.state()["character_life"]["presence"]["heard_in_15_minutes"] == 0
-                    checks.append("idle cached clip uses a separate voice/cache; GP8 cancels it before a single existing PTT turn, without charging heard quota")
+                    assert fixture.state()["character_life"]["presence"]["heard_in_15_minutes"] == 1
+                    checks.append("idle cached clip uses a separate voice/cache; GP8 cancels it before one existing PTT turn; actual audible start consumes one quota slot")
                     page.evaluate("()=>BMODesktop.desktop('presence_mode','quiet')")
                     (Path(directory)/"presence-clock.txt").write_text("1200")
                     page.wait_for_function("()=>BMODesktop.state?.character_life?.presence?.mode==='quiet'")

@@ -5,12 +5,13 @@ request delivery, not proof that the generated audio sounds expressive. Approval
 still requires listening. Construction and planning perform no IO.
 """
 from dataclasses import dataclass
+import re
 
 from .expression_contract import FACE_EMOTIONS, ExpressionReply
 from .character_director import CharacterPlan, VOICE_DIRECTIONS, IDENTITY_DIRECTION
 
 
-REACTIONS = ("none", "chuckle", "gasp", "playful_puff", "sob")
+REACTIONS = ("none", "chuckle", "gasp", "playful_puff", "sob", "hmm", "ooh", "aha", "tada", "oops")
 SUPPORTED_MODELS = frozenset(("s2.1-pro-free", "s2.1-pro"))
 EMOTION_CUES = {
     "neutral": "", "happy": "[happy] ", "sad": "[sad] ",
@@ -24,6 +25,17 @@ REACTION_CUES = {
     "playful_puff": ("happy", "[sighing] Pboo~. "),
     "sob": ("crying", "[sobbing] Oh... "),
 }
+
+
+def strip_written_laughter(text):
+    """Chat shorthand is not a phonetic script or a request to read letters."""
+    return re.sub(r'[ㅋㅎ]{2,}', '', text).strip()
+
+
+def already_reactive(spoken):
+    """Do not add another sound to an answer already containing one."""
+    return bool(re.search(r'(?i)\b(?:ha(?:ha)+|he(?:he)+|h[am]{2,}|hmm+|oo+h|aha|ta[ -]?da|oops|whoa)\b|[ㅋㅎ]{2,}', spoken)
+                or re.search(r'(?i)^\s*(?:oh!|(?:wow|yay|whew)\b)', spoken))
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,12 +93,17 @@ class ExpressivePolicy:
                 or metadata.get("emotion") != plan.face_emotion):
             return VoiceDelivery(spoken, "neutral", "none", "plain_fallback")
         reaction = plan.reaction_id
+        if (plan.sensitive_context or already_reactive(spoken) or reaction == 'tada'
+                or reaction == 'oops' and not re.search(
+                    r"(?i)\b(?:my mistake|i was wrong|i meant|sorry|correction|let me correct)\b|(?:잘못|정정|미안)", spoken)):
+            reaction = 'none'
         if not plan.explicit_acting and (
                 self._successful - self._last_character_at < 3
                 or reaction == self._last_character_reaction and self._successful - self._last_character_at < 6):
             reaction = "none"
         cues = {"none": "", "chuckle": "[chuckling] ", "gasp": "[gasping] ",
-                "playful_puff": "[sighing, brief playful puff] ", "sob": "[sobbing, one short breath] "}
+                "playful_puff": "[sighing, brief playful puff] ", "sob": "[sobbing, one short breath] ",
+                "hmm": "", "ooh": "", "aha": "", "tada": "", "oops": ""}
         # The default Soft instruction used to precede and conflict with acted
         # crying/anger. Preserve voice identity separately and use one congruent
         # host delivery, without changing voice ID, pronunciation or gain.

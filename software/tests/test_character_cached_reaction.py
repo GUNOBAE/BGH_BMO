@@ -19,6 +19,7 @@ from bmo_ai.integration_face import wav_cues
 from bmo_ai.integration_profile import integration_config
 from bmo_ai.integration_voice import IntegrationVoice
 from bmo_ai.voice_bank import VoiceBank
+from bmo_ai.voice_pack import OrganizedVoicePack
 
 
 class CharacterCachedReactionTests(unittest.TestCase):
@@ -104,6 +105,14 @@ class CharacterCachedReactionTests(unittest.TestCase):
         self.assertEqual(set(samples[:3200]), {3000})
         self.assertEqual(set(samples[3200:]), {2000})
         self.assertEqual(list(cache["cues"]), wav_cues(cache["path"]))
+
+    def test_absent_pack_preserves_existing_approved_legacy_reaction(self):
+        voice, seen, _events = self.voice(self.bank(['reaction_03']));self.plan(voice)
+        voice.event_pack = OrganizedVoicePack(self.root/'not-imported')
+        voice.speak('A short answer.')
+        self.assertEqual(voice._cache['expression']['cached_reaction_id'],'reaction_03')
+        self.assertNotIn('[chuckling]',seen[0].text)
+        self.assertFalse(voice.event_pack.directory.exists())
 
     def test_repeat_reuses_combined_wav_without_new_selection_synthesis_or_history_charge(self):
         bank = self.bank(["reaction_03"]);voice, seen, _events = self.voice(bank);self.plan(voice)

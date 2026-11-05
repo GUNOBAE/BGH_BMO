@@ -6,7 +6,8 @@ let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0
 let featureState=null,musicCatalogKey=null,gameCatalogKey=null,lastFeatureMode=null;
 let photoReviewKeyHeld=false,photoPreviewContext=null,photoPreviewAcknowledged=null,photoFocusPending=null,suppressedCaption=null,subtitlePending=null,subtitleRequest=0;
 let videoKeyHeld=false,videoPreviewContext=null,videoPreviewAcknowledged=null,videoActionPending=false,videoReviewId=null;
-let volumePending=null,volumeSerial=0,armCatalogKey=null,voiceCatalogKey=null;
+let volumePending=null,volumeSerial=0,volumeRequest=null,volumeQueue=Promise.resolve(),armCatalogKey=null,voiceCatalogKey=null;
+let faceVolumeTimer=null,uiActivityTimer=null,uiActivitySent=false,uiMenuSequence=null;
 let mediaKeyHeld=false,mediaVideoKey=null,mediaSeekPending=false,mediaVideoFailure=null,mediaSyncRequired=false,mediaPlayPending=null;
 let mediaHoldTimer=null,mediaHoldStarted=0,mediaHoldTriggered=false,mediaStopping=false,mediaControlsTimer=null,musicErrorTimer=null;
 let previewRun=null,previewSerial=0,previewTimer=null,previewAbort=null,previewBitmap=null,previewDraw=null,previewBusy=false,previewSuppressedKey=null;
@@ -50,13 +51,31 @@ $('demo-games-hide').onchange=()=>{
  syncShowcaseGames();
 };
 syncShowcaseGames();
-function menu(){cancelPTT();window.BMOPlayableGames?.suspend('menu');if(!$('menu').open)$('menu').showModal();}
+function syncUiActivity(){
+ clearTimeout(uiActivityTimer);uiActivityTimer=null;
+ const active=!closed&&!document.hidden&&(!!document.querySelector('dialog[open]')||!$('face-volume').hidden);
+ if(active||uiActivitySent){uiActivitySent=active;desktop('ui_activity',active).catch(()=>{});}
+ if(active)uiActivityTimer=setTimeout(syncUiActivity,2000);
+}
+function hideFaceVolume(){
+ clearTimeout(faceVolumeTimer);faceVolumeTimer=null;
+ const hadFocus=$('face-volume').contains(document.activeElement)||document.activeElement===$('face-volume-trigger');
+ $('face-volume').hidden=true;$('face-volume-trigger').setAttribute('aria-expanded','false');
+ syncUiActivity();if(hadFocus)restoreFaceFocus();
+}
+function showFaceVolume(){
+ if(!canTalk()||currentMode!=='conversation'||document.querySelector('dialog[open]'))return;
+ $('face-volume').hidden=false;$('face-volume-trigger').setAttribute('aria-expanded','true');
+ clearTimeout(faceVolumeTimer);faceVolumeTimer=setTimeout(hideFaceVolume,3000);syncUiActivity();
+ renderVolume(featureState||{});
+}
+function menu(){hideFaceVolume();cancelPTT();window.BMOPlayableGames?.suspend('menu');for(const dialog of document.querySelectorAll('dialog[open]'))if(dialog!==$('menu'))dialog.close();if(!$('menu').open)$('menu').showModal();syncUiActivity();}
 function isTextInput(target){return !!(target?.isContentEditable||target?.closest?.('input,select,textarea'));}
 function restoreFaceFocus(){
  if(closed||!canTalk()||currentMode!=='conversation'||document.querySelector('dialog[open]')||isTextInput(document.activeElement))return;
  frame.focus({preventScroll:true});
 }
-for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('close',()=>{restoreFaceFocus();if(featureState)syncPreview(featureState);});
+for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('close',()=>{syncUiActivity();restoreFaceFocus();if(featureState)syncPreview(featureState);});
 function refreshAdapter(){if(window.BMOIntegration?.closed){window.BMOIntegration=new window.BMOFaceAdapter(frame);}handshakeFrame=null;presentedRun=null;presentationGeneration++;}
 function canTalk(){return state?.phase==='ready'||state?.character_life?.enabled===true&&state?.phase==='greeting';}
 function presentFace(run){
@@ -146,6 +165,16 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
  else if(gaze.apply){const id=JSON.stringify([gaze.owner,gaze.x,gaze.y,next.mode_generation]);if(id!==lastGaze){face.look(gaze.x,gaze.y);face.lookEyes(gaze.x*.15,gaze.y*.15);if(gaze.owner==='reaction')face.blink();lastGaze=id;}}}
 }
 function renderFeatures(next){
+ const requestedMenu=next.ui_menu;
+ if(Number.isInteger(requestedMenu?.sequence)&&requestedMenu.sequence>=0&&requestedMenu.sequence!==uiMenuSequence){
+  const apply=uiMenuSequence!==null||requestedMenu.sequence>0;uiMenuSequence=requestedMenu.sequence;
+  if(apply){if(requestedMenu.open===true)menu();else if(requestedMenu.open===false){
+   hideFaceVolume();for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();restoreFaceFocus();
+  }}
+ }
+ const faceControls=canTalk()&&next.mode==='conversation'&&!document.querySelector('dialog[open]');
+ $('face-volume-trigger').hidden=!faceControls;
+ if(!faceControls&&!$('face-volume').hidden)hideFaceVolume();
  if(lastFeatureMode==='music'&&next.mode==='conversation'&&$('music-dialog').open)$('music-dialog').close();
  lastFeatureMode=next.mode;
  const wakeConfigured=next.wake_word?.requested===true,wakeEnabled=next.wake_word?.armed===true;
@@ -309,6 +338,11 @@ function renderVideo(next,video,screen,phase,elapsed){
  }else $('foreground-back').disabled=false;
 }
 function renderVolume(next){
+ const receipt=volumeRequest&&(next.requests||[]).find(item=>item.request_id===volumeRequest);
+ if(receipt&&!['accepted','running'].includes(receipt.status)){
+  volumePending=null;volumeRequest=null;
+  if(['failed','rejected','unknown'].includes(receipt.status))error('The volume setting could not be applied.');
+ }
  const volume=volumePending||next.volume||next.audio_output?.volume;
  if(!volume)return;
  if(Number.isFinite(volume.level)&&volume.level>=0&&volume.level<=1){
@@ -316,8 +350,11 @@ function renderVolume(next){
   if(document.activeElement!==$('music-volume'))$('music-volume').value=String(volume.level);
   $('music-volume-value').textContent=Math.round(volume.level*100)+'%';
   $('master-volume-value').textContent=Math.round(volume.level*100)+'%';
+  $('face-volume-value').textContent=Math.round(volume.level*100)+'%';
+  $('face-volume-down').disabled=volume.level<=0;$('face-volume-up').disabled=volume.level>=1;
  }
- if(typeof volume.muted==='boolean'){$('master-mute').checked=volume.muted;$('music-mute').checked=volume.muted;}
+ if(typeof volume.muted==='boolean'){$('master-mute').checked=volume.muted;$('music-mute').checked=volume.muted;
+  $('face-volume-mute').textContent=volume.muted?'Unmute':'Mute';$('face-volume-mute').setAttribute('aria-pressed',String(volume.muted));}
 }
 function renderArms(next){
  const arms=next.system_diagnostics?.arms||{},motion=next.motion||{};
@@ -490,7 +527,12 @@ function renderVoiceBatch(next,bank){
  $('voice-batch').hidden=!ready;
  if(!ready)return;
  const mapping=batch.event_mapping||{},disabled=batch.disabled_events||[],accepted=batch.batch_user_accepted===true;
- $('voice-batch-summary').textContent='초기 '+(batch.batch_selected||0)+'개 + 음악 자연종료 '+(batch.extra_release_ids?.length||0)+
+ const fullAccepted=bank.full_user_accepted===true;
+ $('voice-full-summary').textContent='Verified saved voices: '+(bank.candidates||0)+' · Full use: '+(fullAccepted?'ON':'OFF')+
+  ' · Individually heard: '+(bank.listened||0)+' · Individually approved: '+(bank.approved||0);
+ $('voice-full-enable').disabled=fullAccepted||!$('voice-full-consent').checked||batchPreviewRunning
+  ||next.mode!=='conversation'||next.conversation_busy||next.audio_owner!==null;
+ $('voice-batch-summary').textContent=fullAccepted?'All saved voices enabled for matching situations · '+(bank.batch_released||0)+' clips · Individual listening and approval records preserved.':'초기 '+(batch.batch_selected||0)+'개 + 음악 자연종료 '+(batch.extra_release_ids?.length||0)+
   '개 별도 포함 · 대표 미리 재생 시작 '+(batch.preview_played||0)+'/'+(batch.sample_ids?.length||0)+
   ' · 활성화 '+(accepted?'ON':'OFF')+' · 개별 청취 승인 '+(bank.approved||0)+' · 실제 개별 청취 기록 '+(bank.listened||0)+
   ' · 현재 묶음 재생권한 '+(bank.batch_released||0)+'개';
@@ -756,7 +798,7 @@ $('system-dialog').addEventListener('close',()=>{$('turn-diagnostics').textConte
 $('wake-off').onclick=()=>desktop('wake_off').catch(()=>error('호출어 종료 상태를 확인해 주세요.'));
 $('wake-on').onclick=()=>{if($('wake-on').disabled)return;control('wake',true).catch(()=>error('현재 실행에 준비한 호출어 모델을 확인해 주세요. GP8은 계속 사용할 수 있어요.'));};
 $('games').onclick=()=>{intent('open_game_menu').catch(()=>error('게임 목록을 열지 못했어요.'));$('menu').close();};$('greeting-retry').onclick=()=>desktop('retry_greeting').catch(()=>error('인사 캐시를 확인해 주세요.'));
-function openPanel(id){cancelPTT();window.BMOPlayableGames?.suspend('menu');$('menu').close();$(id).showModal();if(featureState)renderFeatures(featureState);}
+function openPanel(id){hideFaceVolume();cancelPTT();window.BMOPlayableGames?.suspend('menu');$('menu').close();$(id).showModal();syncUiActivity();if(featureState)renderFeatures(featureState);}
 for(const [id,panel] of [['camera-menu','camera-dialog'],['video-menu','video-dialog'],['arms-menu','arms-dialog'],['voice-menu','voice-dialog'],['music-menu','music-dialog'],['system-menu','system-dialog']])$(id).onclick=()=>openPanel(panel);
 for(const button of document.querySelectorAll('.dialog-close'))button.onclick=()=>button.closest('dialog').close();
 $('video-consent').onchange=()=>{if(featureState)renderFeatures(featureState);};
@@ -796,6 +838,15 @@ $('voice-batch-preview-stop').onclick=()=>{
  $('voice-result').textContent='대표 미리듣기 중단을 요청했어요.';
 };
 $('voice-batch-consent').onchange=()=>{if(featureState)renderVoiceBatch(featureState,featureState.voice_pack);};
+$('voice-full-consent').onchange=()=>{if(featureState)renderVoiceBatch(featureState,featureState.voice_pack);};
+$('voice-full-enable').onclick=()=>{
+ if($('voice-full-enable').disabled||!$('voice-full-consent').checked)return;
+ $('voice-full-enable').disabled=true;
+ control('voice_full_accept',true).then(()=>{
+  $('voice-full-consent').checked=false;
+  $('voice-result').textContent='Full contextual use requested. Individual listening and approval records are unchanged.';
+ }).catch(()=>{$('voice-result').textContent='Full use could not be enabled. Check the verified pack and current playback.';});
+};
 $('voice-batch-enable').onclick=()=>{
  if(!batchPreviewCompleted||!$('voice-batch-consent').checked||$('voice-batch-enable').disabled)return;
  $('voice-batch-enable').disabled=true;
@@ -815,11 +866,26 @@ for(const [id,enabled] of [['voice-batch-event-disable',false],['voice-batch-eve
    .catch(()=>{$('voice-result').textContent='이벤트 재생 정책을 변경하지 못했어요.';});
  };
 
+function submitVolume(value){
+ const serial=++volumeSerial;volumePending=value;volumeRequest=null;renderVolume(featureState||{});
+ volumeQueue=volumeQueue.catch(()=>{}).then(()=>control('volume',value)).then(result=>{
+  if(serial===volumeSerial)volumeRequest=result.request_id;
+ }).catch(()=>{if(serial===volumeSerial){volumePending=null;volumeRequest=null;renderVolume(featureState||{});}error('The volume setting could not be applied.');});
+}
 function setVolume(source='master'){
  const prefix=source==='music'?'music':'master';
- const serial=++volumeSerial,value={level:Number($(prefix+'-volume').value),muted:$(prefix+'-mute').checked};volumePending=value;
- control('volume',value).catch(()=>error('음량 설정을 적용하지 못했어요.')).finally(()=>{if(serial===volumeSerial)volumePending=null;});
+ submitVolume({level:Number($(prefix+'-volume').value),muted:$(prefix+'-mute').checked});
 }
+$('face-volume-trigger').onclick=showFaceVolume;
+for(const event of ['pointerdown','keydown'])$('face-volume').addEventListener(event,showFaceVolume);
+for(const [id,step] of [['face-volume-down',-5],['face-volume-up',5]])$(id).onclick=()=>{
+ const current=volumePending||featureState?.volume;if(!current)return;
+ showFaceVolume();submitVolume({level:Math.max(0,Math.min(100,Math.round(current.level*100)+step))/100,muted:current.muted});
+};
+$('face-volume-mute').onclick=()=>{
+ const current=volumePending||featureState?.volume;if(!current)return;
+ showFaceVolume();submitVolume({level:current.level,muted:!current.muted});
+};
 $('master-volume').oninput=()=>{$('master-volume-value').textContent=Math.round(Number($('master-volume').value)*100)+'%';};
 $('master-volume').onchange=setVolume;$('master-mute').onchange=setVolume;
 $('music-volume').oninput=()=>{$('music-volume-value').textContent=Math.round(Number($('music-volume').value)*100)+'%';};
@@ -838,7 +904,7 @@ $('music-video').addEventListener('error',()=>{if(!closed&&$('music-video').erro
 
 for(const id of ['game-back','foreground-back'])$(id).onclick=()=>intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
 const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',z:'A',b:'B',x:'B',' ':'A',Enter:'START',Shift:'SELECT',Escape:'ESC'};
-function key(event,pressed){if(event.isComposing)return;if(event.key==='Enter'){if(!pressed){enterDown=false;bump('keyups');}else if(event.repeat)bump('repeats_ignored');else bump('enter_presses');}
+function key(event,pressed){if(event.isComposing)return;if(pressed&&event.key==='Enter'&&!$('face-volume').hidden)hideFaceVolume();if(event.key==='Enter'){if(!pressed){enterDown=false;bump('keyups');}else if(event.repeat)bump('repeats_ignored');else bump('enter_presses');}
  if(event.key==='Enter'&&mediaKeyHeld){
   event.preventDefault();event.stopPropagation();
   if(!pressed){
@@ -940,7 +1006,7 @@ function pollPad(){
 function syncGamepad(next){padSequence=Math.max(padSequence,next?.usb_gamepad?.sequence_floor||0);if(!gamepadAllowed(next)){releasePad(false);return;}if(padTimer===null)padTimer=setTimeout(pollPad,0);}
 window.addEventListener('blur',event=>{setTimeout(()=>{if(event.isTrusted&&document.hasFocus()&&document.activeElement===frame)return;releasePad();},0);});
 window.addEventListener('gamepaddisconnected',()=>releasePad());
-window.addEventListener('pagehide',()=>{clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
-document.addEventListener('visibilitychange',()=>{clearCaption();epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){stopPreview();$('video-review-player').pause();$('music-video').pause();if(currentMode==='music')control('pause').catch(()=>{});window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();}else{refreshAdapter();poll();}});
+window.addEventListener('pagehide',()=>{clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
+document.addEventListener('visibilitychange',()=>{clearCaption();epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){hideFaceVolume();stopPreview();$('video-review-player').pause();$('music-video').pause();if(currentMode==='music')control('pause').catch(()=>{});window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();}else{syncUiActivity();refreshAdapter();poll();}});
 window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence,previewEvidence};window.BMOPlayableGames?.configure({control,intent});poll();
 })();

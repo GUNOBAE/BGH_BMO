@@ -194,6 +194,7 @@ class IntegrationSession:
         self._subtitle_generation = 0
         self._turn_subtitle_generation = 0
         self._active_captions = {}
+        self._active_caption_asset = None
         self._pending_subtitle_mode = None
         self._turn_input = None
         self._emotion_generation = 0
@@ -275,6 +276,7 @@ class IntegrationSession:
         if playback in ("cancelled", "error"):
             self._invalidate_expression()
         self._active_captions = {}
+        self._active_caption_asset = None
         self._pending_subtitle_mode = None
         self._data.update(phase="idle", playback=playback, cues=[], position=0.0,
                           utterance_id=None)
@@ -386,6 +388,8 @@ class IntegrationSession:
                 and confirmation is None)
             value['caption'] = dict(mode=mode, language=mode if mode != 'off' else '',
                 text=self._active_captions.get(mode, '') if visible and mode != 'off' else '')
+            if visible and mode != 'off' and self._active_caption_asset is not None:
+                value['caption_asset'] = dict(self._active_caption_asset)
             return value
 
     def browser_snapshot(self):
@@ -538,6 +542,7 @@ class IntegrationSession:
                             self._set_subtitles_locked(selected_mode)
                         self._pending_subtitle_mode = None
                     self._active_captions = dict(fields.get('caption_payload') or {})
+                    self._active_caption_asset = dict(fields['caption_asset']) if fields.get('caption_asset') else None
                     self._data.update(playback="started", phase="speaking",
                                       source=fields.get("source", self._data["source"]))
                     trace = self._data.get('expression_trace')
@@ -641,6 +646,7 @@ class IntegrationSession:
         self._feedback_event = feedback_event
         self._feedback_candidate = feedback_candidate
         self._active_captions = {}
+        self._active_caption_asset = None
         self._turn_input = input_provider
         with self._lock:
             self._invalidate_expression()

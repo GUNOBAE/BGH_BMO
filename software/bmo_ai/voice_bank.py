@@ -414,9 +414,13 @@ class BankPlayer:
         try:
             with self.bank.load(clip_id, model=model, simulate=self.simulate,
                                 require_approved=not allow_unapproved, cancel_check=check) as asset:
+                from .greeting import boot_captions
+                captions = boot_captions(clip_id, catalog()[clip_id]['text'])
                 self.voice._play(asset.path, "voice_bank_" + asset.category, asset.info, asset.cues,
                     check, emit, on_playback_start,
-                    dict(emotion=asset.emotion, emotion_validation="validated", notice=False))
+                    dict(emotion=asset.emotion, emotion_validation="validated", notice=False,
+                         caption_payload=captions,
+                         caption_asset=dict(clip_id=clip_id,candidate_id=clip_id,sha256=asset.sha256)))
                 check()
                 persisted = self.bank.completed(clip_id) if not allow_unapproved else False
                 return dict(completed=True, history_persisted=persisted, **asset.public())
@@ -429,7 +433,7 @@ class BankPlayer:
 
     def cancel(self): self._cancelled.set()
 
-    def play_event(self, event, *, emit, cancel_check=None, on_playback_start=None):
+    def play_event(self, event, *, emit, cancel_check=None, on_playback_start=None, selection_context=None):
         """Use an imported approved pack without any live-synthesis fallback."""
         if self._closed.is_set():
             raise VoiceBankError('voice_bank_closed')
@@ -439,7 +443,7 @@ class BankPlayer:
                 raise TurnCancelled()
             self.voice._check(cancel_check)
         completed = self.voice.play_event(event, emit=emit, cancel_check=check,
-                                         on_playback_start=on_playback_start)
+                                         on_playback_start=on_playback_start, selection_context=selection_context)
         return dict(completed=completed, source='organized_voice_pack', generated=False)
 
     def close(self):

@@ -13,7 +13,7 @@ import wave
 
 from bmo_ai import audio
 from bmo_ai.conversation import TurnCancelled
-from bmo_ai.greeting import GreetingPlayer
+from bmo_ai.greeting import GreetingPlayer, boot_captions
 from bmo_ai.greeting_cache import (GREETING_TEXT, MAGIC, GreetingCache, GreetingError,
     GreetingSpec, default_greeting_directory, make_synthetic_greeting_cache)
 from bmo_ai.integration_face import wav_cues
@@ -245,7 +245,7 @@ class GreetingTests(unittest.TestCase):
         self.assertFalse(paths[0].exists());self.assertEqual(self.file.read_bytes(),before)
 
     def test_play_uses_existing_single_python_player_without_gain_or_synthesis(self):
-        self.publish(approved=True)
+        record=self.publish(approved=True)
         seen=[];events=[]
         def callback(command,**settings):
             self.assertEqual(command[:2],['aplay','-q'])  # Inspect only; never execute ALSA.
@@ -256,6 +256,17 @@ class GreetingTests(unittest.TestCase):
         self.assertFalse(seen[0].exists());self.assertEqual([k for k,_ in events],['prepared','started','ended'])
         self.assertTrue(all(fields['source']=='cached_greeting' for _,fields in events))
         self.assertTrue(events[0][1]['cues']);self.assertEqual(events[1][1]['emotion'],'happy')
+        self.assertEqual(events[1][1]['caption_payload'],dict(en=GREETING_TEXT,ko='안녕! 돌아왔구나! 비모가 보고 싶었어!'))
+        self.assertEqual(events[1][1]['caption_asset'],dict(clip_id='cached_greeting',candidate_id='cached_greeting',sha256=record['sha256']))
+
+    def test_caption_translation_requires_the_exact_existing_boot_transcript(self):
+        from bmo_ai.voice_bank import catalog
+        for clip,row in catalog().items():
+            if row['category'] != 'boot': continue
+            captions=boot_captions(clip,row['text'])
+            self.assertEqual(captions['en'],row['text']);self.assertTrue(captions['ko'])
+            self.assertEqual(boot_captions(clip,'A changed recording.')['ko'],'')
+        self.assertEqual(boot_captions('cached_greeting','A changed recording.')['ko'],'')
 
     def test_play_verified_snapshot_is_not_redirected_by_later_bundle_replacement(self):
         record=self.publish(approved=True)

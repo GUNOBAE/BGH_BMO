@@ -17,18 +17,21 @@ from .camera.request import current_photo_request
 from .request_semantics import request_schema, resolve_interpretation, request_denial
 
 
-TARGET_INTENTS = frozenset({"launch_game", "play_song", "arm_gesture", "set_volume"})
+TARGET_INTENTS = frozenset({"launch_game", "play_song", "arm_gesture", "set_volume", "set_presence"})
 OPTIONAL_TARGET_INTENTS = frozenset({"start_video"})
 SEMANTIC_DEVICE_INTENTS = frozenset({"take_photo", "start_video", "stop_video",
     "start_face_tracking", "stop_face_tracking", "arm_gesture", "stop_arms",
-    "set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down"})
+    "set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down",
+    "open_menu", "close_menu", "set_presence"})
 SEMANTIC_KIND_INTENTS = {
     "video": frozenset({"start_video", "stop_video"}),
     "tracking": frozenset({"start_face_tracking", "stop_face_tracking"}),
     "arm": frozenset({"arm_gesture", "stop_arms"}),
     "volume": frozenset({"set_volume", "mute_audio", "unmute_audio", "volume_up", "volume_down"}),
-    "media": frozenset({"play_song", "stop_media"}),
+    "media": frozenset({"play_song", "play_random", "stop_media"}),
     "game": frozenset({"open_game_menu", "launch_game", "exit_game"}),
+    "menu": frozenset({"open_menu", "close_menu"}),
+    "presence": frozenset({"set_presence"}),
 }
 PHOTO_PREPARATION = {
     "en": "Hold still. Let's take one little picture.",
@@ -73,7 +76,8 @@ class HostIntent:
         if (type(self.name) is not str or self.name not in INTENTS or (self.name in TARGET_INTENTS and not valid_id(self.target))
                 or (self.name not in TARGET_INTENTS | OPTIONAL_TARGET_INTENTS and self.target is not None)
                 or (self.name == "arm_gesture" and self.target not in ARM_INTENT_ACTIONS)
-                or (self.media_mode is not None and (self.name != "play_song" or self.media_mode not in ("face", "video")))):
+                or (self.name == "set_presence" and self.target not in ("normal", "quiet", "off"))
+                or (self.media_mode is not None and (self.name not in ("play_song", "play_random") or self.media_mode not in ("face", "video")))):
             raise ExpressionFormatError()
         if self.name == "start_video":
             video_request_duration(self.target)
@@ -235,7 +239,7 @@ COMPOUND_INSTRUCTIONS = SEMANTIC_INSTRUCTIONS.replace("version 4", "version 5").
     "character, request, captions and photo_success.",
     "character, request, captions, photo_success and plan.").replace(
     "kind is none/photo/acting/subtitles/video/tracking/arm/volume;",
-    "kind is none/photo/acting/subtitles/video/tracking/arm/volume/media/game/compound;") + """
+    "kind is none/photo/acting/subtitles/video/tracking/arm/volume/media/game/menu/presence/compound;") + """
 plan is {version:1,steps:[]} for conversation or a single legacy intent. For two
 or three immediate current requested actions, use request.kind compound,
 disposition execute, emotion none, subtitle_mode unchanged, confirmation_token
@@ -257,7 +261,25 @@ music video, not camera recording. Other intents use media_mode null. Game menu
 and supplied game launch requests use kind game. Never invent assets or modes.
 Keep one short preparation sentence for a plan, no confirmation per step.
 For a plan containing take_photo, photo_success may hold its later success line.
+For explicit requests to open/show the menu or close/hide it, use kind menu and
+open_menu/null or close_menu/null. These control the existing dialog, not games.
+For occasional self-talk use kind presence and set_presence with target normal
+to allow it, off to stop it, or quiet for a quiet mode. 'Stop talking to yourself',
+'혼잣말 꺼', '조용히 해' mean stop occasional speech, not mute all audio unless
+the user explicitly asks to mute sound. '다시 가끔 말해' allows normal self-talk.
+These are current settings requests, never permission to generate idle speech.
+When the user asks BMO to choose a song, use play_random/null and kind media;
+when a specific song was selected use play_song with its supplied catalog ID.
+Both music intents may use media_mode face/video. Never invent a song.
+Small contextual reactions may use chuckle, hmm, ooh, aha or oops sparingly at
+low intensity. Use none for serious worries; avoid adding a reaction when speech
+already contains a laugh/interjection. Never read laughter spelling or directions.
+Tada must not invent a completed device action. Host success cues own that event.
 """
+
+
+def _request_action(intent):
+    return 'presence_'+intent.target if intent and intent.name == 'set_presence' else intent.name if intent else None
 
 def _intent_schema(*, media_mode=False):
     properties = {"name": {"type": "string", "enum": sorted(INTENTS)},
@@ -303,7 +325,7 @@ def _resolve_plan(reply, message, interpretation, validation, *, camera_enabled)
         kind = action_kinds.get(step.name)
         if kind:
             _, resolved = resolve_interpretation({**interpretation, "kind": kind}, message,
-                turn_token=interpretation["turn_token"], action_name=step.name)
+                turn_token=interpretation["turn_token"], action_name=_request_action(step))
             denied = None if resolved == "validated" else resolved
         else:
             denied = "invalid_plan"
@@ -562,7 +584,7 @@ class FeatureResponses:
                 message = current.get("content", "") if type(current) is dict and current.get("role") == "user" else ""
                 interpretation, validation = resolve_interpretation(reply.request_interpretation,
                     message, turn_token=turn_token, pending_confirmation=self.context.get("pending_confirmation"),
-                    action_name=reply.intent.name if reply.intent is not None else None)
+                    action_name=_request_action(reply.intent))
                 reply = replace(reply, request_interpretation=interpretation,
                     request_validation=validation)
                 # A naked device intent is not current-user consent. Reattach

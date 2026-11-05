@@ -116,7 +116,7 @@ class VoicePackV10Tests(unittest.TestCase):
         self.assertFalse((self.pack.directory/'pack.json').exists())
         self.imported()
         self.approve('RX01')
-        with self.pack.load_event('reaction_chuckle') as asset:
+        with self.pack.load_event('reaction_chuckle', context='playful') as asset:
             self.assertEqual(asset.text, '')
             self.assertEqual(asset.source_model, 'drama-3')
 
@@ -256,8 +256,9 @@ class VoicePackV10Tests(unittest.TestCase):
                                 ('video_ready','VIDEO_PREP_ACTING'), ('game_start','G02'),
                                 ('reaction_chuckle','RX01'), ('wake_ack','wake_ack_01')]:
             with self.subTest(event=event):
-                self.assertEqual(self.pack.select_event(event), expected)
-                with self.pack.load_event(event) as asset:
+                context = 'playful' if event == 'reaction_chuckle' else 'settled'
+                self.assertEqual(self.pack.select_event(event, context=context), expected)
+                with self.pack.load_event(event, context=context) as asset:
                     self.assertEqual(asset.clip_id, expected)
                     self.assertEqual(asset.source_model, 'drama-3')
         with self.pack.load_countdown() as asset:
@@ -327,6 +328,143 @@ class VoicePackV10Tests(unittest.TestCase):
         self.assertEqual((state['approved'],state['listened'],state['played']),(0,0,0))
         self.assertIsNone(self.pack.load_countdown())
         self.assertEqual(state['import_audit'][0]['actual_frames'], 220500)
+
+
+    def imported_actual_transcripts(self):
+        from bmo_ai.voice_pack_context import context_catalog
+        catalog = context_catalog()
+        def actual(rows, files):
+            for index, row in enumerate(rows):
+                row['spoken_text'] = catalog[row['clip_id']]['en']
+                path = 'release/'+row['file']
+                raw = files[path][:-2] + struct.pack('<h', 1000+index)
+                files[path] = raw
+                row['sha256'] = row['source_raw_sha256'] = hashlib.sha256(raw).hexdigest()
+        return self.imported(V10_IDS, mutate=actual)
+
+    def test_full_use_is_explicit_sha_pinned_permission_without_reaudition_or_listening_claim(self):
+        self.imported_actual_transcripts()
+        with self.assertRaises(VoiceBankError):self.pack.accept_full_use()
+        self.assertEqual(self.pack.snapshot()['played'], 0)
+        result = self.pack.accept_full_use(user_accepted=True)
+        self.assertEqual((result['status'], result['full_released']), ('FULL_USE_ACCEPTED', 142))
+        state = self.pack.snapshot()
+        self.assertTrue(state['full_user_accepted'])
+        self.assertEqual((state['full_released'], state['batch_released']), (142, 142))
+        self.assertEqual((state['approved'], state['listened'], state['played']), (0, 0, 0))
+        self.assertEqual(state['usage']['total'], 142)
+        self.assertFalse((self.pack.directory/'approvals.json').exists())
+        self.assertFalse((self.pack.directory/'listened.json').exists())
+        self.assertFalse((self.pack.directory/'played.json').exists())
+        self.approve('M04')
+        self.pack.disable_batch()
+        state = self.pack.snapshot()
+        self.assertFalse(state['full_user_accepted'])
+        self.assertEqual(state['full_released'], 0)
+        self.assertEqual((state['approved'], state['listened']), (1, 1))
+        self.assertEqual(self.pack.select_event('music_selected'), 'M04')
+        self.assertIsNone(self.pack.load_event('music_random'))
+
+    def test_queries_do_not_choose_or_write_and_actual_pool_is_fair_without_immediate_repeat(self):
+        from unittest.mock import Mock
+        self.imported_actual_transcripts()
+        self.pack.accept_full_use(user_accepted=True)
+        chooser = Mock(side_effect=lambda values: values[0])
+        self.pack.chooser = chooser
+        before = {p.name:(p.read_bytes(), p.stat().st_mtime_ns) for p in self.pack.directory.iterdir()}
+        for _ in range(4):
+            self.assertTrue(self.pack.has_event('music_selected'))
+            self.assertEqual(self.pack.select_event('music_selected'), 'M04')
+            self.pack.snapshot()
+        self.assertEqual(chooser.call_count, 0)
+        self.assertEqual(before, {p.name:(p.read_bytes(), p.stat().st_mtime_ns) for p in self.pack.directory.iterdir()})
+        chosen = []
+        for _ in range(9):
+            with self.pack.load_event('music_selected') as asset:
+                chosen.append(asset.clip_id)
+        self.assertEqual(chooser.call_count, 9)
+        self.assertTrue(all(left != right for left, right in zip(chosen, chosen[1:])), chosen)
+        for index in range(0, 9, 3):self.assertEqual(set(chosen[index:index+3]), {'M04','M05','M06'})
+        for _ in range(3):
+            with self.pack.load_event('music_random') as asset:
+                self.assertIn(asset.clip_id, ('M01','M02','M03'))
+        # Loading/requesting alone is not actual playback or human approval.
+        self.assertEqual(self.pack.snapshot()['played'], 0)
+
+    def test_legacy_generated_pins_migrate_but_manual_pins_off_and_source_files_survive(self):
+        from bmo_ai.voice_pack import BATCH_PREVIEW_IDS, BATCH_PREVIEW_MINIMUM
+        self.imported_actual_transcripts()
+        rows = {r['id']:r for r in self.pack.inventory()}
+        for clip in BATCH_PREVIEW_IDS[:BATCH_PREVIEW_MINIMUM]:
+            self.pack.mark_played(clip, rows[clip]['variants']['raw']['sha256'], review_requested=True)
+        self.pack.accept_batch(user_accepted=True)
+        # Simulate the old activation's selection.json, plus a different
+        # legacy manual pin and an explicitly confirmed same-default pin.
+        selected = {'music_selected':'M04', 'music_random':'M02', 'music_exit':'M10'}
+        path = self.pack.directory/'selection.json'
+        path.write_text(json.dumps(selected));path.chmod(0o600)
+        self.pack.select_event('music_exit', 'M10')
+        original = path.read_bytes()
+        self.pack.enable_event('music_selected', enabled=False)
+        self.pack.accept_full_use(user_accepted=True)
+        state = self.pack.snapshot()
+        self.assertEqual(path.read_bytes(), original)
+        self.assertNotIn('music_selected', state['selected_events'])
+        self.assertEqual(state['selected_events'], {'music_random':'M02','music_exit':'M10'})
+        self.assertEqual(state['selection_origins']['music_selected'], 'legacy_batch_default')
+        self.assertEqual(state['selection_origins']['music_random'], 'legacy_manual')
+        self.assertEqual(state['selection_origins']['music_exit'], 'manual')
+        self.assertFalse(self.pack.has_event('music_selected'))
+        self.pack.enable_event('music_selected', enabled=True)
+        chosen = []
+        for _ in range(3):
+            with self.pack.load_event('music_selected') as asset:chosen.append(asset.clip_id)
+            with self.pack.load_event('music_random') as asset:self.assertEqual(asset.clip_id, 'M02')
+        self.assertEqual(set(chosen), {'M04','M05','M06'})
+        self.pack.select_event('music_selected', 'M05')
+        for _ in range(3):
+            with self.pack.load_event('music_selected') as asset:self.assertEqual(asset.clip_id, 'M05')
+
+    def test_selected_caption_id_pcm_sha_and_context_are_one_asset(self):
+        from bmo_ai.voice_pack_context import context_catalog
+        catalog = context_catalog()
+        self.imported_actual_transcripts()
+        self.pack.accept_full_use(user_accepted=True)
+        rows = {r['id']:r for r in self.pack.inventory()}
+        self.assertEqual(len({rows[c]['variants']['raw']['sha256'] for c in ('M04','M05','M06')}), 3)
+        for _ in range(3):
+            with self.pack.load_event('music_selected') as asset:
+                self.assertEqual(asset.sha256, hashlib.sha256(asset.path.read_bytes()).hexdigest())
+                self.assertEqual(asset.sha256, rows[asset.candidate_id]['variants']['raw']['sha256'])
+                self.assertEqual(asset.text, catalog[asset.clip_id]['en'])
+                self.assertEqual(asset.captions, {lang:catalog[asset.clip_id][lang] for lang in ('en','ko')})
+        with self.pack.load_event('reaction_chuckle', context='playful') as asset:
+            self.assertEqual(asset.captions, {'en':'','ko':''})
+        self.assertFalse(self.pack.has_event('reaction_chuckle', context='distress'))
+        self.assertIsNone(self.pack.load_event('reaction_sob', context='settled'))
+        self.assertFalse(self.pack.has_event('idle', emotion='sad'))
+        self.assertFalse(self.pack.has_event('idle', context='distress'))
+        recent = [cid for cid in catalog if cid.startswith('C')]
+        self.assertFalse(self.pack.has_event('idle', recent=recent))
+        with self.pack.load_event('idle') as asset:
+            self.assertLessEqual(catalog[asset.clip_id]['duration_seconds'], 10.)
+        self.pack.select_event('music_selected', 'M05')
+        digest = rows['M05']['variants']['raw']['sha256']
+        (self.pack.directory/(digest+'.wav')).write_bytes(pcm(.2))
+        with self.assertRaises(VoiceBankError):self.pack.load_event('music_selected')
+
+    def test_full_use_rejects_incomplete_inventory_and_cli_does_not_play(self):
+        from contextlib import redirect_stdout
+        from bmo_ai.voice_pack import main
+        self.imported()
+        with self.assertRaises(VoiceBankError):self.pack.accept_full_use(user_accepted=True)
+        self.pack = OrganizedVoicePack(self.root/'complete-pack')
+        self.imported_actual_transcripts()
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(main(['--root',str(self.pack.directory),'accept-full-use','--user-accepted']), 0)
+        self.assertEqual(json.loads(output.getvalue())['full_released'], 142)
+        self.assertEqual(self.pack.snapshot()['played'], 0)
 
 
 if __name__ == '__main__': unittest.main()

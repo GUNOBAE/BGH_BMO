@@ -27,7 +27,7 @@ class V10SemanticCacheAdmissionTests(unittest.TestCase):
         self.voices = pack_fixtures.VoicePackV10Tests('runTest')
         self.voices.setUp()
         self.addCleanup(self.voices.doCleanups)
-        self.voices.imported(('PH_READY_03','PH_COUNTDOWN_05S','VIDEO_PREP_ACTING','TRACK_STOP','M04'))
+        self.voices.imported(('PH_READY_03','PH_COUNTDOWN_05S','VIDEO_PREP_ACTING','TRACK_STOP','M04','M01','M02','M03'))
         for clip in ('PH_READY_03','PH_COUNTDOWN_05S','VIDEO_PREP_ACTING','TRACK_STOP','M04'):
             self.voices.approve(clip)
         self.synthesized = []
@@ -81,7 +81,7 @@ class V10SemanticCacheAdmissionTests(unittest.TestCase):
         self.assertEqual(len(played),1)
 
 
-    def music_host(self, *, menu=False):
+    def music_host(self, *, menu=False, random=False):
         source = self.app.directory/'fixture-song.wav'
         source.write_bytes(pack_fixtures.pcm(seconds=3.))
         source.chmod(0o600)
@@ -108,7 +108,8 @@ class V10SemanticCacheAdmissionTests(unittest.TestCase):
         def synth(text, **_):
             self.synthesized.append(text)
             return synthetic_wav()
-        value = envelope(kind='media',disposition='execute',intent=dict(name='play_song',target='space_potatoes'))
+        value = envelope(kind='media',disposition='execute',intent=dict(
+            name='play_random' if random else 'play_song',target=None if random else 'space_potatoes'))
         with patch('bmo_ai.features.media.SampleClockWavBackend',side_effect=factory):
             host,provider,clock,_ = self.app.make_host([] if menu else [value],player=player,
                 synthesize=synth,music_directory=library,music_supervised=True,
@@ -131,6 +132,39 @@ class V10SemanticCacheAdmissionTests(unittest.TestCase):
         self.assertEqual(host.audio.owner,'music')
         self.assertEqual(self.synthesized,[])
         self.assertEqual(len(provider.requests),1)
+
+    def test_bmo_chooses_song_once_and_random_preparation_uses_three_fair_clips(self):
+        for clip in ('M01','M02','M03'):self.voices.approve(clip)
+        host,provider,_,backend,entered,release,events = self.music_host(random=True)
+        selected = []
+        original = host.voice_pack.load_event
+        def load(event, **kwargs):
+            asset = original(event, **kwargs)
+            if asset is not None:selected.append((event,asset.clip_id))
+            return asset
+        with patch.object(host.voice_pack,'load_event',side_effect=load), patch(
+                'secrets.choice',side_effect=lambda items:items[0]) as choose:
+            self.assertTrue(host.start_question('Pick some music for me.'))
+            self.app.finish(host,lambda:entered.is_set())
+            self.assertEqual(choose.call_count,1)
+            self.assertIsNone(backend.handle)
+            self.assertEqual(self.synthesized,[])
+            release.set()
+            self.app.finish(host,lambda:host.modes.mode=='music' and backend.handle is not None)
+            for index in (1,2):
+                host.execute(HostIntent('return_to_face'),request_id='random_back_'+str(index))
+                request = 'choose_once_'+str(index)
+                host.execute(HostIntent('play_random'),request_id=request)
+                host.execute(HostIntent('play_random'),request_id=request)
+                self.app.finish(host,lambda:host.modes.mode=='music' and backend.handle is not None)
+            self.assertEqual(choose.call_count,3)
+        self.assertEqual(len(provider.requests),1)
+        self.assertEqual(self.synthesized,[])
+        self.assertEqual(len(selected),3)
+        self.assertEqual({event for event,clip in selected},{'music_random'})
+        self.assertEqual({clip for event,clip in selected},{'M01','M02','M03'})
+        self.assertFalse(self.played('M04'))
+        self.assertEqual(events.count('music_started'),3)
 
     def test_menu_song_cancel_retires_cached_preparation_and_late_completion_cannot_start_song(self):
         host,provider,_,backend,entered,release,events = self.music_host(menu=True)

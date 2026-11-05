@@ -39,6 +39,8 @@ class Resource:
 class PlayerProbe:
     def __init__(self):
         self.lock, self.cached_started, self.release = Lock(), Event(), Event()
+        self.cached_ready, self.begin = Event(), Event()
+        self.cached_prestart = self.fail_cached = False
         self.cached_blocked = False
         self.active = self.maximum = self.cached_calls = self.dialogue_calls = 0
 
@@ -49,13 +51,21 @@ class PlayerProbe:
                 if category == "cached": self.cached_calls += 1
                 else: self.dialogue_calls += 1
             try:
-                cancel_check();on_start()
+                cancel_check()
+                if category == 'cached':
+                    self.cached_ready.set()
+                    deadline = time.monotonic()+3
+                    while self.cached_prestart and not self.begin.wait(.002):
+                        cancel_check()
+                        if time.monotonic() > deadline: raise AssertionError('Synthetic pre-start gate timed out')
+                on_start()
                 if category == "cached":
                     self.cached_started.set()
                     deadline = time.monotonic()+3
                     while self.cached_blocked and not self.release.wait(.002):
                         cancel_check()
                         if time.monotonic() > deadline: raise AssertionError("Synthetic cache gate timed out")
+                    if self.fail_cached: raise RuntimeError('Synthetic player failure')
                 cancel_check()
             finally:
                 with self.lock: self.active -= 1
@@ -73,7 +83,7 @@ class CharacterDesktopTests(unittest.TestCase):
             self.enterContext(patch(target, side_effect=AssertionError("Real IO forbidden")))
 
     def tearDown(self):
-        for probe in self.probes: probe.release.set()
+        for probe in self.probes: probe.begin.set();probe.release.set()
         for app in reversed(self.apps): app.close()
 
     def fixture(self, *, blocked_boot=False, presence_mode="off", character_life=True,
@@ -133,6 +143,112 @@ class CharacterDesktopTests(unittest.TestCase):
     def finish_turn(self, fixture):
         self.pump(fixture, lambda: fixture.app._worker is None and not fixture.host.session.busy
                   and fixture.host.audio.owner is None)
+
+    def attach_v10_idle(self, fixture):
+        # Use the actual importer, asset selector and IntegrationVoice player.
+        # PCM is generated here; no private recording or device is opened.
+        import test_voice_pack_v10 as assets
+        from bmo_ai.voice_pack_context import context_for
+        helper = assets.VoicePackV10Tests();helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        def script(rows, _files):
+            for row in rows: row['spoken_text'] = context_for(row['clip_id'])['en']
+        helper.imported(('C02', 'C05'), mutate=script)
+        for clip in ('C02', 'C05'): helper.approve(clip)
+        fixture.app.greeting.bank_player.voice.event_pack = helper.pack
+        fixture.host.voice_pack = helper.pack
+        fixture.host.session.voice.event_pack = helper.pack
+        return helper.pack
+
+    def idle_due(self, fixture):
+        fixture.host.session.set_emotion('happy');fixture.host.session.set_emotion('auto')
+        fixture.app._presence.interval = lambda low, _high: low
+        fixture.app._presence.set_mode('normal');fixture.clock.now += 180
+
+    def test_v10_idle_captions_follow_actual_start_exact_clip_language_off_and_end(self):
+        from bmo_ai.voice_pack_context import context_for
+        fixture = self.fixture();self.ready(fixture)
+        pack = self.attach_v10_idle(fixture)
+        fixture.app.queue_command('idleKo', HostControl('subtitles', 'ko'));fixture.app.poll()
+        fixture.probe.cached_ready.clear();fixture.probe.cached_prestart = True
+        fixture.probe.cached_blocked = True
+        self.idle_due(fixture)
+        self.pump(fixture, lambda: fixture.app.face_snapshot().get('playback') == 'prepared')
+        self.assertEqual(fixture.app.face_snapshot()['caption']['text'], '')
+        fixture.probe.begin.set()
+        self.pump(fixture, lambda: fixture.app.face_snapshot().get('playback') == 'started')
+        state = fixture.app.face_snapshot();identity = state['caption_asset']
+        selected = context_for(identity['clip_id'])
+        row = next(row for row in pack.inventory() if row['id'] == identity['candidate_id'])
+        self.assertEqual(identity['sha256'], row['variants']['raw']['sha256'])
+        self.assertEqual(state['caption'], dict(mode='ko', language='ko', text=selected['ko']))
+        fixture.app.queue_command('idleEn', HostControl('subtitles', 'en'));fixture.app.poll()
+        self.assertEqual(fixture.app.face_snapshot()['caption']['text'], selected['en'])
+        self.assertEqual(fixture.app.face_snapshot()['caption_asset'], identity)
+        fixture.app.queue_command('idleOff', HostControl('subtitles', 'off'));fixture.app.poll()
+        self.assertEqual(fixture.app.face_snapshot()['caption']['text'], '')
+        self.assertNotIn('caption_asset', fixture.app.face_snapshot())
+        fixture.app.queue_command('idleKoAgain', HostControl('subtitles', 'ko'));fixture.app.poll()
+        self.assertEqual(fixture.app.face_snapshot()['caption']['text'], selected['ko'])
+        fixture.probe.release.set();self.ready(fixture)
+        self.assertEqual(fixture.app.face_snapshot()['caption']['text'], '')
+        self.assertNotIn('caption_asset', fixture.app.face_snapshot())
+        self.assertEqual(fixture.host.session.brain.history, [])
+        self.assertFalse(fixture.host.session.voice.has_cache)
+        self.assertEqual(fixture.client.requests, [])
+
+    def test_v10_idle_cancel_error_and_new_question_remove_caption_then_allow_next_turn(self):
+        for terminal in ('cancel', 'error', 'question'):
+            with self.subTest(terminal=terminal):
+                fixture = self.fixture();self.ready(fixture);self.attach_v10_idle(fixture)
+                fixture.app.queue_command('idleEnglish', HostControl('subtitles', 'en'));fixture.app.poll()
+                fixture.probe.cached_blocked = True;self.idle_due(fixture)
+                self.pump(fixture, lambda: bool(fixture.app.face_snapshot()['caption']['text']))
+                if terminal == 'error':
+                    fixture.probe.fail_cached = True;fixture.probe.release.set()
+                else:
+                    fixture.app.queue_command('idleTerminal', HostControl(terminal,
+                        'A synthetic next question.' if terminal == 'question' else None))
+                    self.assertEqual(fixture.app.face_snapshot()['caption']['text'], '')
+                self.ready(fixture)
+                if terminal != 'question':
+                    self.assertEqual(fixture.app.face_snapshot()['caption']['text'], '')
+                    fixture.app.queue_command('afterIdleTerminal', HostControl('question', 'A synthetic next question.'))
+                self.pump(fixture, lambda: len(fixture.client.requests) == 1);self.finish_turn(fixture)
+                self.assertEqual(fixture.probe.maximum, 1)
+                self.assertEqual(len(fixture.host.session.brain.history), 2)
+
+    def test_settings_lease_idle_revoke_and_mute_preempt_without_generation_or_legacy_fallback(self):
+        for terminal in ('settings', 'mute', 'idle_off'):
+            with self.subTest(terminal=terminal):
+                fixture = self.fixture();self.ready(fixture);pack = self.attach_v10_idle(fixture)
+                fixture.probe.cached_blocked = True;self.idle_due(fixture)
+                self.pump(fixture, lambda: fixture.app.face_snapshot().get('playback') == 'started')
+                if terminal == 'settings':
+                    fixture.app.queue_desktop_control('openSettings', dict(action='ui_activity', value=True))
+                elif terminal == 'mute':
+                    fixture.app.queue_command('idleMute', HostControl('volume', dict(level=.25, muted=True)))
+                else:
+                    fixture.app.queue_command('idleOff', HostControl('voice_batch_event', dict(event='idle', enabled=False)))
+                self.ready(fixture)
+                self.assertIsNone(fixture.host.audio.owner)
+                self.assertEqual(fixture.client.requests, [])
+                self.assertEqual(fixture.host.session.brain.history, [])
+                if terminal == 'settings':
+                    self.assertTrue(fixture.app.startup_snapshot()['character_life']['settings_active'])
+                    fixture.clock.now += 11;fixture.app.heartbeat();fixture.app.poll()
+                    self.assertFalse(fixture.app.startup_snapshot()['character_life']['settings_active'])
+                    self.assertEqual(fixture.probe.cached_calls, 2)  # Fresh quiet interval after UI use.
+                elif terminal == 'idle_off':
+                    self.assertFalse(pack.has_event('idle', emotion='happy', context='settled'))
+                    fixture.clock.now += 180;self.ready(fixture)
+                    self.assertEqual(fixture.probe.cached_calls, 2)  # No legacy fallback bypasses OFF.
+                else:
+                    fixture.clock.now += 180;fixture.app.heartbeat();fixture.app.poll()
+                    self.assertEqual(fixture.probe.cached_calls, 2)
+                fixture.app.queue_command('nextConversation', HostControl('question', 'A synthetic next question.'))
+                self.pump(fixture, lambda: len(fixture.client.requests) == 1);self.finish_turn(fixture)
+                self.assertEqual(fixture.probe.maximum, 1)
 
     def test_cached_boot_gp8_double_edge_preempts_once_without_player_or_microphone_overlap(self):
         fixture = self.fixture(blocked_boot=True)
@@ -224,7 +340,7 @@ class CharacterDesktopTests(unittest.TestCase):
         fixture.app.queue_command("gp8DuringIdle", HostControl("ptt"))
         self.pump(fixture, lambda: len(fixture.client.requests) == 1);self.finish_turn(fixture)
         self.assertEqual((len(fixture.sources), len(fixture.transcriptions), len(fixture.client.requests)), (1, 1, 1))
-        self.assertEqual(fixture.app._presence.snapshot()["heard_in_15_minutes"], 0)
+        self.assertEqual(fixture.app._presence.snapshot()["heard_in_15_minutes"], 1)
         self.assertEqual(fixture.probe.maximum, 1)
 
     def test_idle_timeout_joins_owned_player_then_restores_ready_and_gp8_conversation(self):
