@@ -8,6 +8,7 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -22,6 +23,23 @@ sys.path.insert(0, str(SOFTWARE))
 from checks import check_desktop_app_browser as desktop
 from checks.check_full_batch_browser import replace_once
 from bmo_ai.screen_profiles import SCREEN_PROFILES
+
+
+def publish_media_clock(directory, value):
+    """Publish a complete fake clock; the owner must never read a truncation."""
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValueError('Fixture media clock must be finite')
+    staged = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='ascii', dir=directory,
+                                         prefix='.media-clock-', delete=False) as output:
+            staged = Path(output.name)
+            output.write(repr(float(value)))
+        os.replace(staged, Path(directory)/'media-clock.txt')
+        staged = None
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
 
 
 def child_source():
@@ -277,7 +295,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.wait_for_function("()=>Math.abs(document.querySelector('#music-video').currentTime-2)<.15")
                 page.locator('#music-replay').click()
                 wait(lambda state:state['media']['position']<.01 and state['media']['state']=='playing')
-                (Path(directory)/'media-clock.txt').write_text('.5')
+                publish_media_clock(directory,.5)
                 wait(lambda state:abs(state['media']['position']-.5)<.01)
                 page.wait_for_function("()=>Math.abs(document.querySelector('#music-video').currentTime-.5)<.4")
                 page.keyboard.down('Enter');page.keyboard.up('Enter')
@@ -321,14 +339,35 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert player.evaluate("v=>v.paused&&!v.hasAttribute('src')")
                 checks.append('real GP8 edges pause once; seek/replay follow owner clock; pause retires a pending decoder play attempt and resumes video; Escape detaches decoder, ignores its delayed play rejection, and held key release cannot start PTT')
                 checks.append('delayed feature delivery exposes backend paused / rendered Pause; toggle waits for rendered Play and decoder pause, then sends exactly one resume')
-                (Path(directory)/'media-clock.txt').write_text('0')
+                publish_media_clock(directory,0)
                 start('face')
                 assert page.locator('#music-toolbar').is_hidden()
                 reveal()
                 assert page.locator('#music-video-view').is_hidden()
                 assert player.evaluate("v=>!v.hasAttribute('src')")
-                (Path(directory)/'media-clock.txt').write_text('.35')
+                # Keep the live owner polling while an unpublished stage is
+                # empty or incomplete. Only rename publishes the new clock;
+                # catching float errors/defaulting to zero would hide this bug.
+                replace_clock=os.replace
+                published=[]
+                def inspect_clock_publication(staged,target):
+                    staged,target=Path(staged),Path(target)
+                    complete,previous=staged.read_bytes(),target.read_bytes()
+                    assert staged.parent==target.parent and staged!=target
+                    for partial in (b'',b'.'):
+                        staged.write_bytes(partial)
+                        before=fixture.features()['sequence']
+                        stable=wait(lambda state:state['sequence']>before)
+                        assert stable['mode']=='music' and stable['media']['state']=='playing'
+                        assert stable['media']['position']==0 and target.read_bytes()==previous
+                    staged.write_bytes(complete)
+                    replace_clock(staged,target)
+                    published.append(float(target.read_text()))
+                with patch.object(os,'replace',inspect_clock_publication):
+                    publish_media_clock(directory,.35)
+                assert published==[.35]
                 page.wait_for_function("()=>document.querySelector('#face').contentWindow.BMOFace.getState().mouth==='wide'")
+                checks.append('atomic fixture clock publication keeps the running owner at its prior value while staging is empty/partial, then drives the unchanged mouth cue from the complete new value')
                 toggle_music('paused')
                 page.wait_for_function("()=>document.querySelector('#face').contentWindow.BMOFace.getState().mouth==='closed'")
                 page.locator('#music-back').click();wait(lambda state:state['mode']=='conversation')
