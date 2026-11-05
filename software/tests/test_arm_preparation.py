@@ -123,7 +123,7 @@ class ArmRuntimeReasonTests(unittest.TestCase):
         self.assertEqual(state['side_reference'], 'bmo_own')
         self.assertEqual(state['operation'], 'idle')
         self.assertEqual(state['cancel_semantics'], 'hold_current_commanded_position')
-        self.assertEqual(state['stop_semantics'], 'latch_until_session_restart_not_power_cut')
+        self.assertEqual(state['stop_semantics'], 'board_latch_not_cleared_by_host_restart_not_power_cut')
         self.assertFalse(self.port.sent)
 
 

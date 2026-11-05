@@ -6,6 +6,7 @@ import unittest
 from bmo_ai.captions import clean_caption
 from bmo_ai.voice_pack_context import (
     captions_for, context_catalog, context_for, eligible, event_groups, usage_report,
+    performance_for, validated_performance,
 )
 from test_voice_pack_v10 import V10_IDS
 
@@ -58,6 +59,40 @@ class VoicePackContextTests(unittest.TestCase):
         self.assertNotIn('VIDEO_TAKE_FINISHED', groups['video_saved'])
         self.assertEqual(groups['error_network'], ('E07',))
         self.assertNotIn('video_recording_started', groups)
+
+    def test_idle_performance_is_separate_from_selection_conditions_and_has_no_guessed_cues(self):
+        rows = context_catalog()
+        idle = {clip: row for clip, row in rows.items() if 'idle' in row['events']}
+        self.assertEqual(len(idle), 18)
+        for clip, row in idle.items():
+            plan = performance_for(clip, row['en'], candidate_id=clip, sha256='a'*64)
+            self.assertEqual(plan['source'], 'local_clip_plan')
+            self.assertIn(plan['face_emotion'], ('neutral', 'happy'))
+            self.assertEqual(row['emotions'], ['neutral', 'happy'])
+            self.assertNotIn('cues', plan)
+            if 'gaze' in plan:
+                self.assertLessEqual(abs(plan['gaze']['x']), .12)
+                self.assertLessEqual(abs(plan['gaze']['y']), .08)
+                self.assertLessEqual(plan['gaze']['hold_seconds'], 2.)
+        # Only a few lines have a reason for a brief glance, not an eye loop
+        # on every line. Long retained lines stay outside automatic idle.
+        self.assertEqual(sum('gaze' in row['performance'] for row in idle.values()), 4)
+        self.assertFalse(eligible('C09', 'idle'))
+        self.assertFalse(eligible('C12', 'idle'))
+
+    def test_performance_requires_exact_script_identity_and_rejects_changed_plan(self):
+        row = context_for('C01')
+        identity = dict(clip_id='C01', candidate_id='C01', sha256='a'*64)
+        plan = performance_for('C01', row['en'], candidate_id='C01', sha256='a'*64)
+        self.assertEqual(validated_performance(plan, identity), plan)
+        for other in (dict(identity, clip_id='C02'), dict(identity, sha256='b'*64),
+                      dict(identity, candidate_id='C01_B')):
+            self.assertIsNone(validated_performance(plan, other))
+        self.assertIsNone(validated_performance(dict(plan, face_emotion='angry'), identity))
+        self.assertIsNone(validated_performance(dict(plan, cues=[{'at': 1., 'emotion':'happy'}]), identity))
+        self.assertIsNone(performance_for('C01', 'Different take.', candidate_id='C01', sha256='a'*64))
+        self.assertIsNone(performance_for('C01', row['en'], candidate_id='C01', sha256='not a hash'))
+        self.assertIsNone(performance_for('M04', context_for('M04')['en'], candidate_id='M04', sha256='a'*64))
 
     def test_idle_and_reaction_eligibility_respects_context_emotion_and_length(self):
         self.assertTrue(eligible('C02', 'idle', emotion='neutral', context='settled'))

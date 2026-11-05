@@ -481,6 +481,12 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         except Exception:
                             arm_setup_error = 'arm_cleanup_unverified'
                     settings['runtime'] = replace(settings['runtime'], arms_supervised=False)
+                    # A missing/offline optional arm must not prevent the face
+                    # and conversation owner from starting. Preserve requested
+                    # admission separately from the effective disabled adapter.
+                    settings['arm_supervision_requested'] = args.arms_supervised
+                    settings['emotion_arms_requested'] = args.emotion_arms
+                    settings['emotion_arms'] = False
                     settings.pop('motion', None)
             host = host_factory(**settings)
             if cloud_setup_error:

@@ -185,6 +185,14 @@ def _public_snapshot(value):
     # Prepared/terminal snapshots cannot accidentally hand out old cues.
     if out["playback"] != "started":
         out["cues"] = []
+    if (out['source'] == 'cached_idle' and out['playback'] == 'started'
+            and out['phase'] == 'speaking' and type(value.get('performance_plan')) is dict):
+        from .voice_pack_context import validated_performance
+        plan = value['performance_plan']
+        identity = {key: plan.get(key) for key in ('clip_id', 'candidate_id', 'sha256')}
+        safe = validated_performance(plan, identity)
+        if safe is not None:
+            out['performance_plan'] = safe
     if 'caption' in value:
         from .captions import clean_caption, MODES
         caption = value.get('caption')

@@ -129,6 +129,23 @@ class PresenceSchedulerTests(unittest.TestCase):
         with self.assertRaises(PresenceError): value.due(audio_busy="false")
         with self.assertRaises(PresenceError): value.completed(1)
 
+    def test_diagnostics_report_current_suppression_and_real_quota_wait_without_rescheduling(self):
+        value = self.scheduler()
+        self.assertEqual(value.snapshot()['suppression_reason'], 'interval')
+        remaining = value.snapshot()['next_in_seconds']
+        cases = [(dict(muted=True),'muted'), (dict(settings_active=True),'settings_active'),
+                 (dict(phase='listening'),'conversation_active'), (dict(audio_busy=True),'audio_busy'),
+                 (dict(video_active=True),'recording_active'), (dict(game_active=True),'game_active')]
+        for context, reason in cases:
+            self.assertEqual(value.snapshot(**context)['suppression_reason'], reason)
+            self.assertEqual(value.snapshot()['next_in_seconds'], remaining)
+        for now in (180,360):
+            self.clock.now = now;self.assertTrue(value.due());value.started();value.completed(True)
+        self.clock.now = 540
+        state = value.snapshot()
+        self.assertEqual(state['suppression_reason'], 'quota')
+        self.assertEqual(state['next_in_seconds'], 540.)
+
 
 class IdleGazeTests(unittest.TestCase):
     def test_small_deterministic_targets_wait_and_yield_to_higher_owner(self):

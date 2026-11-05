@@ -139,6 +139,11 @@ class LegacyArmLink:
             raise LegacyArmError("already_connected")
         code = self._request("HELLO {rid}", is_hello=True)
         if code != "READY":
+            if code == "STOPPED":
+                # A new Desktop/HELLO cannot clear the board's STOP, GP7 or
+                # watchdog latch. Preserve this explicit remote observation
+                # separately from an unverified transport failure.
+                self.stopped = True
             self.unknown = True
             raise LegacyArmError("firmware_not_ready_" + code.lower())
         return code
@@ -431,11 +436,11 @@ class LegacyMotionFeature:
         stopped = self.stopped or self.link.stopped
         unknown = self.fault or self.link.unknown
         usable = not (closed or stopped or unknown) and self.link.boot is not None
-        reason = (self.fault or "arm_link_unknown" if unknown else
-                  "arm_closed" if closed else "arm_stopped" if stopped else
+        reason = ("arm_closed" if closed else "arm_stopped" if stopped else
+                  self.fault or "arm_link_unknown" if unknown else
                   "position_unverified" if usable else "hello_required")
-        transport = ("CLOSED" if self.link.closed else "UNKNOWN" if self.link.unknown else
-                     "STOPPED" if self.link.stopped else
+        transport = ("CLOSED" if self.link.closed else "STOPPED" if self.link.stopped else
+                     "UNKNOWN" if self.link.unknown else
                      "ACKNOWLEDGED" if self.link.boot is not None else "NOT_CONNECTED")
         blocked = []
         if self.link.last_response_code == 'DISABLED':
@@ -457,11 +462,11 @@ class LegacyMotionFeature:
                 "last_error_code": self.last_error,
                 "queued": int(self.pending is not None),
                 "active": self.pending is not None or self.active_until is not None,
-                "stopped": self.stopped, "closed": self.closed,
+                "stopped": stopped, "closed": closed,
                 "supported_gestures": sorted(NAMED_GESTURES), "side_reference": "bmo_own",
                 "blocked_reasons": blocked, "operation": operation,
                 "cancel_semantics": "hold_current_commanded_position",
-                "stop_semantics": "latch_until_session_restart_not_power_cut",
+                "stop_semantics": "board_latch_not_cleared_by_host_restart_not_power_cut",
                 "position_verified": False, "physical_verified": False,
                 "preflight": {"status": "BLOCKED" if closed or stopped or unknown else "CONFIGURED",
                               "scope": "software_adapter",

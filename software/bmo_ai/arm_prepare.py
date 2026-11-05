@@ -59,7 +59,7 @@ def prepare_legacy_session(*, firmware_root=None, mount=MOUNT, reviewed_sha=None
         operator_declarations={'user_present': user_present, 'power_off_ready': power_off_ready},
         blocked_reasons=[], launcher_argv=None,
         cancel_semantics='hold_current_commanded_position',
-        stop_semantics='latch_until_session_restart_not_power_cut',
+        stop_semantics='board_latch_not_cleared_by_host_restart_not_power_cut',
         rollback='close_candidate_normally_then_use_preserved_BMO_REAL_ROBOT')
     try:
         code = _source(mount / 'code.py')

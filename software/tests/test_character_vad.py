@@ -224,6 +224,36 @@ class RealLocalVadReferenceTests(unittest.TestCase):
         self.assertEqual((result["capture_status"],result["capture_code"]),("cancelled","user_cancelled"))
         self.assertEqual(result["retained_bytes"],0)
 
+    def test_both_profiles_preserve_quiet_single_reference_onset_tail_and_cancel(self):
+        speech = reference(.002)
+        pcm = pack(speech + [0] * 24000)
+        results = {}
+        for profile, tail in (("baseline", .9), ("balanced", .6)):
+            with self.subTest(profile=profile):
+                result = replay_pcm(pcm, vad_mode="webrtc", silence_timeout=tail)
+                results[profile] = result
+                self.assertEqual((result["capture_status"], result["capture_code"]), ("ready", "silence"))
+                self.assertGreaterEqual(result["retained_bytes"], len(speech) * 2)
+                self.assertEqual(result["retained_pcm_sha256"], sha256(pcm[:result["retained_bytes"]]).hexdigest())
+                self.assertEqual(result["physical_device"], "NOT_RUN")
+                cancelled = replay_pcm(pcm, vad_mode="webrtc", silence_timeout=tail, cancel_at=.4)
+                self.assertEqual((cancelled["capture_status"], cancelled["retained_bytes"]), ("cancelled", 0))
+        self.assertGreater(results["baseline"]["replay_clock_seconds"], results["balanced"]["replay_clock_seconds"])
+
+    def test_balanced_comparison_exposes_reference_hesitation_cutoff_instead_of_claiming_full_preservation(self):
+        # The reference's own trailing unvoiced audio adds to this inserted
+        # pause. A .6s tail can close before the second phrase even though the
+        # inserted pause alone is .48s. Keep baseline as the product default.
+        speech = reference(.004)
+        both = speech + [0] * 7680 + speech
+        pcm = pack(both + [0] * 24000)
+        baseline = replay_pcm(pcm, vad_mode="webrtc", silence_timeout=.9)
+        balanced = replay_pcm(pcm, vad_mode="webrtc", silence_timeout=.6)
+        self.assertGreaterEqual(baseline["retained_bytes"], len(both) * 2)
+        self.assertLessEqual(balanced["retained_bytes"], (len(speech) + 7680) * 2)
+        self.assertNotEqual(baseline["retained_pcm_sha256"], balanced["retained_pcm_sha256"])
+        self.assertEqual(balanced["human_speech_accuracy"], "NOT_RUN")
+
     def test_long_leading_silence_is_trimmed_without_cutting_first_reference_samples(self):
         speech=reference(.004)
         pcm=pack([0]*32000+speech+[0]*24000)

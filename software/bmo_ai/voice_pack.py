@@ -163,6 +163,7 @@ class PackAsset:
     cues: tuple
     provenance: dict = field(default_factory=dict)
     captions: dict = field(default_factory=dict)
+    performance_plan: dict | None = None
 
     def close(self):
         audio._discard(self.path, suppress=True)
@@ -911,6 +912,50 @@ class OrganizedVoicePack:
     def has_event(self, event, *, emotion='neutral', context='settled', recent=()):
         return self.select_event(event, emotion=emotion, context=context, recent=recent) is not None
 
+    def event_diagnostics(self, event, *, emotion='neutral', context='settled', recent=()):
+        """Read-only admission evidence; no PCM reads, selection or history writes.
+
+        Counts describe registry authorization, not proof that an audio file is
+        intact or that a speaker played it. The actual load still verifies SHA.
+        Mode, owner and timing suppression belong to the runtime scheduler.
+        """
+        from .voice_pack_context import eligible
+        if event not in EVENT_CANDIDATES:
+            raise VoiceBankError('voice_pack_event_invalid')
+        if type(recent) not in (tuple, list, set, frozenset) or len(recent) > 224 or any(type(value) is not str for value in recent):
+            raise VoiceBankError('voice_pack_event_invalid')
+        result = dict(event=event, eligible_count=0, pool_count=0, authorized_count=0,
+                      pinned_candidate=None, pin_origin=None, last_selected=self._last_selected.get(event),
+                      release_scope='none', released_count=0, blocked_reason='voice_pack_asset_pending',
+                      basis='registry_admission_only', playback_verified=False)
+        try:
+            with self._root() as root:
+                record = self._index(root)
+                approvals = self._approvals(root)
+                release = self._batch_release(root, record)
+                selected = self._effective_selection(root, record)
+                origins = self._selection_origins(root)
+                disabled = event in self._disabled_events(root)
+                pool = [row for row in record['candidates'] if self._matches(row, event)]
+                pin = selected.get(event)
+                pinned = [row for row in pool if pin is None or row['id'] == pin]
+                authorized = [row for row in pinned if any(self._authorized(
+                    approvals, release, row, name, record['archive_sha256']) for name in row['variants'])]
+                contextual = [row for row in authorized if eligible(row['clip_id'], event,
+                              emotion=emotion, context=context)]
+                admitted = [row for row in contextual if row['id'] not in recent and row['clip_id'] not in recent]
+                reason = ('event_off' if disabled else 'no_event_candidates' if not pool
+                          else 'pinned_candidate_missing' if not pinned else 'not_authorized' if not authorized
+                          else 'context_or_duration' if not contextual else 'recent_cooldown' if not admitted else 'ready')
+                result.update(eligible_count=len(admitted) if not disabled else 0, pool_count=len(pool),
+                              authorized_count=len(authorized), pinned_candidate=pin,
+                              pin_origin=origins.get(event, 'legacy_manual') if pin is not None else None,
+                              release_scope=release.get('scope', 'initial') if release else 'none',
+                              released_count=len(release.get('items', {})), blocked_reason=reason)
+        except VoiceBankError as error:
+            result['blocked_reason'] = error.code
+        return result
+
     @staticmethod
     def _matches(row, event):
         identifier = row['clip_id']
@@ -962,7 +1007,7 @@ class OrganizedVoicePack:
 
     @staticmethod
     def _asset(row, variant, record, raw, *, cancel_check=None, review_requested=False):
-        from .voice_pack_context import captions_for
+        from .voice_pack_context import captions_for, performance_for
         output = audio._new_wav(audio.AudioPlaybackError)
         try:
             output.write_bytes(raw)
@@ -976,7 +1021,9 @@ class OrganizedVoicePack:
                                   fingerprint=OrganizedVoicePack._provenance(row, 'preview_gain025' if variant['baked_gain'] == .25 else 'raw', record['archive_sha256']),
                                   review_only=review_requested,
                                   handoff_metadata=row.get('handoff_metadata', {})),
-                             captions_for(row['clip_id'], row['text']))
+                             captions_for(row['clip_id'], row['text']),
+                             performance_for(row['clip_id'], row['text'], candidate_id=row['id'],
+                                             sha256=variant['sha256']))
         except BaseException:
             audio._discard(output, suppress=True)
             raise

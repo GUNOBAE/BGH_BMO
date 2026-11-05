@@ -205,6 +205,10 @@ class IntegrationVoice:
                         for key in ('clip_id', 'candidate_id'))
                         and type(asset.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}', asset['sha256'])):
                     result['caption_asset'] = dict(asset)
+                    from .voice_pack_context import validated_performance
+                    performance = validated_performance(value.get('performance_plan'), asset)
+                    if performance is not None:
+                        result['performance_plan'] = performance
         return result
 
     @property
@@ -526,6 +530,12 @@ class IntegrationVoice:
                 metadata = dict(metadata, caption_payload=dict(getattr(event_asset, 'captions', {'en':event_asset.text,'ko':''})),
                     caption_asset=dict(clip_id=event_asset.clip_id,candidate_id=event_asset.candidate_id,sha256=event_asset.sha256))
                 metadata.pop('character_plan', None)
+                # Source handoff drafts and stale live acting plans cannot
+                # direct a cache. This plan belongs to this verified PCM only;
+                # the consumer applies it at actual player-start, not prepare.
+                metadata.pop('performance_plan', None)
+                if getattr(event_asset, 'performance_plan', None) is not None:
+                    metadata['performance_plan'] = dict(event_asset.performance_plan)
             if event_asset is None and self.expressive and not _force_piper and not _notice:
                 delivery = self._expressive_policy.plan(
                     spoken_bmo_name(text, self.config.fish_name_mode),

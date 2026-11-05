@@ -33,6 +33,11 @@ def prepared_catalogue(directory):
     for index, row in enumerate(value['entries']):
         row['spoken_text'] = catalogue[row['clip_id']]['en']
         raw = files[row['file']]
+        if row['clip_id'] == 'C01':
+            # A synthetic sustained envelope makes actual R10 mouth calls
+            # observable while this one idle player's cancellation is tested.
+            from test_voice_pack_v10 import pcm
+            raw = pcm(3.)
         # Alter only one synthetic PCM sample, never a user asset. Distinct
         # hashes make a wrong random clip/caption pairing observable.
         raw = raw[:-2]+(2400+index).to_bytes(2, 'little', signed=True)
@@ -206,6 +211,41 @@ def run(profile='ci-synthetic', chromium='/usr/bin/chromium'):
                     page.locator('#voice-dialog .dialog-close').click()
                     page.evaluate("()=>BMODesktop.control('subtitles','ko')")
                     settled("BMODesktop.features.subtitles.mode==='ko'")
+                    settled('BMODesktop.state.character_life.settings_active===false')
+                    # Drive only the existing scheduler's injected clock, not
+                    # the Host watchdog, audio clock or caption/mouth position.
+                    page.evaluate("()=>BMODesktop.control('voice_select',{event:'idle',candidate_id:'C01'})")
+                    settled("BMODesktop.features.voice_pack.selected_events.idle==='C01'")
+                    page.evaluate("()=>BMODesktop.desktop('presence_mode','normal')")
+                    settled("BMODesktop.state.character_life.presence.mode==='normal'")
+                    baseline_idle = fixture.features()['test_fixture']
+                    (Path(directory)/'hold-next-player').touch()
+                    staged = Path(directory)/'presence-clock.stage'
+                    staged.write_text('500')
+                    os.replace(staged, Path(directory)/'presence-clock.txt')
+                    page.wait_for_function("""()=>{
+                      const p=BMOIntegration.state?.performance_plan;
+                      const face=document.querySelector('#face').contentWindow.BMOFace.getState();
+                      return BMOIntegration.state?.source==='cached_idle'&&BMOIntegration.state.playback==='started'
+                        &&p?.clip_id==='C01'&&face.selectedEmotion===p.face_emotion
+                        &&BMODesktop.features.gaze.owner==='presence'
+                        &&face.look.x===.08&&face.look.y===-.04&&face.mouth!=='closed';
+                    }""")
+                    idle = page.evaluate('()=>BMOIntegration.state')
+                    assert idle['performance_plan']['sha256'] == hashes['C01']
+                    assert idle['caption_asset']['sha256'] == hashes['C01']
+                    assert page.locator('#subtitles').inner_text() == context_catalog()['C01']['ko']
+                    assert fixture.state()['character_life']['presence']['suppression_reason'] == 'playing'
+                    page.locator('#face').click(position={'x': 400, 'y': 200})
+                    page.keyboard.down('Enter');page.keyboard.up('Enter')
+                    settled('BMODesktop.features.test_fixture.brain==='+str(baseline_idle['brain']+1)+
+                        '&&!BMODesktop.features.conversation_busy&&BMODesktop.features.audio_owner===null')
+                    settled("!BMOIntegration.state?.performance_plan&&BMODesktop.features.gaze.owner!=='presence'")
+                    assert fixture.features()['test_fixture']['mic_sources'] == baseline_idle['mic_sources']+1
+                    assert fixture.features()['test_fixture']['max_players'] == 1
+                    page.evaluate("()=>BMODesktop.desktop('presence_mode','off')")
+                    settled("BMODesktop.state.character_life.presence.mode==='off'")
+                    checks.append('exact C01 PCM drives local Korean caption, bounded gaze, original emotion and WAV mouth only while playing; real GP8 down/up clears idle pose for one next PTT turn')
                     catalogue, selected = context_catalog(), []
                     baseline = fixture.features()['test_fixture']
                     for ending in ('natural', 'cancel', 'off'):

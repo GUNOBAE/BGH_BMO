@@ -1238,7 +1238,15 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral",
+        "gaze": {
+          "x": 0.08,
+          "y": -0.04,
+          "hold_seconds": 1.2
+        }
+      }
     },
     "C02": {
       "en": "I like it when Finn and Jake play games with me.",
@@ -1259,7 +1267,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C03": {
       "en": "Finn and Jake went inside one of my games once. Playing from the outside is much less trouble.",
@@ -1280,7 +1291,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral"
+      }
     },
     "C04": {
       "en": "Hello, Football. ... Oh. I should find a mirror first.",
@@ -1301,7 +1315,15 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral",
+        "gaze": {
+          "x": -0.08,
+          "y": 0.0,
+          "hold_seconds": 1.0
+        }
+      }
     },
     "C05": {
       "en": "Football and I look very much alike. But I am Beemo. That is an important difference.",
@@ -1322,7 +1344,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C06": {
       "en": "Football wanted a turn outside the mirror. Changing places sounded simple. Hmm. It was not simple.",
@@ -1343,7 +1368,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral"
+      }
     },
     "C07": {
       "en": "Finn's missing sock... That was a serious case.",
@@ -1364,7 +1392,15 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral",
+        "gaze": {
+          "x": 0.0,
+          "y": 0.05,
+          "hold_seconds": 0.8
+        }
+      }
     },
     "C08": {
       "en": "I was a detective once. Finn needed a sock. I found a whole mystery.",
@@ -1385,7 +1421,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C09": {
       "en": "I remember looking for Finn's sock. Such a small thing. Such a big case. Hmm. A detective cannot ignore a sock just because it is a sock.",
@@ -1406,7 +1445,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral"
+      }
     },
     "C10": {
       "en": "Movie night at the tree house. Hmm. That was nice.",
@@ -1427,7 +1469,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C11": {
       "en": "Finn and Jake made a movie. I did the camera work. Yes. Beemo has experience.",
@@ -1448,7 +1493,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C12": {
       "en": "Finn wanted an action movie. Jake wanted a romantic comedy. They argued. I made something about being friends instead. I liked my version.",
@@ -1469,7 +1517,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C13": {
       "en": "Moe made me to play. Good idea, Moe.",
@@ -1490,7 +1541,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C14": {
       "en": "Finn and Jake came with me to the MO factory. I was glad they were there.",
@@ -1511,7 +1565,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C15": {
       "en": "Moe wanted me to find a family. I found Finn and Jake. Hmm. That was a very good thing to find.",
@@ -1532,7 +1589,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C16": {
       "en": "Card Wars with Jake? Hmm. I think I will watch.",
@@ -1553,7 +1613,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral"
+      }
     },
     "F01": {
       "en": "Bye-bye! Go have a good adventure.",
@@ -1682,7 +1745,10 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
     },
     "C18": {
       "en": "I made a friend a long way from Ooo. Her name is Y5. I wonder what she is working on now.",
@@ -1703,7 +1769,15 @@
         "neutral",
         "happy"
       ],
-      "max_duration_seconds": 10.0
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral",
+        "gaze": {
+          "x": 0.08,
+          "y": -0.04,
+          "hold_seconds": 1.2
+        }
+      }
     },
     "A01": {
       "en": "Press my talk button, then tell me something!",
@@ -2625,5 +2699,6 @@
       ],
       "max_duration_seconds": 30.0
     }
-  }
+  },
+  "performance_policy": "Script-specific static poses use existing R10 expressions. Only selected verified clip ID/transcript/PCM SHA may carry a plan; optional gaze is one short onset glance. Phrase timing and listening approval are not inferred."
 }

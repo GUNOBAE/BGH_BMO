@@ -132,6 +132,8 @@ class DesktopRuntime:
         self._overlay = None
         self._overlay_captions = {}
         self._overlay_caption_asset = None
+        self._overlay_performance = None
+        self._overlay_generation = None
         self._greeting_started = None
         self._ever_played = False
         self._greeting_timed_out = False
@@ -204,11 +206,56 @@ class DesktopRuntime:
                 "developer_enabled": self.developer, "external_api_ready": "NOT_CHECKED",
                 "live_verified": False, "exit_requested": self.exiting,
                 "character_life": {"enabled": self.character_life,
-                    "presence": self._presence.snapshot() if self._presence else {"mode": "off"},
+                    "presence": self._presence_snapshot(),
                     "settings_active": self.clock() < self._ui_active_until,
                     "last_idle_code": self._last_idle_code,
                     "voice_bank": self.greeting.bank.snapshot() if self.character_life
                         and hasattr(self.greeting, "bank") else {"status": "AUDIO_NOT_GENERATED"}}}
+
+    def _presence_context(self):
+        if self.host is None:
+            return {}
+        face = self.host.session.snapshot()
+        return dict(emotion=face['emotion'], phase=face['phase'], activity_mode=self.host.modes.mode,
+            conversation_busy=self.host.session.busy or self._input_waiting,
+            audio_busy=self.host.audio.owner is not None,
+            game_active=self.host.modes.mode in ('game', 'game_menu'),
+            video_active=self.host.video.snapshot()['recording'],
+            muted=self.host.volume.snapshot()['effective_level'] <= 0,
+            settings_active=self.clock() < self._ui_active_until,
+            sensitive=bool((face.get('character') or {}).get('sensitive_context')))
+
+    def _presence_snapshot(self):
+        if self._presence is None:
+            return {'mode': 'off'}
+        context = self._presence_context()
+        value = self._presence.snapshot(**context)
+        inspect = getattr(self.greeting, 'idle_status', None)
+        if callable(inspect):
+            assets = inspect(context.get('emotion', 'neutral'))
+            value['assets'] = assets
+            value['eligible_candidate_count'] = assets.get('eligible_candidate_count')
+            if (value['suppression_reason'] in ('ready', 'interval')
+                    and assets.get('eligible_candidate_count') == 0):
+                value['suppression_reason'] = assets.get('blocked_reason', 'no_eligible_assets')
+        else:
+            value['eligible_candidate_count'] = None
+        if self._worker is not None and self._cutscene_category == 'idle':
+            value['suppression_reason'] = 'playing' if self._greeting_started is not None else 'preparing'
+        return value
+
+    def _performance_active(self):
+        return (self._cutscene_category == 'idle' and self._overlay is not None
+            and self._overlay.get('playback') == 'started' and self._overlay_performance is not None
+            and not self._cancel.is_set() and not self._user_cancel.is_set() and not self._input_waiting
+            and self.host is not None and self.host.modes.mode == 'conversation'
+            and self.host.modes.generation == self._overlay_generation
+            and self.host.session.snapshot()['phase'] not in ('listening', 'thinking'))
+
+    def _clear_presence_gaze(self):
+        gaze = getattr(self.host, 'gaze', None)
+        if gaze is not None:
+            gaze.clear('presence')
 
     def queue_desktop_control(self, nonce, payload):
         if (self._closed or not request_id_ok(nonce) or type(payload) is not dict
@@ -273,7 +320,11 @@ class DesktopRuntime:
                     if value.get(key):
                         digest = hashlib.sha256(value[key].encode()).hexdigest()[:24]
                         value[key] = f"desktop:{self._presentation_epoch}:{digest}"
-            if self._overlay is not None:
+            cancelled = self._cancel.is_set() or self._user_cancel.is_set() or self._input_waiting
+            current_owner = (self._cutscene_category != 'idle' or self.host is not None
+                and self.host.modes.generation == self._overlay_generation
+                and self.host.modes.mode == 'conversation' and value['phase'] not in ('listening', 'thinking'))
+            if self._overlay is not None and not cancelled and current_owner:
                 value.update(self._overlay)
                 value["position"] = (max(0., self.clock() - self._greeting_started)
                                      if self._greeting_started is not None else 0.)
@@ -287,11 +338,20 @@ class DesktopRuntime:
                 value.pop('caption_asset', None)
                 if text and self._overlay_caption_asset is not None:
                     value['caption_asset'] = dict(self._overlay_caption_asset)
+                if self._performance_active():
+                    value['performance_plan'] = dict(self._overlay_performance)
             return value
 
     def snapshot(self):
         if self.host is not None:
-            return self.host.snapshot()
+            value = self.host.snapshot()
+            # Gaze arbitration remains on the Host owner thread. HTTP only
+            # masks an already-retired presence lease until its next poll;
+            # manual, tracking and native input projections remain untouched.
+            if (self.character_life and not self._performance_active()
+                    and value.get('gaze', {}).get('owner') == 'presence'):
+                value['gaze'] = dict(owner='idle', apply=True, x=0., y=0.)
+            return value
         return {"version": 1, "simulation": self.simulate, "engine_ready": False}
 
     def game_resources(self):
@@ -403,6 +463,9 @@ class DesktopRuntime:
         self._greeting_started = None
         self._overlay_captions = {}
         self._overlay_caption_asset = None
+        self._overlay_performance = None
+        self._overlay_generation = self.host.modes.generation if self.character_life else None
+        self._clear_presence_gaze()
         self._greeting_timed_out = False
         if category == "boot":
             self._state("greeting", "loading_cached_greeting")
@@ -439,6 +502,11 @@ class DesktopRuntime:
                             for key in ('clip_id', 'candidate_id'))
                             and type(asset.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}', asset['sha256'])):
                         safe['caption_asset'] = {key: asset[key] for key in ('clip_id', 'candidate_id', 'sha256')}
+                if category == 'idle':
+                    from .voice_pack_context import validated_performance
+                    plan = validated_performance(fields.get('performance_plan'), safe.get('caption_asset'))
+                    if plan is not None:
+                        safe['performance_plan'] = plan
             try:
                 self._events.put_nowait(safe)
             except Full:
@@ -448,7 +516,8 @@ class DesktopRuntime:
                 if category == "idle":
                     played = self.greeting.play_idle(self.host.session.snapshot()["emotion"],
                         emit=emit, cancel_check=check)
-                    result = (bool(played and played.get("completed")), "idle_completed")
+                    complete = bool(played and played.get('completed'))
+                    result = (complete, 'idle_completed' if complete else 'idle_unavailable')
                 else:
                     self.greeting.play(emit=emit, cancel_check=check)
                     result = (True, "greeting_completed")
@@ -475,6 +544,7 @@ class DesktopRuntime:
         with self._lock:
             self._overlay_captions = {}
             self._overlay_caption_asset = None
+            self._overlay_performance = None
         if self.character_life and self.greeting is not None:
             self.greeting.cancel()
         return self._worker is None or not self._worker.is_alive()
@@ -579,20 +649,34 @@ class DesktopRuntime:
                 continue
             with self._lock:
                 if event["kind"] == "prepared":
+                    face = self.host.face_snapshot()
                     self._overlay = dict(turn_id="startup", utterance_id=self.run_id + ":greeting:" + str(self._attempt),
                         source="cached_idle" if self._cutscene_category == "idle" else "cached_greeting",
-                        phase="idle", playback="prepared", emotion=event.get("emotion", "happy"), cues=event["cues"])
+                        phase="idle", playback="prepared", emotion=face['emotion'], cues=event["cues"])
                     self._overlay_captions = event.get('caption_payload', {})
                     self._overlay_caption_asset = event.get('caption_asset')
+                    self._overlay_performance = event.get('performance_plan')
+                    self._overlay_prepared_emotion = event.get('emotion', 'happy')
                 elif event["kind"] == "started" and self._overlay is not None:
                     self._greeting_started = event["at"]
                     if self._cutscene_category == "boot":
                         self._ever_played = True
                     self._overlay.update(phase="speaking", playback="started")
+                    plan = self._overlay_performance
+                    self._overlay['emotion'] = plan['face_emotion'] if plan else self._overlay_prepared_emotion
+                    if self._performance_active() and plan.get('gaze'):
+                        target = plan['gaze']
+                        self.host.gaze.offer('presence', target['x'], target['y'],
+                            generation=self._overlay_generation, expires_at=event['at']+target['hold_seconds'])
                 elif event["kind"] in ("ended", "cancelled", "error") and self._overlay is not None:
-                    self._overlay.update(phase="idle", playback=event["kind"], cues=[])
+                    self._overlay.update(phase="idle", playback=event["kind"], cues=[],
+                                         emotion=self.host.face_snapshot()['emotion'])
                     self._overlay_captions = {}
                     self._overlay_caption_asset = None
+                    self._overlay_performance = None
+                    self._clear_presence_gaze()
+        if not self._performance_active():
+            self._clear_presence_gaze()
         # A start may have been followed by GP8 cancellation before UI events
         # were consumed. It still counts toward the audible 2/15-minute quota.
         with self._lock:
@@ -609,6 +693,8 @@ class DesktopRuntime:
                     self._overlay = None
                     self._overlay_captions = {}
                     self._overlay_caption_asset = None
+                    self._overlay_performance = None
+                    self._clear_presence_gaze()
             if not self._worker.is_alive():
                 self._worker.join()
                 self._worker = None
@@ -618,6 +704,8 @@ class DesktopRuntime:
                     self._overlay = None
                     self._overlay_captions = {}
                     self._overlay_caption_asset = None
+                    self._overlay_performance = None
+                    self._clear_presence_gaze()
                     self._presentation_epoch += 1
                     result = self._result or (False, "greeting_failed")
                     if self._greeting_timed_out:

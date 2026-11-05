@@ -45,6 +45,7 @@ class PresenceScheduler:
         self._charged = False
         self._distress_until = 0.
         self._next_at = None
+        self._last_context = {}
         self.set_mode(mode)
 
     def _schedule(self, now):
@@ -80,10 +81,10 @@ class PresenceScheduler:
         self._prune(now)
         if sensitive:
             self._distress_until = max(self._distress_until, now + self.WINDOW)
-        blocked = (self.mode != "normal" or emotion in ("angry", "crying")
-            or phase != "idle" or activity_mode != "conversation" or any(values)
-            or now < self._distress_until)
-        if blocked:
+        self._last_context = dict(emotion=emotion, phase=phase, activity_mode=activity_mode,
+            conversation_busy=conversation_busy, audio_busy=audio_busy, game_active=game_active,
+            video_active=video_active, sensitive=sensitive, muted=muted, settings_active=settings_active)
+        if self._blocked_reason(now, **self._last_context):
             self._schedule(now)
             return False
         if self._pending or now < self._next_at or len(self._heard) >= 2:
@@ -111,12 +112,31 @@ class PresenceScheduler:
         self._pending = False
         self._schedule(now)
 
-    def snapshot(self):
+    def _blocked_reason(self, now, *, emotion='neutral', phase='idle', activity_mode='conversation',
+                        conversation_busy=False, audio_busy=False, game_active=False,
+                        video_active=False, sensitive=False, muted=False, settings_active=False):
+        if self.mode != 'normal': return 'mode_' + self.mode
+        if muted: return 'muted'
+        if settings_active: return 'settings_active'
+        if sensitive or now < self._distress_until: return 'recent_distress'
+        if emotion in ('angry', 'crying'): return 'strong_emotion'
+        if phase != 'idle' or conversation_busy: return 'conversation_active'
+        if game_active: return 'game_active'
+        if video_active: return 'recording_active'
+        if activity_mode != 'conversation': return 'foreground_activity'
+        if audio_busy: return 'audio_busy'
+        return None
+
+    def snapshot(self, **context):
         now = _now(self.clock)
         self._prune(now)
+        blocked = self._blocked_reason(now, **(context or self._last_context))
+        next_at = max(self._next_at, self._heard[0]+self.WINDOW if len(self._heard) >= 2 else 0.)
+        reason = (blocked or ('pending' if self._pending else 'quota' if len(self._heard) >= 2
+                            else 'interval' if now < next_at else 'ready'))
         return dict(mode=self.mode, enabled=self.mode == "normal", pending=self._pending,
                     heard_in_15_minutes=len(self._heard), limit_per_15_minutes=2,
-                    next_in_seconds=max(0., self._next_at-now),
+                    next_in_seconds=max(0., next_at-now), suppression_reason=reason,
                     recent_distress=now < self._distress_until, automatic_generation=False)
 
 
@@ -160,6 +180,7 @@ class CachedPresence:
         self.bank, self.bank_player, self.greeting_player = bank, bank_player, greeting_player
         self.clock = clock or getattr(bank, 'clock', time.monotonic)
         self._idle_started = {}
+        self._idle_status_cached = None
         self._playing, self._guard = Lock(), Lock()
         self._closed = Event()
         self._generation = 0
@@ -232,8 +253,9 @@ class CachedPresence:
         try:
             check()
             now = _now(self.clock)
-            self._idle_started = {clip: when for clip, when in self._idle_started.items() if now-when < 1800.}
-            recent = tuple(self._idle_started)
+            with self._guard:
+                self._idle_started = {clip: when for clip, when in self._idle_started.items() if now-when < 1800.}
+                recent = tuple(self._idle_started)
             pack = getattr(getattr(self.bank_player, 'voice', None), 'event_pack', None)
             if pack is not None:
                 selection_context = dict(emotion=emotion, context=context, recent=recent)
@@ -253,7 +275,9 @@ class CachedPresence:
                         if kind == 'started' and type(selected) is str:
                             # A cancelled/partial clip was still heard; don't
                             # immediately recycle it at the next idle chance.
-                            self._idle_started[selected] = _now(self.clock)
+                            with self._guard:
+                                self._idle_started[selected] = _now(self.clock)
+                                self._idle_status_cached = None
                         emit(kind, **fields)
                     return self.bank_player.play_event('idle', emit=observed, cancel_check=check,
                         on_playback_start=on_playback_start, selection_context=selection_context)
@@ -269,7 +293,9 @@ class CachedPresence:
                     return None
                 def began():
                     check()
-                    self._idle_started[clip] = _now(self.clock)
+                    with self._guard:
+                        self._idle_started[clip] = _now(self.clock)
+                        self._idle_status_cached = None
                     if on_playback_start is not None:
                         on_playback_start()
                 return self.bank_player.play(clip, emit=emit, cancel_check=check,
@@ -279,6 +305,32 @@ class CachedPresence:
                 return None
         finally:
             self._playing.release()
+
+    def idle_status(self, emotion='neutral', *, context='settled'):
+        """Read-only eligibility, separate from selecting or attempting a clip.
+
+        UI polling is bounded to one metadata read per second. Actual requests
+        still revalidate the selected asset and authorization in play_idle.
+        """
+        now = _now(self.clock)
+        with self._guard:
+            recent = tuple(clip for clip, when in self._idle_started.items() if now-when < 1800.)
+            pack = getattr(getattr(self.bank_player, 'voice', None), 'event_pack', None)
+            key = (id(pack), emotion, context, recent)
+            cached = self._idle_status_cached
+            if cached is not None and cached[0] == key and 0 <= now-cached[1] < 1.:
+                return dict(cached[2])
+        query = getattr(pack, 'event_diagnostics', None)
+        if callable(query):
+            result = query('idle', emotion=emotion, context=context, recent=recent)
+            result = dict(result, eligible_candidate_count=result.get('eligible_count', 0))
+        else:
+            # Never call legacy select() to count: it may advance its chooser.
+            result = dict(eligible_candidate_count=None, blocked_reason='legacy_count_unreported',
+                          release_scope='legacy', automatic_generation=False)
+        with self._guard:
+            self._idle_status_cached = (key, now, result)
+        return dict(result)
 
     def cancel(self):
         with self._guard:

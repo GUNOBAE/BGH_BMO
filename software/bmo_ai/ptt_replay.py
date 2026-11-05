@@ -17,7 +17,7 @@ import struct
 from types import SimpleNamespace
 import wave
 
-from .features.input.microphone import MicError, PcmFrame, PttRecorder
+from .features.input.microphone import MicError, PcmFrame, PttRecorder, ptt_vad_settings
 from .features.resources import AudioFocus
 from .turn_diagnostics import TurnDiagnostics
 
@@ -166,6 +166,7 @@ def replay_pcm(pcm, *, vad_mode="rms", threshold=.008, silence_timeout=.9,
             consumed_source_frames=source.frames_yielded, source_frames=len(pcm)//1280,
             replay_clock_seconds=round(clock()-began, 6),
             speech_marker_ms=trace.snapshot()["markers_ms"].get("speech_start"),
+            timings=trace.snapshot()["timings"],
             vad_evidence=state["vad_evidence"], threshold=threshold, silence_timeout=silence_timeout,
             speech_entry_window=state["speech_entry_window"],
             clock="SAVED_PCM_DURATION_NOT_USB_RECEIPT_TIME", physical_device="NOT_RUN",
@@ -194,6 +195,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Offline saved WAV comparison; no devices or cloud.")
     parser.add_argument("--wav", required=True, type=Path)
     parser.add_argument("--vad-mode", choices=("rms", "webrtc", "compare"), default="compare")
+    parser.add_argument("--vad-profile", choices=("baseline", "balanced", "quick", "compare"), default="baseline",
+                        help="offline tail comparison; compare uses existing baseline .9s and balanced .6s without changing runtime")
     parser.add_argument("--private-report", type=Path)
     parser.add_argument("--reference-fixture", type=Path, help="optional pinned public8kHz regression reference; constructs local-only mixture")
     parser.add_argument("--overlay-rms", type=float, default=.004)
@@ -210,8 +213,10 @@ def main(argv=None):
                 raise ReplayError("reference_fixture_unavailable") from None
             pcm, overlay = reference_overlay(pcm,reference_raw,target_rms=args.overlay_rms)
         modes = ("rms", "webrtc") if args.vad_mode == "compare" else (args.vad_mode,)
+        profiles = ("baseline", "balanced") if args.vad_profile == "compare" else (args.vad_profile,)
         report = dict(source_sha256=source_sha, format="16000Hz_MONO_S16_LE", summary=pcm_summary(pcm),
-                      replays=[replay_pcm(pcm, vad_mode=mode) for mode in modes],
+                      replays=[dict(replay_pcm(pcm, vad_mode=mode, **ptt_vad_settings(profile)),
+                                    vad_profile=profile) for mode in modes for profile in profiles],
                       overlay=overlay,human_acceptance="NOT_RUN", private_audio_uploaded=False)
         if args.private_report is not None:
             from .device_acceptance.microphone import _private_directory, _private_file

@@ -9,6 +9,63 @@
 [v10 문서](https://github.com/GUNOBAE/BGH_BMO/blob/2023f3a9c12ce4c0628afdfc8deda4a8831ec241/docs/voice-pack-v10/README_KR.md),
 [Pi 실제 인계](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6534420182).
 
+## 2026-11-06 후속 개선 — 실행본 증거·완료 지연·혼잣말 연출·팔 상태
+
+시작 HEAD `5a926451ae08358921d7b48dce72be4484106c85`, clean, push/PR 6검사
+PASS를 확인했다. 사용자 음성 볼륨 PASS를 보존한다. 음악 반복/idle 침묵에 대해
+최신 후보 설치를 추정하지 않는다. 마지막 Pi 설치 기록은 `43262705…`/release61이며
+전체 사용 허용·셔플·idle 구현을 다시 만들지 않는다. 같은 **BMO Candidate** 아이콘이 기준이다.
+
+- 실행 중 준비 상태의 `runtime_provenance.source_revision_at_start`는 owner 시작 때
+  읽은 checkout HEAD다. clean 또는 private runner 인수까지 검증했다는 뜻은 아니다.
+  Pi는 **목표 SHA = 설치 SHA = runner 인수 SHA = 아이콘 실행본 SHA** 네 값을
+  확인하고 run_id와 연결한다. 실행 중 자동 Git 갱신은 하지 않는다.
+- live Character Life는 완료 턴의 수치/상태/실행 SHA만 private
+  `${XDG_STATE_HOME:-~/.local/state}/bmo/turn-diagnostics/completed-turns.json`에
+  최대32개 보존한다(디렉터리0700/파일0600, 원문·PCM·키·provider 응답 없음).
+  저장 실패는 진단만 비활성화하고 대화를 막거나 재시도하지 않는다. 발화 마지막
+  voiced frame→VAD close→capture close→STT→LLM→Fish 첫 바이트/다운로드→player-start를
+  분리하며 미관측은 UNMEASURED다. 실제 스피커 첫 소리는 측정하지 않는다.
+  과거 단계별 수치는 전달되지 않아 병목/속도 개선을 단정하지 않는다. desktop speech-safe의
+  기존 calibration skip, 모델/reasoning/Fish/단일 owner/repeat/입 clock은 유지한다.
+- 기본 VAD baseline0.9는 유지한다. 기존 balanced0.6 첫 비교는 다음 명령으로
+  **기존 private WAV**만 사용한다. 공개 reference의 약한 발화+480ms 쉼은
+  balanced에서 다음 구절을 잃는 경계를 재현했다. 짧은 설정값을 실제 지연 개선이나
+  발화 보존 PASS로 대신하지 않으며 Pi 실제 작은 목소리/머뭇거림 판단 전 자동 적용하지 않는다.
+
+```bash
+PYTHONPATH=software .venv-device/bin/python -m bmo_ai.ptt_replay \
+ --wav /absolute/private/existing-question.wav --vad-mode webrtc --vad-profile compare
+```
+
+- C01–C18의 정확한 원문과 실제 PCM ID/SHA에 작은 로컬 `performance_plan`을
+  연결한다. 자동 idle 적격은 기존 길이 제한 내16개이며 C09/C12는 조건부다.
+  prepared에서 연기하지 않고 player-start에 기존 R10 표정, WAV 입, 선택적 한 번의
+  작은 시선을 적용한다. 구절 cue/새 도형/음성 재생성은 없다. camera/manual/native
+  활동이 우선하고 idle speaking과 조용한 idle gaze는 다른 lease를 쓴다. 종료·GP8·새 질문·
+  mode OFF·오류는 해당 연출을 정리한다. 음악 입 경로는 그대로다.
+- 준비 상태에서 mode/적격 수/next_in_seconds/억제 이유, release 범위, pin/origin,
+  마지막 선택을 확인한다. 진단 조회는 선택 이력을 바꾸거나 매번 PCM을 재검증하지 않는다.
+  실제 재생 load의 SHA 검증은 유지한다. full-use/normal인지 먼저 확인하고,
+  같은 최신 설정에서도 실패할 때만 clip/pin/owner/timing 증거로 추가 결함을 판단한다.
+- [Pi 댓글6653292587의 후속](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6653292587)은
+  **실제 보드 REMOTE_ENABLED=True**와 적용 SHA `0f69420e2e19500e40a925f0ad71033d86780b8c5933302713795103d1fa4a2e`를
+  확인했다. 이는 일반 아이콘의 감독 실행 또는 emotion-arms 활성화를 뜻하지 않는다.
+  이번 상태 표시는 요청/유효 감독 설정, emotion-arms, 현재 turn plan/player-start,
+  adapter/최근 ACK/차단 이유를 분리한다. static board 상태는 Cloud가 읽지 않아 null이다.
+  선택 팔 초기화 실패에 emotion-arms가 남아 앱 전체를 막던 경로는 팔만 OFF로 낮추고
+  대화·얼굴을 유지한다. 요청값과 실패 원인은 남긴다.
+- STOP/GP7/watchdog latch는 **보드 runtime 상태**다. HELLO와 Desktop 재실행은 해제하지
+  않으며 STOP/HOLD는 전원 차단이 아니다. 보드 재시작을 무인 해제 절차로 안내하지 않는다.
+  HELLO STOPPED도 host의 stopped 증거에 반영한다. 펌웨어·보정·실제 포트/서보 조작은 없다.
+
+Pi 인수: 기존 아래 clean/ff-only 절차와 최신 READY 댓글의 exact SHA를 사용하고 private
+runner receipt도 같은 SHA로 검토 갱신한다. 같은 아이콘과 GUI/VNC 복구를 유지한다.
+142개 재import/대표10 재청취 없이 기존 `accept-full-use --user-accepted`를 사용하고,
+아이콘의 기존 실행 옵션에 `--presence-mode normal`을 Pi가 반영한다. 팔 옵션은 현재
+물리 입회/전원 차단 조건이 있을 때만 별도 감독 실행으로 검수하며 외출 중 자동 적용하지 않는다.
+Cloud는 Pi 설치/아이콘 실제 실행/사람 청취·지연·서보 움직임을 PASS로 보고하지 않는다.
+
 ## 2026-11-05 후속 후보 — 저장 음성·자막·혼잣말·얼굴 조작
 
 시작 기준 원격은 `d833470d73d6a1b7eed01a0e437236efc6bb47af`, clean이며

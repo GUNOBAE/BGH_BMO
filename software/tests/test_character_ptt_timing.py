@@ -1,8 +1,10 @@
 """Actual recorder/transport code with synthetic PCM and a fake HTTP boundary."""
+from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
 import struct
+from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
 import wave
@@ -142,6 +144,69 @@ class CharacterPttTimingTests(unittest.TestCase):
         self.assertEqual(capture.code, "silence")
         self.assertIn(struct.pack("<h", 12000) * 640, capture.pcm)
         self.assertEqual(len(capture.pcm), (8 + 10 + 8 + 15) * 1280)
+
+    def test_baseline_balanced_keep_first_quiet_onset_hesitation_and_last_quiet_syllable(self):
+        # Amplitude300 is above the unchanged .008 RMS boundary. These are
+        # labelled constructed PCM frames, not a claim about human recognition.
+        tails = {}
+        for profile in ("baseline", "balanced"):
+            with self.subTest(profile=profile):
+                self.clock = Clock()
+                recorder = self.recorder([(300, 3), (0, 8), (9000, 8),
+                    (0, 12), (320, 8), (0, 25)], **ptt_vad_settings(profile))
+                capture = recorder.capture("profile-" + profile, generation=1)
+                self.assertEqual(capture.code, "silence")
+                self.assertEqual(capture.pcm[:3 * 1280], struct.pack("<h", 300) * (3 * 640))
+                self.assertEqual(capture.pcm[31 * 1280:39 * 1280], struct.pack("<h", 320) * (8 * 640))
+                self.assertEqual(recorder.snapshot()["effective_calibration_seconds"], 0.)
+                tails[profile] = self.trace.snapshot()["timings"]["last_voiced_to_vad_close_ms"]["value_ms"]
+        self.assertEqual(tails, {"baseline": 920., "balanced": 600.})
+
+    def test_balanced_tradeoff_does_not_claim_to_preserve_a_pause_longer_than_its_budget(self):
+        accepted_tail = {}
+        for profile in ("baseline", "balanced"):
+            self.clock = Clock()
+            recorder = self.recorder([(9000, 8), (0, 17), (12000, 8), (0, 25)],
+                **ptt_vad_settings(profile))
+            capture = recorder.capture("long-pause-" + profile, generation=1)
+            accepted_tail[profile] = struct.pack("<h", 12000) * 640 in capture.pcm
+        self.assertEqual(accepted_tail, {"baseline": True, "balanced": False})
+
+    def test_both_tail_profiles_preserve_weak_signal_rejection_and_cancel_ownership(self):
+        for profile in ("baseline", "balanced"):
+            with self.subTest(profile=profile):
+                self.clock = Clock()
+                recorder = self.recorder([(100, 80)], **ptt_vad_settings(profile))
+                capture = recorder.capture("below-threshold-" + profile, generation=1)
+                self.assertEqual((capture.status, capture.code, capture.pcm), ("cancelled", "no_speech", b""))
+                self.assertEqual(self.source.closed, 1)
+                self.clock = Clock()
+                recorder = self.recorder([(9000, 80)], **ptt_vad_settings(profile))
+                recorder.on_state = lambda state: recorder.cancel() if state["state"] == "speech" else None
+                capture = recorder.capture("cancel-profile-" + profile, generation=1)
+                self.assertEqual((capture.status, capture.pcm), ("cancelled", b""))
+                transcribe = Mock(side_effect=AssertionError("cancelled STT forbidden"))
+                with self.assertRaises(TurnCancelled):
+                    recorder.transcribe_capture(capture, None, transcriber=transcribe)
+                transcribe.assert_not_called()
+                self.assertFalse(recorder.snapshot()["microphone_open"])
+
+    def test_offline_command_compares_existing_profiles_without_changing_saved_pcm(self):
+        from bmo_ai.ptt_replay import main
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "constructed.wav"
+            with wave.open(str(path), "wb") as output:
+                output.setnchannels(1); output.setsampwidth(2); output.setframerate(16000)
+                output.writeframes(struct.pack("<h", 300) * (8 * 640) + bytes(25 * 1280))
+            original = path.read_bytes()
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["--wav", str(path), "--vad-mode", "rms", "--vad-profile", "compare"]), 0)
+            rows = json.loads(output.getvalue())["replays"]
+            self.assertEqual([(row["vad_profile"], row["silence_timeout"]) for row in rows],
+                             [("baseline", .9), ("balanced", .6)])
+            self.assertTrue(all(row["physical_device"] == "NOT_RUN" for row in rows))
+            self.assertEqual(path.read_bytes(), original)
 
     def test_second_press_stops_capture_without_cutting_retained_validated_word(self):
         recorder = self.recorder([(10000, 80)])

@@ -391,6 +391,87 @@ class VoicePackV10Tests(unittest.TestCase):
         # Loading/requesting alone is not actual playback or human approval.
         self.assertEqual(self.pack.snapshot()['played'], 0)
 
+    def test_readonly_diagnostics_distinguish_release_pin_off_context_and_recent(self):
+        from unittest.mock import Mock, patch
+        from bmo_ai.voice_pack import BATCH_PREVIEW_IDS, BATCH_PREVIEW_MINIMUM
+        missing = self.pack.event_diagnostics('idle')
+        self.assertEqual(missing['blocked_reason'], 'voice_pack_asset_pending')
+        self.imported_actual_transcripts()
+        state = self.pack.event_diagnostics('idle')
+        self.assertEqual((state['pool_count'], state['eligible_count'], state['release_scope']), (18, 0, 'none'))
+        self.assertEqual(state['blocked_reason'], 'not_authorized')
+        rows = {r['id']:r for r in self.pack.inventory()}
+        for clip in BATCH_PREVIEW_IDS[:BATCH_PREVIEW_MINIMUM]:
+            self.pack.mark_played(clip, rows[clip]['variants']['raw']['sha256'], review_requested=True)
+        self.pack.accept_batch(user_accepted=True)
+        old = self.pack.event_diagnostics('idle')
+        self.assertEqual((old['release_scope'], old['released_count'], old['eligible_count']), ('initial', 61, 0))
+        self.pack.accept_full_use(user_accepted=True)
+        chooser = Mock(side_effect=AssertionError('A query must not select'))
+        self.pack.chooser = chooser
+        before = {p.name:(p.read_bytes(), p.stat().st_mtime_ns) for p in self.pack.directory.iterdir()}
+        with patch.object(self.pack, '_payload', side_effect=AssertionError('Diagnostics must not read PCM')):
+            for _ in range(3):
+                state = self.pack.event_diagnostics('idle')
+                self.assertEqual((state['eligible_count'], state['release_scope'], state['released_count']), (16, 'full', 142))
+                self.assertIsNone(state['last_selected'])
+                self.assertFalse(state['playback_verified'])
+                self.assertEqual(self.pack.event_diagnostics('idle', emotion='sad')['blocked_reason'], 'context_or_duration')
+                self.assertEqual(self.pack.event_diagnostics('idle', recent=[f'C{i:02d}' for i in range(1,19)])['blocked_reason'], 'recent_cooldown')
+        chooser.assert_not_called()
+        self.assertEqual(self.pack._bags, {})
+        self.assertEqual(before, {p.name:(p.read_bytes(), p.stat().st_mtime_ns) for p in self.pack.directory.iterdir()})
+        self.pack.select_event('music_selected', 'M05')
+        pin = self.pack.event_diagnostics('music_selected')
+        self.assertEqual((pin['eligible_count'], pin['pinned_candidate'], pin['pin_origin']), (1, 'M05', 'manual'))
+        self.pack.enable_event('music_selected', enabled=False)
+        disabled = self.pack.event_diagnostics('music_selected')
+        self.assertEqual((disabled['eligible_count'], disabled['blocked_reason']), (0, 'event_off'))
+
+    def test_selected_idle_performance_and_caption_bind_one_verified_asset(self):
+        from unittest.mock import Mock
+        from bmo_ai.character_director import CharacterPlan
+        from bmo_ai.integration_profile import integration_config
+        from bmo_ai.integration_voice import IntegrationVoice
+        from bmo_ai.voice_pack_context import context_for
+        self.imported_actual_transcripts()
+        self.pack.accept_full_use(user_accepted=True)
+        self.pack.select_event('idle', 'C01')
+        events = []
+        def player(_command, *, on_start, cancel_check, **_):
+            self.assertEqual([event for event, _ in events], ['prepared'])
+            cancel_check(); on_start(); cancel_check()
+        synth = Mock(side_effect=AssertionError('Cached performance must not synthesize'))
+        voice = IntegrationVoice(integration_config(), None, player=player,
+            fish_synthesizer=synth, character_life=True, emit=lambda kind, **value:events.append((kind,value)))
+        self.addCleanup(voice.close)
+        voice.event_pack = self.pack
+        voice.expression_metadata = dict(character_plan=CharacterPlan('angry', 'theatrical_angry', gesture_id='shrug').public())
+        self.assertTrue(voice.play_event('idle'))
+        self.assertEqual([event for event, _ in events], ['prepared', 'started', 'ended'])
+        prepared, started = events[0][1], events[1][1]
+        self.assertNotIn('character_plan', started)
+        self.assertEqual(started['performance_plan'], prepared['performance_plan'])
+        identity = started['caption_asset']
+        self.assertEqual({k:started['performance_plan'][k] for k in identity}, identity)
+        self.assertEqual(identity['clip_id'], 'C01')
+        row = next(r for r in self.pack.inventory() if r['id']=='C01')
+        self.assertEqual(identity['sha256'], row['variants']['raw']['sha256'])
+        self.assertEqual(started['caption_payload']['en'], context_for('C01')['en'])
+        self.assertEqual(started['performance_plan']['face_emotion'], 'neutral')
+        self.assertEqual(self.pack.event_diagnostics('idle')['last_selected'], 'C01')
+        self.assertNotIn('performance_plan', events[-1][1])
+        self.assertFalse(voice.has_cache)  # Presence never replaces dialogue repeat.
+        synth.assert_not_called()
+
+    def test_custom_transcript_does_not_execute_archive_direction_or_local_pose(self):
+        self.imported(('C01',))
+        self.approve('C01')
+        with self.pack.load_event('idle') as asset:
+            self.assertIsNone(asset.performance_plan)
+            self.assertEqual(asset.provenance['handoff_metadata']['face_direction_draft'],
+                             {'instruction':'Never execute this field.'})
+
     def test_legacy_generated_pins_migrate_but_manual_pins_off_and_source_files_survive(self):
         from bmo_ai.voice_pack import BATCH_PREVIEW_IDS, BATCH_PREVIEW_MINIMUM
         self.imported_actual_transcripts()

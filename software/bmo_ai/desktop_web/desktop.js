@@ -259,8 +259,12 @@ function renderFeatures(next){
  const telemetry=next.system_diagnostics?.telemetry;
  $('system-readiness').textContent=telemetry?.power?.status==='OBSERVED'?('전원 현재 이상: '+(telemetry.power.current_fault?'있음':'없음')+' · 과거 기록: '+(telemetry.power.historical_fault?'있음':'없음')):'온도·전원 실측은 아직 실행하지 않았어요. 자동 설정 변경은 하지 않아요.';
  const arm=next.system_diagnostics?.arms,armLink=arm?.transport?.status;
- const armStatus={NOT_CONNECTED:'연결 확인 전',ACKNOWLEDGED:'프로토콜 응답 확인',UNKNOWN:'연결 상태 미확정',STOPPED:'중지됨',CLOSED:'닫힘'};
- $('arm-readiness').textContent='팔 앱 연결: '+(armStatus[armLink]||'미관측')+' · 실제 배선·전원·움직임: 미검수';
+ const armLaunch=arm?.launcher||{},armTurn=arm?.conversation||{};
+ $('arm-readiness').textContent='Arm transport: '+(armLink||'NOT_OBSERVED')+
+  ' · supervised launch: '+(armLaunch.supervised_effective===true?'ON':'OFF')+
+  ' · conversation gestures: '+(armLaunch.emotion_arms_effective===true?'ON':'OFF')+
+  ' · '+(armTurn.blocked_reasons?.join(', ')||armTurn.stage||'not_observed')+
+  ' · physical movement: UNVERIFIED';
  if($('system-dialog').open){
   const emotions=new Set(['neutral','happy','sad','surprised','angry','crying']);
   let faceState={};try{faceState=frame.contentWindow?.BMOFace?.getState()||{};}catch(_){}
@@ -271,6 +275,9 @@ function renderFeatures(next){
    if(['string','boolean','number'].includes(typeof config[name]))effective[name]=config[name];
   }
   $('turn-diagnostics').textContent=JSON.stringify({...(next.turn_diagnostics||{enabled:false}),
+   runtime_provenance:next.runtime_provenance||null,completed_turns:next.completed_turns||null,
+   presence:state?.character_life?.presence||null,
+   saved_voice_selection:next.voice_pack?.selection_diagnostics||null,
    expression_trace:next.character_life?.expression_trace||null,effective_config:effective,
    photo:next.photo_diagnostic||null,photo_focus:next.photo_focus||null,photo_feedback:next.photo_feedback||null,
    video:next.camera_video||next.video||null,preview_browser:previewSnapshot(),arms:arm||null,

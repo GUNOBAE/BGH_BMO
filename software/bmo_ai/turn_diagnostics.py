@@ -70,11 +70,16 @@ _SPANS = {
     "host_to_first_frame_ms": ("host_input_received", "first_pcm_frame"),
     "last_voiced_to_vad_close_ms": ("last_voiced_frame", "vad_closed"),
     "vad_to_capture_close_ms": ("vad_closed", "capture_closed"),
+    "capture_close_to_stt_ms": ("capture_closed", "stt_started"),
+    "stt_to_llm_ms": ("stt_completed", "llm_started"),
+    "llm_to_tts_ms": ("llm_completed", "tts_started"),
     "stt_ms": ("stt_started", "stt_completed"),
     "llm_ms": ("llm_started", "llm_completed"),
     "tts_to_first_byte_ms": ("tts_started", "tts_first_byte"),
     "tts_to_download_ms": ("tts_started", "tts_downloaded"),
     "download_to_audio_ready_ms": ("tts_downloaded", "audio_ready"),
+    "audio_ready_to_player_ms": ("audio_ready", "player_started"),
+    "last_voiced_to_player_start_ms": ("last_voiced_frame", "player_started"),
     "host_to_player_start_ms": ("host_input_received", "player_started"),
 }
 
@@ -84,10 +89,14 @@ def _finite_time(value):
 
 
 class TurnDiagnostics:
-    def __init__(self, *, enabled=False, clock=time.monotonic, capacity=96):
+    def __init__(self, *, enabled=False, clock=time.monotonic, capacity=96, completed_sink=None):
         if type(enabled) is not bool or type(capacity) is not int or not 8 <= capacity <= 128:
             raise ValueError("invalid safe trace configuration")
+        if completed_sink is not None and not callable(completed_sink):
+            raise ValueError("invalid safe trace sink")
         self.enabled, self.clock = enabled, clock
+        self._completed_sink = completed_sink
+        self._saved = False
         self._lock, self._events = RLock(), deque(maxlen=capacity)
         self._turn, self._began = 0, clock()
         self._last, self._failure, self._terminal = None, None, None
@@ -116,6 +125,7 @@ class TurnDiagnostics:
             if (_finite_time(pending) and _finite_time(now)
                     and 0 <= now - pending <= 5):
                 self._began = pending
+            self._saved = False
             self._events.clear()
             self._markers.clear()
             self._last = self._failure = self._terminal = None
@@ -161,8 +171,19 @@ class TurnDiagnostics:
                     self._events.append(dict(entry, elapsed_ms=elapsed, metrics=safe))
 
     def finish(self, code):
+        # Only completed turns are persisted. A retry/late finish cannot create
+        # a second receipt, and a failed diagnostic never repeats a provider.
+        completed = None
         with self._lock:
             self._terminal = code if code in CODES else "operation_failed"
+            if self.enabled and not self._saved and self._completed_sink is not None:
+                self._saved = True
+                completed = self.snapshot()
+        if completed is not None:
+            try:
+                self._completed_sink(completed)
+            except Exception:
+                pass  # Diagnostics are deliberately outside turn success/failure.
 
     def snapshot(self):
         with self._lock:

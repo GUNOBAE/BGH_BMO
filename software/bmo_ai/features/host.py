@@ -150,7 +150,8 @@ class FeatureHost(ProductVideoFlow):
                  wake_word=False, wake_model_manifest=None, ptt_vad_mode="rms",
                  wake_question_wait=5., one_turn_diagnostic=None, photo_feedback=True,
                  playable_games=False, voice_pack_directory=None, request_cooldown=0,
-                 session_request_limit=None, estimated_request_cost=None, estimated_session_cost_limit=None):
+                 session_request_limit=None, estimated_request_cost=None, estimated_session_cost_limit=None,
+                 completed_turn_store=None, arm_supervision_requested=None, emotion_arms_requested=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -197,6 +198,13 @@ class FeatureHost(ProductVideoFlow):
                 (emotion_arms and not (self.runtime.simulate or self.runtime.arms_supervised))):
             raise FeatureError("emotion_arms_requires_supervision")
         self._emotion_arms = emotion_arms
+        self._arm_supervision_requested = (self.runtime.arms_supervised if arm_supervision_requested is None
+                                           else arm_supervision_requested)
+        self._emotion_arms_requested = emotion_arms if emotion_arms_requested is None else emotion_arms_requested
+        if any(type(value) is not bool for value in (self._arm_supervision_requested, self._emotion_arms_requested)):
+            raise FeatureError('invalid_runtime')
+        self._arm_turn_state = dict(stage='idle', gesture_id='none', player_start_seen=False,
+                                   player_start_fresh=False)
         self._last_spoken_emotion = None
         from .motion.live_feature_v2 import LiveArmMotionFeatureV2
         from .motion.legacy_host import LegacyMotionFeature
@@ -354,7 +362,14 @@ class FeatureHost(ProductVideoFlow):
             self._one_turn_diagnostic = OneTurnDiagnostic(one_turn_diagnostic)
         self.client = client or FeatureSimulatedClient()
         from ..turn_diagnostics import TurnDiagnostics
-        self.turn_diagnostics = TurnDiagnostics(enabled=ptt_trace or character_life, clock=clock)
+        from ..completed_turn_diagnostics import CompletedTurnStore, source_revision
+        self._runtime_revision = source_revision()
+        self._completed_turn_store = completed_turn_store
+        if character_life and not self.runtime.simulate and self._completed_turn_store is None:
+            self._completed_turn_store = CompletedTurnStore(runtime_revision=self._runtime_revision, vad_profile=ptt_vad_profile,
+                vad_mode=ptt_vad_mode, speech_safe=ptt_speech_safe or ptt_ambient_profile is not None)
+        self.turn_diagnostics = TurnDiagnostics(enabled=ptt_trace or character_life, clock=clock,
+            completed_sink=self._completed_turn_store.record if self._completed_turn_store is not None else None)
         self.session = IntegrationSession(self.config, self.client, simulate=self.runtime.simulate,
             brain=brain, fish_api_key=fish_api_key,
             voice=voice, clock=clock, emotion_mode="auto",
@@ -522,7 +537,7 @@ class FeatureHost(ProductVideoFlow):
             and not self.session.busy and self.audio.owner is None
             and face["phase"] == "idle" and not self.video.snapshot()["recording"])
         owner = self.gaze.resolve(phase=face["phase"], generation=self.modes.generation)["owner"]
-        higher = owner in ("manual", "camera", "reaction", "dialogue", "native")
+        higher = owner in ("manual", "camera", "reaction", "dialogue", "native", "presence")
         proposal = self._idle_gaze.tick(eligible=eligible, higher_owner=higher)
         if not eligible or higher:
             self.gaze.clear("idle")
@@ -1160,7 +1175,9 @@ class FeatureHost(ProductVideoFlow):
 
     def _reload_voice_pack(self):
         try:
-            self._voice_pack_public = dict(self.voice_pack.snapshot(), inventory=self.voice_pack.inventory())
+            self._voice_pack_public = dict(self.voice_pack.snapshot(), inventory=self.voice_pack.inventory(),
+                selection_diagnostics={event: self.voice_pack.event_diagnostics(event)
+                    for event in ('music_selected', 'music_random', 'idle')})
         except Exception as error:
             from ..voice_bank import VoiceBankError
             self._voice_pack_public = dict(status='BLOCKED', code=error.code if isinstance(error, VoiceBankError)
@@ -1823,6 +1840,8 @@ class FeatureHost(ProductVideoFlow):
             self.audio.release(self._voice_lease)
             self._voice_lease = self._ptt_lease = None
             return False
+        self._arm_turn_state = dict(turn_id=turn_id, stage='idle', gesture_id='none',
+                                   player_start_seen=False, player_start_fresh=False)
         return True
 
     def _talk_input(self):
@@ -2026,6 +2045,8 @@ class FeatureHost(ProductVideoFlow):
         return False
 
     def cancel_conversation(self):
+        if self._arm_turn_state.get('stage') not in ('idle', 'ended', 'cancelled', 'error'):
+            self._arm_turn_state.update(stage='cancelled', eligible_at_player_start=False)
         self._retire_music_preparation('music_preparation_cancelled')
         self.compound.cancel()
         self._local_events.clear()
@@ -2046,6 +2067,8 @@ class FeatureHost(ProductVideoFlow):
         self._proposals.clear()
         self._turn_generations.clear()
         self.gaze.clear("reaction")
+        self.gaze.clear('dialogue')
+        self.gaze.clear('presence')
         if self.session.busy:
             self.session.cancel()
         self.motion.cancel()
@@ -2197,6 +2220,11 @@ class FeatureHost(ProductVideoFlow):
                                          "human_device_request": len(data) > 6 and data[6] is True,
                                          "action_plan": data[7] if len(data) > 7 else (),
                                          'preparation': dict(speech=data[9], captions=data[10]) if len(data) > 10 and data[8] else None}
+                plan = self._proposals[turn].get('character_plan')
+                self._arm_turn_state = dict(turn_id=turn, stage='planned',
+                    gesture_id=plan.gesture_id if self.character_life and plan is not None else data[0],
+                    plan_emotion=plan.face_emotion if plan is not None else None,
+                    player_start_seen=False, player_start_fresh=False)
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
                 fresh = 0 <= self.clock() - at <= .5
@@ -2229,6 +2257,9 @@ class FeatureHost(ProductVideoFlow):
                 if not self.character_life and self.clock() - at <= .5:
                     self.gaze.offer("reaction", .12, -.04, generation=generation,
                                     expires_at=at + .65)
+                self._arm_turn_state.update(stage='player_started' if fresh else 'stale',
+                    player_start_seen=True, player_start_fresh=fresh,
+                    gesture_id=proposal['gesture'], playback_emotion=self.session.snapshot()['emotion'])
                 if ((self.runtime.simulate or self.runtime.arms_supervised)
                         and (self._emotion_arms or self.runtime.simulate and not self.character_life)
                         and proposal["gesture"] != "none" and self.clock() - at <= .5
@@ -2248,16 +2279,23 @@ class FeatureHost(ProductVideoFlow):
                             # polling or leave a permanent accepted receipt.
                             result = HostResult(request, "failed", "motion_admission_failed",
                                                 simulated=self.runtime.simulate)
+                        self._arm_turn_state.update(stage='submitted', result_status=result.status,
+                                                   result_code=result.code)
                         if result.status not in ("accepted", "running"):
                             self._finish_result(result)
             elif kind == "ended" and turn in self._proposals:
                 self._proposals[turn]["ended"] = True
+                if self._arm_turn_state.get('turn_id') == turn:
+                    self._arm_turn_state['stage'] = 'ended'
         for event in finished:
             if event.kind != "finished":
                 continue
             if event.code in ('authentication', 'permission', 'model', 'missing_key', 'missing_sdk'):
                 self._cloud_runtime_error = event.code
             finished_turn = f"{self.session.session_id}:{event.turn}"
+            if self._arm_turn_state.get('turn_id') == finished_turn and event.code != 'ok':
+                self._arm_turn_state.update(stage='cancelled' if event.code == 'cancelled' else 'error',
+                                           eligible_at_player_start=False)
             music = self._pending_media_start
             if music and music['turn_id'] == finished_turn:
                 if event.code == 'ok':
@@ -2480,6 +2518,11 @@ class FeatureHost(ProductVideoFlow):
             blocked_reasons=list(motion.get('blocked_reasons', [])) +
                 ([getattr(self, '_arm_setup_error', None) or 'arm_runtime_off']
                  if not self.runtime.simulate and not self.runtime.arms_supervised else []))
+        from .motion.runtime_status import conversation_arm_status
+        arms.update(conversation_arm_status(simulate=self.runtime.simulate,
+            supervised_requested=self._arm_supervision_requested, supervised_effective=self.runtime.arms_supervised,
+            emotion_arms_requested=self._emotion_arms_requested, emotion_arms_effective=self._emotion_arms,
+            motion=motion, turn_state=self._arm_turn_state, setup_error=getattr(self, '_arm_setup_error', None)))
         ptt = self.microphone.snapshot() if self.microphone is not None else self.pcm.snapshot()
         if not self.turn_diagnostics.enabled:
             ptt = {key: value for key, value in ptt.items()
@@ -2488,6 +2531,8 @@ class FeatureHost(ProductVideoFlow):
             recent = ([dict(value["result"]) for value in list(self._records.values())[-8:]]
                       + [dict(value) for value in self._safety_results.values()])[-8:]
         state = {"version": 1, "sequence": self._state_sequence, "simulation": self.runtime.simulate,
+            "runtime_provenance": dict(source_revision_at_start=self._runtime_revision,
+                evidence='checkout_head_at_owner_start', worktree_verified=False, private_runner_receipt_verified=False),
             "capabilities": self.runtime.public(), "real_features_enabled": self.runtime.public()["real_features_enabled"],
             "mode": self.modes.mode, "mode_generation": self.modes.generation,
             "mode_error": self.modes.last_error, "audio_owner": self.audio.owner,
@@ -2514,6 +2559,8 @@ class FeatureHost(ProductVideoFlow):
             "system_diagnostics": dict(self._system_diagnostics, arms=arms),
             "one_turn_diagnostic": self._one_turn_diagnostic.snapshot() if self._one_turn_diagnostic else None,
             "turn_diagnostics": self.turn_diagnostics.snapshot(),
+            "completed_turns": self._completed_turn_store.snapshot() if self._completed_turn_store is not None
+                else dict(enabled=False, code='not_requested', retained=0),
             "character_life": {"enabled": self.character_life, "ptt_vad_profile": self.ptt_vad_profile,
                                "ptt_vad_mode": self.ptt_vad_mode,
                                "expression_trace": face.get("expression_trace"),
@@ -2655,6 +2702,8 @@ class FeatureHost(ProductVideoFlow):
                 self._voice_lease = None
         except Exception:
             errors.append("cleanup_failed")
+        if self._completed_turn_store is not None:
+            self._completed_turn_store.close()
         try:
             if self.video.close() is not True:
                 errors.append("video_close_failed")
