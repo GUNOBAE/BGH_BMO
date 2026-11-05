@@ -130,6 +130,8 @@ def spawn(command,**options):
     host.poll=poll_with_error_boundary
 """)
     child=replace_once(child,"for host in hosts:\n", "for process in encoders:\n    assert process.poll() is not None,'Encoder survived exit'\nfor host in hosts:\n")
+    child=replace_once(child,"dialogue_cache=host.session.voice.has_cache,brain_instances=1)",
+        "dialogue_cache=host.session.voice.has_cache,brain_instances=1,shell_heartbeat_at=host._last_shell_seen,fixture_now=clock())")
     return child
 
 
@@ -186,6 +188,25 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     finish_voice()
                 def wait_ui_mode(mode):
                     page.wait_for_function('mode=>BMODesktop.features?.mode===mode',arg=mode)
+                clock_offset=0.
+                def advance_countdown_clock(target):
+                    nonlocal clock_offset
+                    assert target>=clock_offset
+                    # The fixture's clock also drives the real three-second
+                    # shell watchdog. One five-second jump falsely disconnects
+                    # this still-live browser if the owner polls before HTTP.
+                    previous=fixture.features()  # Actual HTTP heartbeat first.
+                    while clock_offset<target:
+                        clock_offset=min(target,clock_offset+1.)
+                        fixture.set_clock(clock_offset)
+                        current=wait(lambda state:state['sequence']>previous['sequence'])
+                        audit=current['test_fixture']
+                        assert 0<=audit['fixture_now']-audit['shell_heartbeat_at']<1.
+                        assert current['mode']=='video' and current['video_phase'] in ('countdown','starting','recording')
+                        assert current['video_request_id']==previous['video_request_id']
+                        previous=current
+                    wait_ui_mode('video')
+                    return previous
                 def wait_provider_ui(snapshot,name,text,*,recheck_disabled=None):
                     """Wait for the browser to render THIS observed fault state.
 
@@ -356,7 +377,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert countdown['camera']['tracking_requested'] and not countdown['camera']['tracking']
                 assert page.locator('#video-countdown').inner_text() in ('5','4')
                 baseline=fixture.features()['test_fixture']
-                fixture.set_clock(5.2)
+                advance_countdown_clock(5.2)
                 recording=wait(lambda state:state['video_phase']=='recording')
                 page.wait_for_function("()=>BMODesktop.features?.video_phase==='recording'")
                 assert page.locator('#video-indicator').is_visible()
@@ -414,7 +435,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert plan['results'][0]['completed'] and plan['results'][0]['status'] in ('simulated','succeeded')
                 assert compound_countdown['test_fixture']['brain']==before_compound['brain']+1
                 assert compound_countdown['test_fixture']['synthesis']==before_compound['synthesis']+1
-                fixture.set_clock(10.5)
+                advance_countdown_clock(10.5)
                 wait(lambda state:state['video_phase']=='recording')
                 page.wait_for_function("()=>BMODesktop.features?.video_phase==='recording'")
                 page.wait_for_timeout(650)
@@ -435,6 +456,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert compound_returned['test_fixture']['brain']==before_compound['brain']+1
                 assert compound_returned['test_fixture']['mic_sources']==before_compound['mic_sources']
                 checks.append('one bounded current-turn GPT plan stops tracking before video snapshot; real countdown/Enter stop/MP4 decode/click Back preserve explicit tracking OFF and never leak keyup into PTT')
+                checks.append('countdown fixture advances at most one second per observed owner snapshot and real HTTP heartbeat; active video survives without bypassing the shell watchdog')
 
                 panel('video-menu');page.locator('#video-consent').check();page.locator('#video-start').click()
                 wait(lambda state:state['video_phase']=='countdown')
