@@ -176,7 +176,8 @@ class V10VoiceDeliveryTests(unittest.TestCase):
             value = policy.plan('A tiny discovery.', meta, model='s2.1-pro-free')
             got.append(value.reaction); policy.completed(value)
         self.assertEqual(got, ['chuckle','none','none','none','aha','none','none'])
-        for reaction, speech in (('chuckle','Haha, that is funny.'), ('aha','Aha! A discovery.'),
+        for reaction, speech in (('chuckle','Haha, that is funny.'), ('chuckle','Ha ha! That is funny.'),
+                ('chuckle','Ha-ha! Good one.'), ('chuckle','Heh, a tiny victory.'), ('aha','Aha! A discovery.'),
                 ('ooh','Ooh, an idea.'), ('hmm','Hmm, a mystery.'), ('oops','Oops, my mistake.'),
                 ('tada','We can try it.'), ('oops','You made a mistake.')):
             with self.subTest(reaction=reaction, speech=speech):

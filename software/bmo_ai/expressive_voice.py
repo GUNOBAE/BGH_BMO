@@ -35,6 +35,7 @@ def strip_written_laughter(text):
 def already_reactive(spoken):
     """Do not add another sound to an answer already containing one."""
     return bool(re.search(r'(?i)\b(?:ha(?:ha)+|he(?:he)+|h[am]{2,}|hmm+|oo+h|aha|ta[ -]?da|oops|whoa)\b|[ㅋㅎ]{2,}', spoken)
+                or re.search(r'(?i)\b(?:ha|heh|hee)(?:[ ,.!-]+(?:ha|heh|hee))+\b|^\s*(?:hah?|heh)\b[!,.-]', spoken)
                 or re.search(r'(?i)^\s*(?:oh!|(?:wow|yay|whew)\b)', spoken))
 
 
