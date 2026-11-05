@@ -48,12 +48,18 @@ NOT_RUN/차단 기록은 역사이며 현재 미해결 상태로 승계하지 �
 
 검증: 로컬 Python3.13 전체 **1,946개 PASS**, 기존 음악/v10·character-life 및
 새 얼굴 조작/저장 음성 자막의 실제 synthetic Chromium 회귀 PASS. 새 브라우저 검사를
-public-browser CI에도 포함한다. 최종 exact HEAD의 push/PR 결과는 최신 PR 인계 기준이다.
+public-browser CI에도 포함한다. 통합 후보의 push CI에서 기존 게임 재진입 실패가
+추가로 드러났다. 실제 얼굴 iframe blur callback을 다음 게임 시작 뒤 전달하면 현재
+세대의 PAD_LOST가 잘못 전송되어 pad_disconnected로 종료됨을 재현했다. 내부 포커스
+이동은 분리로 처리하지 않으며 실제 외부 blur/패드 분리 정리는 보존하는 회귀를 추가했다.
+새 게임/엔진은 추가하지 않았다. 최종 exact HEAD의 push/PR 결과는 최신 PR 인계 기준이다.
 
 ### Pi 최소 인수
 
 1. Exit로 종료하고 아래 기존 dirty/ff-only 후보 갱신 절차에 최신 PR 인계의
-   **exact SHA**를 넣는다. `BMO_REAL_ROBOT`과 private runner/GUI 세션 복구는 유지한다.
+   **exact SHA**를 넣는다. Pi 담당이 기존 private runner의 후보 인수 기록/고정 SHA도
+   같은 SHA로 검증 갱신한다. private 도구의 새 옵션이나 기록 형식을 추정하지 않는다.
+   `BMO_REAL_ROBOT`과 private runner/GUI 세션 복구는 유지한다.
 2. 이미 등록한142개를 다시 import하지 않는다. 사용자가 요청한 전체 사용 허용을
    적용하거나, 음성 메뉴의 **Use all saved voices**에서 한 번 적용한다. 개별 청취
    기록을 만들지 않으며 재생·유료 API도 호출하지 않는다.
@@ -62,6 +68,7 @@ public-browser CI에도 포함한다. 최종 exact HEAD의 push/PR 결과는 최
 cd /home/bgh/BMO_CHARACTER_LIFE
 PYTHONPATH=software .venv-device/bin/python -m bmo_ai.voice_pack \
  --root /home/bgh/BMO_private/runtime/voice-v10 accept-full-use --user-accepted
+python3 -B /home/bgh/BMO_private/tools/run_bmo_candidate.py --check
 python3 -B /home/bgh/BMO_private/tools/run_bmo_candidate.py
 ```
 

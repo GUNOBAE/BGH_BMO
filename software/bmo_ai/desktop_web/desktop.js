@@ -1004,7 +1004,15 @@ function pollPad(){
  padTimer=setTimeout(pollPad,50);
 }
 function syncGamepad(next){padSequence=Math.max(padSequence,next?.usb_gamepad?.sequence_floor||0);if(!gamepadAllowed(next)){releasePad(false);return;}if(padTimer===null)padTimer=setTimeout(pollPad,0);}
-window.addEventListener('blur',event=>{setTimeout(()=>{if(event.isTrusted&&document.hasFocus()&&document.activeElement===frame)return;releasePad();},0);});
+window.addEventListener('blur',event=>{
+ const index=padIndex,generation=padGeneration;
+ setTimeout(()=>{
+  // A trusted parent/iframe focus move stays inside BMO. A delayed callback
+  // belongs to the pad owner present at that event, never a later game.
+  if(event.isTrusted&&document.hasFocus()||padIndex!==index||padGeneration!==generation)return;
+  releasePad();
+ },0);
+});
 window.addEventListener('gamepaddisconnected',()=>releasePad());
 window.addEventListener('pagehide',()=>{clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
 document.addEventListener('visibilitychange',()=>{clearCaption();epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){hideFaceVolume();stopPreview();$('video-review-player').pause();$('music-video').pause();if(currentMode==='music')control('pause').catch(()=>{});window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();}else{syncUiActivity();refreshAdapter();poll();}});

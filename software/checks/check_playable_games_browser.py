@@ -26,7 +26,22 @@ PAD_BOUNDARY = """window.__audioCalls=0;HTMLMediaElement.prototype.play=function
  Object.defineProperty(navigator,'getGamepads',{value:()=>{
   window.__padCalls++;return window.__padConnected?[{index:0,connected:true,mapping:'standard',
    buttons:Array.from({length:16},(_,i)=>({pressed:window.__padButtons.includes(i)})),axes:[0,0]}]:[];
- }});"""
+ }});
+ // Defer callbacks from one REAL trusted parent->iframe focus event, then
+ // release them after a subsequent game owns input. This models delayed
+ // browser task delivery without inventing a blur or editing product state.
+ window.__holdTrustedBlur=false;window.__deferredBlur=[];window.__blurEvidence=[];let inHeldBlur=false;
+ const originalSetTimeout=window.setTimeout;
+ window.addEventListener('blur',event=>{
+  window.__blurEvidence.push({trusted:event.isTrusted,hold:window.__holdTrustedBlur,focus:document.activeElement?.id});
+  if(event.isTrusted&&window.__holdTrustedBlur){inHeldBlur=true;originalSetTimeout(()=>{inHeldBlur=false;},0);}
+ },true);
+ window.setTimeout=function(callback,delay,...args){
+  if(inHeldBlur&&delay===0&&typeof callback==='function'){
+   window.__deferredBlur.push(()=>callback(...args));return originalSetTimeout(()=>{},0);
+  }
+  return originalSetTimeout(callback,delay,...args);
+ };"""
 
 
 ENGINE_SCENARIOS = r"""() => {
@@ -101,7 +116,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, artifacts=None)
     output = Path(artifacts) if artifacts is not None else None
     if output is not None:
         output.mkdir(parents=True, exist_ok=True)
-    checks, screenshots, errors, game_events = [], [], [], []
+    checks, screenshots, errors, game_events, input_events = [], [], [], [], []
     with tempfile.TemporaryDirectory(prefix="bmo-playable-games-") as directory:
         fixture = DesktopFixture(directory, profile=profile, face=face, scenario="playable")
         try:
@@ -119,6 +134,8 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, artifacts=None)
                             payload = request.post_data_json.get('payload', {})
                             if payload.get('action') == 'game_event':
                                 game_events.append(payload['value'])
+                            if payload.get('action') in ('gamepad', 'game_key', 'game_ready'):
+                                input_events.append(payload)
                     page.on('request', observe_request)
                     page.route("**/*", lambda r: r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
                     page.add_init_script(PAD_BOUNDARY)
@@ -143,7 +160,11 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, artifacts=None)
                             if value is not None and predicate(value):
                                 return value
                             page.wait_for_timeout(25)
-                        raise AssertionError("Playable engine state timeout: " + json.dumps(value))
+                        host=fixture.features()
+                        raise AssertionError("Playable engine state timeout: " + json.dumps(dict(
+                            engine=value, host={key:host.get(key) for key in ('mode','mode_generation','games','usb_gamepad','last_result','requests')},
+                            browser=page.evaluate("()=>({mode:BMODesktop.features?.mode,focus:document.activeElement?.id,hasFocus:document.hasFocus(),dialogs:[...document.querySelectorAll('dialog[open]')].map(d=>d.id)})"),
+                            recent_input=input_events[-12:], errors=errors)))
 
                     def shot(name):
                         if output is not None:
@@ -226,8 +247,26 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, artifacts=None)
                     back_to_face(keyboard=True)
                     checks.append("real 800x480 blocks receives keyboard movement/rotation and keyboard/gamepad hard-drop score, pauses its RAF, restarts and returns to the original face")
 
+                    # A callback scheduled while the old face gains focus may
+                    # arrive after the next game has its own connected pad.
+                    page.locator('#face-volume-trigger').wait_for(state='visible')
+                    page.evaluate("()=>{window.__holdTrustedBlur=true;document.querySelector('#face-volume-trigger').focus();document.querySelector('#face').contentWindow.focus();}")
+                    try:page.wait_for_function('()=>window.__deferredBlur.length>0')
+                    except Exception as error:
+                        error.add_note(json.dumps(page.evaluate('()=>({blur:window.__blurEvidence,focus:document.activeElement?.id,hasFocus:document.hasFocus(),held:window.__holdTrustedBlur,callbacks:window.__deferredBlur.length})')))
+                        raise
+                    page.evaluate('()=>{window.__holdTrustedBlur=false;}')
                     open_menu()
                     s = launch("bmo_maze")
+                    wait_features(lambda state:state['usb_gamepad']['code']=='gamepad_active')
+                    before_disconnects=page.evaluate('()=>BMODesktop.gamepadEvidence.disconnects')
+                    after_disconnects=page.evaluate('()=>{for(const callback of window.__deferredBlur.splice(0))callback();return BMODesktop.gamepadEvidence.disconnects;}')
+                    if after_disconnects!=before_disconnects:
+                        broken=wait_features(lambda state:state['mode']=='game_menu')
+                        raise AssertionError('Retired internal blur disconnected a new game: '+json.dumps(dict(
+                            mode=broken['mode'],generation=broken['mode_generation'],pad=broken['usb_gamepad'],
+                            requests=broken['requests'],recent_input=input_events[-12:])))
+                    checks.append('deferred trusted parent-to-face blur cannot disconnect a subsequently launched gamepad owner')
                     directions = (("ArrowRight", 1, 0), ("ArrowDown", 0, 1), ("ArrowLeft", -1, 0), ("ArrowUp", 0, -1))
                     key = next(k for k, dx, dy in directions
                                if 0 <= s["player"]["y"] + dy < len(s["map"])
@@ -278,6 +317,23 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, artifacts=None)
                     page.locator("#game-back").click()
                     wait_features(lambda v: v["mode"] == "conversation")
                     checks.append("standard gamepad boundary drives real Snake food/growth/score and wall gameover; actual terminal edge reports once and disconnect releases input/game/audio ownership")
+
+                    # Preserve the explicit external-blur boundary independently
+                    # of the deferred trusted internal-focus case. Headless
+                    # Chromium keeps windows virtually focused, so this edge is
+                    # injected; physical window focus is not claimed here.
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
+                    page.evaluate("()=>{window.__padConnected=true;}")
+                    open_menu()
+                    launch('bmo_blocks')
+                    wait_features(lambda state:state['usb_gamepad']['code']=='gamepad_active')
+                    page.evaluate("()=>window.dispatchEvent(new Event('blur'))")
+                    wait_features(lambda state:state['mode']=='game_menu' and state['audio_owner'] is None)
+                    page.wait_for_function('()=>BMOPlayableGames.snapshot()===null')
+                    page.locator('#game-back').click()
+                    wait_features(lambda state:state['mode']=='conversation')
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
+                    checks.append('explicit external-blur edge still releases the connected pad and game/audio owner')
 
                     # Use real factory/inputs only; no board setter or test cheat
                     # exists. These bounded deterministic physics steps add
