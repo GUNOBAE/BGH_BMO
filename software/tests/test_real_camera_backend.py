@@ -22,6 +22,7 @@ class LiveCameraFixture:
     def setUp(self):
         self.clock = Clock()
         self.sdk = FakeCamera(self.clock)
+        self.sdk.advance_clock = True
         self.factory = Mock(return_value=self.sdk)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -203,7 +204,7 @@ class LiveVideoTests(LiveCameraFixture, unittest.TestCase):
         self.assertTrue(result.completed)
         raw = recorder.store.read(result.video_id)
         meta = validate_rgb_avi(raw)
-        self.assertEqual((meta['width'],meta['height'],meta['frames']),(320,240,2))
+        self.assertEqual((meta['width'],meta['height'],meta['frames']),(640,360,2))
         self.assertFalse(camera.broker.opened)
         self.assertEqual((self.root/'videos'/(result.video_id+'.avi')).stat().st_mode&0o777,0o600)
         duplicate = recorder.start_video_recording('live-video',generation=1,consent=True)

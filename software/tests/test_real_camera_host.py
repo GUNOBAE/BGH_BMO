@@ -2,10 +2,13 @@
 import hashlib
 from pathlib import Path
 import tempfile
+import time
+from threading import Event
 import unittest
 from unittest.mock import Mock, patch
 
 from bmo_ai.features.camera.live import LivePicamera2Backend
+from bmo_ai.features.camera.backends import FixtureDetector
 from bmo_ai.features.camera.live_codec import validate_rgb_avi
 from bmo_ai.features.camera.live_video import LIVE_CONTRACT, LiveVideoRecorder
 from bmo_ai.features.contracts import FeatureError
@@ -35,8 +38,12 @@ class SupervisedCameraHostTests(unittest.TestCase):
         self.enterContext(patch.object(LivePicamera2Backend,'_close_uncertain',False))
         self.enterContext(patch('bmo_ai.features.camera.live.probe_camera_capability',return_value={
             'backend':'picamera2','available':True,'code':'camera_backend_available',
-            'modules':{},'opened':False,'physical_tested':False,'tracking_available':False,
+            'modules':{},'opened':False,'physical_tested':False,'tracking_available':True,
             'activation':'explicit_supervised_opt_in'}))
+        # Tracking lifecycle uses an explicit local position double. Missing
+        # OpenCV/NullDetector is a capability failure, never working tracking.
+        self.enterContext(patch('bmo_ai.features.camera.live.OpenCVFaceDetector',
+            side_effect=lambda **_kwargs: FixtureDetector(boxes=())))
         for target in ('subprocess.Popen','socket.socket.connect','socket.socket.connect_ex',
                        'bmo_ai.audio.record_wav','bmo_ai.audio.transcribe',
                        'bmo_ai.fish_tts.synthesize_wav','bmo_ai.local_piper.synthesize_wav',
@@ -65,6 +72,185 @@ class SupervisedCameraHostTests(unittest.TestCase):
         host.poll()
         return host.snapshot()
 
+    def finish_dialogue(self, host):
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            self.poll(host)
+            if not host.session.busy and host.audio.owner is None and host._photo_job is None:
+                return
+            time.sleep(.002)
+        self.fail('dialogue did not finish')
+
+    def present_photo_preview(self, host):
+        # Model the product image-load acknowledgement, not a PID/open sensor.
+        state = self.poll(host)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if state['camera']['preview_available']:
+                break
+            time.sleep(.005)  # Yield to the one bounded SDK preview producer.
+            state = self.poll(host)
+        self.assertEqual(state['photo_phase'], 'preparing')
+        self.assertIsNone(state['photo_countdown'])
+        self.assertTrue(state['camera']['preview_available'])
+        preview = host.preview_frame()
+        self.assertIsNotNone(preview)
+        self.assertEqual(preview['mime'], 'image/jpeg')
+        self.assertTrue(preview['payload'].startswith(b'\xff\xd8'))
+        result = host.control(HostControl('photo_preview_ready', {
+            'generation': state['mode_generation'],
+            'request_id': state['photo_request_id'],
+            'preview_token': state['photo_preview_token'],
+        }), 'visible_preview_' + state['photo_request_id'])
+        self.assertNotEqual(result.status, 'rejected')
+        self.assertEqual(host._photo_phase, 'countdown')
+        self.assertAlmostEqual(host._pending_photo['deadline'] - self.clock(), 5.)
+
+    def wait_fresh_preview(self, host):
+        # Advancing injected time skips real producer ticks; let the next SDK
+        # frame refresh its current-stream focus before firing the shutter.
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            focus = host.camera.focus_snapshot()
+            if focus.get('can_take_anyway') is True:
+                return
+            time.sleep(.005)
+        self.fail('current-stream SDK preview did not refresh')
+
+    def finish_photo(self, host):
+        self.present_photo_preview(host)
+        self.clock.now += 5.1
+        self.sdk.sensor += 5_100_000_000
+        self.wait_fresh_preview(host)
+        self.poll(host)
+        self.finish_dialogue(host)
+        return host.snapshot()
+
+    def test_spoken_photo_after_reply_uses_one_existing_real_camera_and_repeat_does_not_retake(self):
+        host = self.host(video=False)
+        self.assertTrue(host.start_question('Take my picture please.'))
+        self.finish_dialogue(host)
+        self.assertEqual(host.modes.mode, 'photo')
+        self.assertTrue(host._last_result['request_id'].startswith('spoken_photo_'))
+        self.factory.assert_called_once()
+        state = self.finish_photo(host)
+        photo_id = state['photo']['photo_id']
+        self.assertEqual(state['photo']['status'], 'succeeded')
+        self.assertFalse(state['photo']['simulated'])
+        self.assertEqual(state['mode'], 'photo')
+        self.assertEqual(state['photo_phase'], 'photo_review')
+        self.assertFalse(state['camera']['on'])
+        photos_before = list((self.root/'photos').glob('*.png'))
+        previous_turn = host.session.snapshot()['turn_id']
+        host.control(HostControl('repeat'), 'spoken_photo_repeat')
+        self.finish_dialogue(host)
+        self.assertNotEqual(host.session.snapshot()['turn_id'], previous_turn)
+        self.clock.now += 4
+        self.poll(host)
+        self.assertEqual(list((self.root/'photos').glob('*.png')), photos_before)
+        self.assertIsNotNone(host.photo_bytes(photo_id))
+        self.assertEqual(host.snapshot()['photo_phase'], 'photo_review')
+
+    def test_korean_spoken_photo_review_back_restores_tracking_and_next_dialogue(self):
+        host = self.host(video=False)
+        host.execute(HostIntent('start_face_tracking'), request_id='human_tracking')
+        self.assertTrue(host.start_question('사진 찍어줘.'))
+        self.finish_dialogue(host)
+        self.assertEqual(host.modes.mode, 'photo')
+        state = self.finish_photo(host)
+        self.assertEqual(state['photo']['status'], 'succeeded')
+        self.assertEqual(state['mode'], 'photo')
+        self.assertEqual(state['photo_phase'], 'photo_review')
+        self.assertFalse(state['camera']['on'])
+        self.assertFalse(state['camera']['tracking'])
+        self.assertTrue(host.ptt_button())  # GP8 review action returns, never records.
+        state = self.poll(host)
+        self.assertEqual(state['mode'], 'conversation')
+        self.assertTrue(state['camera']['tracking'])
+        self.assertFalse(state['camera']['preview'])
+        photos_before = list((self.root/'photos').glob('*.png'))
+        self.assertTrue(host.start_question('What is two plus two?'))
+        self.finish_dialogue(host)
+        self.clock.now += 4
+        self.poll(host)
+        self.assertEqual(list((self.root/'photos').glob('*.png')), photos_before)
+
+    def test_model_photo_after_nonrequest_still_cannot_open_camera(self):
+        host = self.host(video=False)
+        host.session.expression_client.responses._responses.replies.append(dict(
+            version=1, speech='A fixture answer.', emotion='neutral', gesture='none',
+            intent={'name':'take_photo','target':None}))
+        self.assertTrue(host.start_question('Do not take my picture.'))
+        self.finish_dialogue(host)
+        self.assertEqual(host._last_result['code'], 'camera_human_action_required')
+        self.factory.assert_not_called()
+
+    def test_failed_spoken_capture_has_no_success_feedback_and_recovers_without_a_retry(self):
+        host = self.host(video=False)
+        self.assertTrue(host.start_question('사진 찍어줘.'))
+        self.finish_dialogue(host)
+        self.present_photo_preview(host)
+        before_feedback = host.session.worker.turn
+        self.sdk.fail = 'still'
+        self.clock.now += 5.1
+        self.sdk.sensor += 5_100_000_000
+        self.wait_fresh_preview(host)
+        self.poll(host)
+        self.finish_dialogue(host)
+        state = host.snapshot()
+        self.assertEqual(state['photo']['status'], 'failed')
+        self.assertEqual(state['mode'], 'photo')
+        self.assertEqual(state['photo_phase'], 'failed')
+        self.assertEqual(host.session.worker.turn, before_feedback)
+        host.execute(HostIntent('return_to_face'), request_id='failed_photo_back')
+        self.assertEqual(host.modes.mode, 'conversation')
+        self.assertFalse(state['camera']['on'])
+        self.clock.now += 4
+        self.poll(host)
+        self.assertEqual(self.sdk.calls.count('still'), 1)
+
+    def test_cancelled_spoken_photo_cannot_capture_or_authorize_a_later_model_photo(self):
+        host = self.host(video=False)
+        started = Event()
+        original_player = host.session.voice._player
+        def player(_command, *, on_start, cancel_check, **_options):
+            # Prepared audio has not started; cancellation must not promote
+            # the already-resolved human photo command to an action.
+            started.set()
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                cancel_check()
+                time.sleep(.002)
+            raise AssertionError('cancel did not retire spoken photo response')
+        host.session.voice._player = player
+        self.assertTrue(host.start_question('사진 찍어줘.'))
+        self.assertTrue(started.wait(2))
+        self.poll(host)
+        host.cancel_conversation()
+        self.finish_dialogue(host)
+        self.factory.assert_not_called()
+        host.session.voice._player = original_player
+        host.session.expression_client.responses._responses.replies.append(dict(
+            version=1, speech='Two plus two is four.', emotion='neutral', gesture='none',
+            intent={'name':'take_photo','target':None}))
+        self.assertTrue(host.start_question('What is two plus two?'))
+        self.finish_dialogue(host)
+        self.assertEqual(host._last_result['code'], 'camera_human_action_required')
+        self.factory.assert_not_called()
+
+    def test_spoken_photo_countdown_can_be_cancelled_before_capture(self):
+        host = self.host(video=False)
+        self.assertTrue(host.start_question('사진 한 장 찍어줘.'))
+        self.finish_dialogue(host)
+        self.assertEqual(host.modes.mode, 'photo')
+        host.control(HostControl('cancel'), 'spoken_photo_cancel')
+        self.clock.now += 5.1
+        self.poll(host)
+        self.assertEqual(host.modes.mode, 'conversation')
+        self.assertFalse(host.camera.snapshot()['on'])
+        self.assertNotIn('still', self.sdk.calls)
+        self.assertFalse((self.root/'photos').exists())
+
     def test_production_flags_construct_one_lazy_real_broker_and_live_recorder(self):
         host=self.host()
         self.assertFalse(host.runtime.simulate)
@@ -77,7 +263,8 @@ class SupervisedCameraHostTests(unittest.TestCase):
         state=self.poll(host)
         self.assertEqual(state['capabilities']['camera'],'explicit_supervised')
         self.assertEqual(state['capabilities']['camera_video'],'explicit_supervised')
-        self.assertEqual(state['system_diagnostics']['arms']['readiness'],'BLOCKED')
+        self.assertEqual(state['system_diagnostics']['arms']['source']['readiness'],'BLOCKED')
+        self.assertFalse(state['system_diagnostics']['arms']['physical_verified'])
         self.assertEqual(state['capabilities']['arms'],'denied')
 
     def test_simulate_cannot_be_combined_with_physical_camera_flags(self):
@@ -106,9 +293,9 @@ class SupervisedCameraHostTests(unittest.TestCase):
         result=host.execute(HostIntent('take_photo'),request_id='human_photo')
         self.assertEqual(result.status,'running')
         self.assertFalse(result.simulated)
-        self.clock.now+=3.1
-        state=self.poll(host)
+        state=self.finish_photo(host)
         photo=state['photo']
+        self.assertEqual(state['mode'], 'photo')  # Existing UI result/review flow.
         self.assertEqual(photo['status'],'succeeded')
         self.assertFalse(photo['simulated'])
         self.assertTrue(photo['executed'])
@@ -145,7 +332,7 @@ class SupervisedCameraHostTests(unittest.TestCase):
         raw=host.video_bytes(result['video_id'])
         self.assertIsNotNone(raw)
         self.assertEqual(hashlib.sha256(raw).hexdigest(),result['sha256'])
-        self.assertEqual(validate_rgb_avi(raw)['width'],320)
+        self.assertEqual(validate_rgb_avi(raw)['width'],640)
         self.assertIsNone(host.video_bytes('video_'+'f'*32))
 
     def test_auto_video_stop_updates_real_receipt_without_synthetic_result_decoder(self):
@@ -168,7 +355,6 @@ class SupervisedCameraHostTests(unittest.TestCase):
     def test_sdk_close_unknown_propagates_to_host_cleanup_report(self):
         host=self.host(video=False)
         host.execute(HostIntent('take_photo'),request_id='human_close')
-        self.clock.now+=3.1
         self.poll(host)
         self.sdk.fail='close'
         host.close()

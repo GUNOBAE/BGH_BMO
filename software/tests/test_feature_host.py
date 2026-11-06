@@ -50,10 +50,13 @@ class FeatureHostTests(unittest.TestCase):
 
     def finish_voice(self, host):
         deadline = time.monotonic() + 3
-        while host.session.busy and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
             host.poll()
+            if not host.session.busy and host.audio.owner is None:
+                break
             time.sleep(.002)
         self.assertFalse(host.session.busy)
+        self.assertIsNone(host.audio.owner)
         host.poll()
 
     def seed(self, host):
@@ -99,8 +102,16 @@ class FeatureHostTests(unittest.TestCase):
         host.poll()
         self.assertEqual((host.snapshot()["mode"], host.snapshot()["audio_owner"]), ("conversation", None))
         self.execute(host, "take_photo", request="photo:1")
-        self.now = 3.7
+        state = host.snapshot()
+        self.assertEqual(state['photo_phase'], 'preparing')
+        self.assertIsNone(state['photo_countdown'])
+        host.control(HostControl('photo_preview_ready', {
+            'generation': state['mode_generation'], 'request_id': state['photo_request_id'],
+            'preview_token': state['photo_preview_token']}), 'photo_preview_shown')
+        self.now += 5.
         host.poll()
+        self.finish_voice(host)
+        self.assertEqual(host.snapshot()['photo_phase'], 'photo_review')
         self.assertTrue(host.snapshot()["photo"]["simulated"])
         self.assertFalse(host.snapshot()["photo"]["executed"])
         self.execute(host, "return_to_face", request="face:2")
@@ -109,6 +120,208 @@ class FeatureHostTests(unittest.TestCase):
         self.assertEqual(host.snapshot()["emotion"], "crying")
         self.assertEqual(len(host.client.requests), 1)
         self.assertNotIn("private synthetic", json.dumps(host.snapshot()))
+
+    def present_photo(self, host):
+        host.poll()
+        state = host.snapshot()
+        for _ in range(4):
+            if state['camera']['preview_available']:
+                break
+            self.now += .11
+            host.poll();state=host.snapshot()
+        self.assertEqual(state['photo_phase'], 'preparing')
+        self.assertIsNone(state['photo_countdown'])
+        self.assertTrue(state['camera']['preview_available'])
+        self.assertIsNotNone(host.preview_bytes())
+        value = {'generation': state['mode_generation'], 'request_id': state['photo_request_id'],
+                 'preview_token': state['photo_preview_token']}
+        result = host.control(HostControl('photo_preview_ready', value), 'preview_shown_' + value['request_id'])
+        self.assertNotEqual(result.status, 'rejected')
+        host.poll()
+        return value
+
+    def test_photo_needs_current_visible_preview_ack_then_exactly_five_seconds_once(self):
+        host = self.host()
+        captures = self.enterContext(patch.object(host.camera, 'take_photo', wraps=host.camera.take_photo))
+        self.execute(host, 'take_photo', request='five_second_photo')
+        state = host.snapshot()
+        self.assertEqual(state['photo_phase'], 'preparing')
+        self.assertIsNone(state['photo_countdown'])
+        for key, forged in (('generation', state['mode_generation']+1),
+                            ('request_id', 'older_request'), ('preview_token', 'forged_token')):
+            value = {'generation': state['mode_generation'], 'request_id': state['photo_request_id'],
+                     'preview_token': state['photo_preview_token']}
+            value[key] = forged
+            result = host.control(HostControl('photo_preview_ready', value), 'invalid_preview_' + key)
+            self.assertEqual((result.status, result.code), ('rejected', 'stale_photo_preview'))
+        self.now = 9.
+        host.poll()
+        captures.assert_not_called()
+        self.assertIsNone(host.snapshot()['photo_countdown'])
+        visible = self.present_photo(host)
+        deadline = host._pending_photo['deadline']
+        self.assertAlmostEqual(deadline - self.now, 5.)
+        duplicate = host.control(HostControl('photo_preview_ready', visible), 'duplicate_visible_preview')
+        self.assertEqual((duplicate.status, duplicate.code), ('rejected', 'stale_photo_preview'))
+        self.assertEqual(host._pending_photo['deadline'], deadline)
+        self.now = deadline-.001
+        host.poll()
+        captures.assert_not_called()
+        self.now = deadline
+        host.poll()
+        self.finish_voice(host)
+        self.assertEqual(captures.call_count, 1)
+        saved = host.snapshot()['photo']
+        self.assertTrue(saved['completed'])
+        self.assertEqual(host.snapshot()['photo_phase'], 'photo_review')
+        self.assertEqual(host.modes.mode, 'photo')
+        self.assertFalse(host.camera.snapshot()['on'])
+        raw = host.photo_bytes(saved['photo_id'])
+        self.assertIsNotNone(raw)
+        self.now += 100
+        host.poll()
+        self.assertEqual(host.snapshot()['photo'], saved)
+        self.assertEqual(host.photo_bytes(saved['photo_id']), raw)
+        self.assertIsNone(host.preview_bytes())
+        self.assertEqual(captures.call_count, 1)
+        repeated = host.execute(HostIntent('take_photo'), request_id='five_second_photo')
+        self.assertEqual(repeated.request_id, 'five_second_photo')
+        self.assertEqual(captures.call_count, 1)
+
+    def test_photo_success_feedback_is_after_saved_pixels_and_never_calls_brain(self):
+        host = self.host()
+        spoken=[]
+        original_speak=host.session.voice.speak
+        def speak(text, **settings):
+            saved=host._photo_result
+            self.assertIsNotNone(saved)
+            self.assertTrue(saved['completed'])
+            self.assertIsNotNone(host.photo_bytes(saved['photo_id']))
+            self.assertFalse(host.camera.snapshot()['on'])
+            spoken.append(text)
+            return original_speak(text, **settings)
+        host.session.voice.speak=speak
+        self.execute(host, 'take_photo', request='feedback_photo')
+        self.assertEqual(spoken, [])
+        self.present_photo(host)
+        self.now=host._pending_photo['deadline']
+        host.poll();self.finish_voice(host)
+        self.assertEqual(spoken, ['Ta-da! Pretty good, huh?'])
+        self.assertEqual(host.client.requests, [])
+        history=list(host.session.brain.history)
+        photo=host.snapshot()['photo']
+        turn=host.session.worker.turn
+        result=host.control(HostControl('repeat'), 'repeat_feedback')
+        self.assertEqual(result.code, 'repeat_started')
+        self.finish_voice(host)
+        self.assertGreater(host.session.worker.turn,turn)
+        self.assertEqual(spoken, ['Ta-da! Pretty good, huh?'])
+        self.assertEqual(host.client.requests, [])
+        self.assertEqual(host.session.brain.history, history)
+        self.assertEqual(host.snapshot()['photo'], photo)
+        self.assertEqual(host.snapshot()['photo_phase'],'photo_review')
+        self.assertTrue(host.ptt_button())
+        host.poll()
+        self.assertEqual(host.modes.mode,'conversation')
+        self.assertEqual(host.session.worker.turn,turn+1)  # Return is not a new turn.
+
+    def test_review_gp8_cancels_feedback_and_returns_without_starting_ptt(self):
+        host=self.host()
+        started=Event()
+        def player(command, *, on_start, cancel_check, **settings):
+            cancel_check();on_start();started.set()
+            deadline=time.monotonic()+2
+            while time.monotonic()<deadline:
+                cancel_check();time.sleep(.002)
+            raise AssertionError('photo feedback was not cancelled')
+        host.session.voice._player=player
+        self.execute(host,'take_photo',request='back_during_feedback')
+        self.present_photo(host)
+        self.now=host._pending_photo['deadline'];host.poll()
+        self.assertTrue(started.wait(1))
+        self.assertEqual(host.snapshot()['photo_phase'],'photo_review')
+        turn=host.session.worker.turn
+        saved=host.snapshot()['photo']
+        self.assertTrue(host.ptt_button())
+        self.finish_voice(host)
+        self.assertEqual(host.modes.mode,'conversation')
+        self.assertEqual(host.session.worker.turn,turn)
+        self.assertIsNone(host.microphone)
+        self.assertEqual(host.client.requests,[])
+        self.assertEqual(host.snapshot()['photo'],saved)
+        self.assertFalse(host.camera.snapshot()['on'])
+        self.assertIsNone(host.audio.owner)
+
+    def test_missing_saved_pixels_never_starts_success_feedback(self):
+        for outcome in ('missing', 'unreadable'):
+            with self.subTest(outcome=outcome):
+                host=self.host()
+                speech=self.enterContext(patch.object(host.session.voice,'speak',wraps=host.session.voice.speak))
+                self.execute(host,'take_photo',request='missing_saved_pixels_'+outcome)
+                self.present_photo(host)
+                self.now=host._pending_photo['deadline']
+                options=({'return_value':None} if outcome=='missing' else
+                         {'side_effect':FeatureError('photo_unavailable')})
+                with patch.object(host.camera,'photo_bytes',**options):
+                    host.poll()
+                self.assertEqual(host.snapshot()['photo_phase'],'failed')
+                self.assertFalse(host.camera.snapshot()['on'])
+                speech.assert_not_called()
+                self.assertEqual(host.client.requests,[])
+
+    def test_late_capture_result_cannot_replace_new_mode_or_close_restored_tracking(self):
+        for replacement in ('conversation', 'new_photo'):
+            with self.subTest(replacement=replacement):
+                host=self.host()
+                self.execute(host,'start_face_tracking',request='tracking_before_'+replacement)
+                self.execute(host,'take_photo',request='old_photo_'+replacement)
+                self.present_photo(host)
+                self.now=host._pending_photo['deadline']
+                speech=self.enterContext(patch.object(host.session.voice,'speak',wraps=host.session.voice.speak))
+                original_capture=host.camera.take_photo
+                def completed_after_return(*args, **kwargs):
+                    result=original_capture(*args, **kwargs)
+                    host.execute(HostIntent('return_to_face'),request_id='interrupted_back_'+replacement)
+                    if replacement=='new_photo':
+                        host.execute(HostIntent('take_photo'),request_id='replacement_photo')
+                    return result
+                with patch.object(host.camera,'take_photo',side_effect=completed_after_return) as capture:
+                    host.poll()
+                state=host.snapshot()
+                self.assertEqual(capture.call_count,1)
+                self.assertIsNone(state['photo'])
+                speech.assert_not_called()
+                self.assertTrue(state['camera']['on'])
+                if replacement=='conversation':
+                    self.assertEqual((state['mode'],state['photo_phase']),('conversation','idle'))
+                    self.assertTrue(state['camera']['tracking'])
+                else:
+                    self.assertEqual((state['mode'],state['photo_phase']),('photo','preparing'))
+                    self.assertEqual(state['photo_request_id'],'replacement_photo')
+                    self.assertTrue(state['camera']['preview'])
+                self.assertEqual(host.client.requests,[])
+
+    def test_cancel_or_preview_failure_has_no_capture_or_success_speech(self):
+        for outcome in ('cancel','preview_failure'):
+            with self.subTest(outcome=outcome):
+                host=self.host()
+                captures=self.enterContext(patch.object(host.camera,'take_photo',wraps=host.camera.take_photo))
+                speech=self.enterContext(patch.object(host.session.voice,'speak',wraps=host.session.voice.speak))
+                self.execute(host,'take_photo',request='aborted_photo_'+outcome)
+                if outcome=='cancel':
+                    visible=self.present_photo(host)
+                    host.control(HostControl('cancel'),'cancel_countdown')
+                    stale=host.control(HostControl('photo_preview_ready',visible),'late_preview_ack')
+                    self.assertEqual(stale.status,'rejected')
+                else:
+                    host.camera.off()
+                    self.now += 15.1
+                self.now += 6
+                host.poll();self.finish_voice(host)
+                captures.assert_not_called();speech.assert_not_called()
+                self.assertIsNone(host.snapshot()['photo'])
+                self.assertFalse(host.camera.snapshot()['on'])
+                self.assertEqual(host.client.requests,[])
 
     def test_queue_admission_is_thread_safe_deduplicated_and_executes_only_on_poll_owner(self):
         host = self.host()

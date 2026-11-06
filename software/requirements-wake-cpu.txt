@@ -1,0 +1,18 @@
+# Isolated optional ONNX-only runtime, tested on Python 3.13 ARM64.
+# Install openwakeword==0.6.0 separately with --no-deps: its Linux metadata
+# requires tflite-runtime, which has no CPython 3.13 wheel and is not used here.
+-r requirements-lock.txt
+numpy==2.2.4
+scipy==1.15.3
+requests==2.32.3
+urllib3==2.3.0
+charset-normalizer==3.4.2
+packaging==25.0
+onnxruntime==1.31.1
+scikit-learn==1.9.1
+flatbuffers==25.12.19
+protobuf==7.36.2
+joblib==1.6.0
+threadpoolctl==3.7.0
+narwhals==2.28.0
+cloudpickle==3.1.2

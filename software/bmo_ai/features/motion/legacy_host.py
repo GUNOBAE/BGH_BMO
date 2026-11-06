@@ -14,6 +14,9 @@ IDENT = re.compile(r"[A-Za-z0-9_]{1,32}\Z", re.ASCII)
 NAMED_GESTURES = frozenset(("wave", "celebrate", "shrug", "raise_left_arm",
                             "raise_right_arm", "both_up", "both_down"))
 MODEL_ONLY = frozenset(("wave", "celebrate", "shrug"))
+RESPONSE_CODES = frozenset(("READY", "DISABLED", "STOPPED", "ALIVE", "HELD",
+    "ACCEPTED", "REQUEST_CONFLICT", "INVALID", "STALE_BOOT", "INVALID_REQUEST_ID",
+    "STALE_REQUEST", "BUSY", "DENIED"))
 MAX_REQUEST_SEQUENCE = 99999999999999999999
 # B1 has no position/completion ACK. Keep heartbeats through the firmware's
 # 15-second hard gesture budget; the host finally HOLDs rather than abandoning
@@ -66,9 +69,13 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
 
 class LegacyArmLink:
     """One outstanding B1 request. Require exact ACK and fresh boot token."""
-    def __init__(self, port, *, motor_permission=None, sequence_clock=None):
+    def __init__(self, port, *, motor_permission=None, sequence_clock=None,
+                 permission_code="physical_supervision_required"):
         if not callable(getattr(port, "write", None)) or not callable(getattr(port, "read_until", None)):
             raise LegacyArmError("owned_cdc_port_required")
+        if permission_code not in ("physical_supervision_required", "daily_arm_permission_required"):
+            raise LegacyArmError("invalid_permission_code")
+        self.permission_code = permission_code
         self.port, self.boot = port, None
         self.motor_permission = motor_permission or (lambda: False)
         # Linux monotonic_ns is shared across processes during the same Pi boot,
@@ -80,6 +87,7 @@ class LegacyArmLink:
         self.unknown = False
         self.stopped = False
         self.closed = False
+        self.last_response_code = None
 
     def _request(self, command, *, is_hello=False, before_write=None):
         if self.closed or self.unknown or self.stopped:
@@ -104,6 +112,7 @@ class LegacyArmLink:
         # an otherwise known transport UNKNOWN.
         if before_write is not None and before_write() is not True:
             raise LegacyArmError("stale_playback_start")
+        self.last_response_code = None
         try:
             if self.port.write(data) != len(data):
                 raise LegacyArmError("partial_write")
@@ -119,6 +128,7 @@ class LegacyArmLink:
                 raise LegacyArmError("invalid_ack")
             if self.boot is not None and parts[3] != self.boot:
                 raise LegacyArmError("boot_changed")
+            self.last_response_code = parts[4] if parts[4] in RESPONSE_CODES else "UNRECOGNIZED"
             if is_hello:
                 self.boot = parts[3]
             return parts[4]
@@ -133,6 +143,11 @@ class LegacyArmLink:
             raise LegacyArmError("already_connected")
         code = self._request("HELLO {rid}", is_hello=True)
         if code != "READY":
+            if code == "STOPPED":
+                # A new Desktop/HELLO cannot clear the board's STOP, GP7 or
+                # watchdog latch. Preserve this explicit remote observation
+                # separately from an unverified transport failure.
+                self.stopped = True
             self.unknown = True
             raise LegacyArmError("firmware_not_ready_" + code.lower())
         return code
@@ -145,7 +160,7 @@ class LegacyArmLink:
         except Exception:
             permission = False
         if permission is not True:
-            raise LegacyArmError("physical_supervision_required")
+            raise LegacyArmError(self.permission_code)
         code = self._request("DO {rid} {boot} " + name, before_write=before_write)
         if code != "ACCEPTED":
             raise LegacyArmError("gesture_" + code.lower())
@@ -421,14 +436,51 @@ class LegacyMotionFeature:
                 "physical_release_verified": False}
 
     def snapshot(self):
+        closed = self.closed or self.link.closed
+        stopped = self.stopped or self.link.stopped
+        unknown = self.fault or self.link.unknown
+        usable = not (closed or stopped or unknown) and self.link.boot is not None
+        reason = ("arm_closed" if closed else "arm_stopped" if stopped else
+                  self.fault or "arm_link_unknown" if unknown else
+                  "position_unverified" if usable else "hello_required")
+        transport = ("CLOSED" if self.link.closed else "STOPPED" if self.link.stopped else
+                     "UNKNOWN" if self.link.unknown else
+                     "ACKNOWLEDGED" if self.link.boot is not None else "NOT_CONNECTED")
+        blocked = []
+        if self.link.last_response_code == 'DISABLED':
+            blocked.append('arm_board_disabled')
+        if self.last_error == 'physical_supervision_required':
+            blocked.append('arm_operator_condition_missing')
+        elif self.last_error == 'daily_arm_permission_required':
+            blocked.append('arm_runtime_not_ready')
+        if closed:
+            blocked.append('arm_closed')
+        elif stopped:
+            blocked.append('arm_stopped')
+        if unknown and not blocked:
+            blocked.append('arm_transport_error')
+        operation = ('closed' if closed else 'stopped' if stopped else 'fault' if unknown
+                     else 'queued' if self.pending is not None else 'active'
+                     if self.active_until is not None else 'idle')
         return {"simulated": False, "real_enabled": True,
-                "readiness": "UNVERIFIED" if self.fault else "READY",
-                "reason_code": self.fault or "position_unverified",
+                "readiness": "BLOCKED" if closed or stopped else "READY" if usable else "UNVERIFIED",
+                "reason_code": reason,
                 "last_error_code": self.last_error,
                 "queued": int(self.pending is not None),
                 "active": self.pending is not None or self.active_until is not None,
-                "stopped": self.stopped, "closed": self.closed,
-                "position_verified": False,
+                "stopped": stopped, "closed": closed,
+                "supported_gestures": sorted(NAMED_GESTURES), "side_reference": "bmo_own",
+                "blocked_reasons": blocked, "operation": operation,
+                "cancel_semantics": "hold_current_commanded_position",
+                "stop_semantics": "board_latch_not_cleared_by_host_restart_not_power_cut",
+                "position_verified": False, "physical_verified": False,
+                "preflight": {"status": "BLOCKED" if closed or stopped or unknown else "CONFIGURED",
+                              "scope": "software_adapter",
+                              "code": reason if closed or stopped or unknown else "supervised_launcher_required"},
+                "transport": {"protocol": "bmo_legacy_b1", "status": transport,
+                              "negotiated": self.link.boot is not None,
+                              "last_response_code": self.link.last_response_code,
+                              "usable": usable},
                 "controller": {"protocol": "bmo_legacy_b1",
                                "negotiated": self.link.boot is not None,
                                "link_unknown": self.link.unknown}}

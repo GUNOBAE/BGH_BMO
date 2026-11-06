@@ -1,0 +1,2704 @@
+{
+  "version": 1,
+  "source_ref": "2023f3a9c12ce4c0628afdfc8deda4a8831ec241",
+  "source_path": "docs/voice-pack-v10/SCRIPT_INDEX_142.csv",
+  "source_csv_sha256": "47c55c74128b00d873645cd7e8009d002e1dcc78606dc7f68b80872e70c6e813",
+  "caption_policy": "Local translations require exact clip ID and source spoken_text; playback uses the verified selected asset SHA. No generated audio or individual listening approval.",
+  "clips": {
+    "B01": {
+      "en": "Oh! Hello! It is me, Beemo.",
+      "ko": "오! 안녕! 나야, 비모.",
+      "category": "boot",
+      "duration_seconds": 3.344,
+      "events": [
+        "boot"
+      ],
+      "status": "conditional",
+      "reason": "Requires explicit boot-voice selection; the currently approved boot greeting and sound are preserved.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "B02": {
+      "en": "I'm awake! Okay. What are we doing?",
+      "ko": "나 깼어! 좋아. 우리 뭐 할까?",
+      "category": "boot",
+      "duration_seconds": 3.204,
+      "events": [
+        "boot"
+      ],
+      "status": "conditional",
+      "reason": "Requires explicit boot-voice selection; the currently approved boot greeting and sound are preserved.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "B03": {
+      "en": "Hello, hello! Let us begin.",
+      "ko": "안녕, 안녕! 시작하자.",
+      "category": "boot",
+      "duration_seconds": 2.647,
+      "events": [
+        "boot"
+      ],
+      "status": "conditional",
+      "reason": "Requires explicit boot-voice selection; the currently approved boot greeting and sound are preserved.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "B04": {
+      "en": "Beemo is ready! I am also very cute.",
+      "ko": "비모 준비 완료! 그리고 나 아주 귀여워.",
+      "category": "boot",
+      "duration_seconds": 4.226,
+      "events": [
+        "boot"
+      ],
+      "status": "conditional",
+      "reason": "Requires explicit boot-voice selection; the currently approved boot greeting and sound are preserved.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "B05": {
+      "en": "Hello! You can be in charge first.",
+      "ko": "안녕! 먼저 네가 대장이 돼도 돼.",
+      "category": "boot",
+      "duration_seconds": 2.926,
+      "events": [
+        "boot"
+      ],
+      "status": "conditional",
+      "reason": "Requires explicit boot-voice selection; the currently approved boot greeting and sound are preserved.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "B06": {
+      "en": "Oh, hello. It is nice to be here.",
+      "ko": "오, 안녕. 여기 있으니까 좋다.",
+      "category": "boot",
+      "duration_seconds": 3.297,
+      "events": [
+        "boot"
+      ],
+      "status": "conditional",
+      "reason": "Requires explicit boot-voice selection; the currently approved boot greeting and sound are preserved.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "G01": {
+      "en": "Pick a game!",
+      "ko": "게임을 골라 줘!",
+      "category": "games",
+      "duration_seconds": 1.115,
+      "events": [
+        "game_menu"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "G02": {
+      "en": "Ooh, game time!",
+      "ko": "오, 게임 시간이다!",
+      "category": "games",
+      "duration_seconds": 1.95,
+      "events": [
+        "game_start"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "G03": {
+      "en": "I'm back!",
+      "ko": "나 돌아왔어!",
+      "category": "games",
+      "duration_seconds": 1.3,
+      "events": [
+        "game_exit"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "G04": {
+      "en": "Oops. That game isn't ready.",
+      "ko": "앗. 그 게임은 아직 준비가 안 됐어.",
+      "category": "games",
+      "duration_seconds": 2.508,
+      "events": [
+        "game_launch_failed"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "G05": {
+      "en": "You did it!",
+      "ko": "네가 해냈어!",
+      "category": "games",
+      "duration_seconds": 1.161,
+      "events": [
+        "game_win"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "G06": {
+      "en": "Oh... game over.",
+      "ko": "아... 게임 끝이네.",
+      "category": "games",
+      "duration_seconds": 3.019,
+      "events": [
+        "game_loss"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "G07": {
+      "en": "Oops! The controller disconnected.",
+      "ko": "앗! 컨트롤러 연결이 끊겼어.",
+      "category": "games",
+      "duration_seconds": 2.554,
+      "events": [
+        "game_controller_lost"
+      ],
+      "status": "conditional",
+      "reason": "Requires an observed controller disconnect; never infer from game loss.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M01": {
+      "en": "I will pick! Let us see what we get.",
+      "ko": "내가 고를게! 뭐가 나올까?",
+      "category": "music",
+      "duration_seconds": 3.065,
+      "events": [
+        "music_random"
+      ],
+      "status": "connected",
+      "reason": "BMO chooses a ready song through the explicit random-song action; not used for a user-selected song.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M02": {
+      "en": "A surprise song! Even I am curious.",
+      "ko": "깜짝 노래야! 나도 궁금해.",
+      "category": "music",
+      "duration_seconds": 3.901,
+      "events": [
+        "music_random"
+      ],
+      "status": "connected",
+      "reason": "BMO chooses a ready song through the explicit random-song action; not used for a user-selected song.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M03": {
+      "en": "Beemo is choosing. This is serious music business.",
+      "ko": "비모가 고르는 중이야. 아주 진지한 음악 일이거든.",
+      "category": "music",
+      "duration_seconds": 5.062,
+      "events": [
+        "music_random"
+      ],
+      "status": "connected",
+      "reason": "BMO chooses a ready song through the explicit random-song action; not used for a user-selected song.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M04": {
+      "en": "That one? Okay! Here it comes.",
+      "ko": "그 곡? 좋아! 지금 나온다.",
+      "category": "music",
+      "duration_seconds": 2.322,
+      "events": [
+        "music_selected"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M05": {
+      "en": "You picked it. I will make it go.",
+      "ko": "네가 골랐으니까, 내가 틀어 줄게.",
+      "category": "music",
+      "duration_seconds": 3.019,
+      "events": [
+        "music_selected"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M06": {
+      "en": "A song for you, chosen by you!",
+      "ko": "널 위한 노래, 네가 고른 노래!",
+      "category": "music",
+      "duration_seconds": 2.647,
+      "events": [
+        "music_selected"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M07": {
+      "en": "Pause! Even music needs a little rest.",
+      "ko": "잠깐 멈춤! 음악도 조금 쉬어야지.",
+      "category": "music",
+      "duration_seconds": 3.994,
+      "events": [
+        "music_paused"
+      ],
+      "status": "conditional",
+      "reason": "Requires confirmed pause and a free audio owner; never overlap music.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M08": {
+      "en": "And now, the rest of the song.",
+      "ko": "자, 이제 나머지 노래를 듣자.",
+      "category": "music",
+      "duration_seconds": 2.415,
+      "events": [
+        "music_resumed"
+      ],
+      "status": "conditional",
+      "reason": "Requires an owned resume announcement before music resumes.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M09": {
+      "en": "Let us hear the next one.",
+      "ko": "다음 곡을 들어 보자.",
+      "category": "music",
+      "duration_seconds": 2.229,
+      "events": [
+        "music_next"
+      ],
+      "status": "conditional",
+      "reason": "Requires explicit next-song selection; not natural playlist completion.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "M10": {
+      "en": "The concert is over. Thank you, everybody.",
+      "ko": "공연이 끝났습니다. 여러분, 고마워요.",
+      "category": "music",
+      "duration_seconds": 3.483,
+      "events": [
+        "music_exit"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_READY_01": {
+      "en": "Okay! Make your picture face. I will count down from five.",
+      "ko": "좋아! 사진 찍을 표정을 지어 봐. 다섯부터 셀게.",
+      "category": "photo",
+      "duration_seconds": 4.737,
+      "events": [
+        "photo_ready"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_READY_02": {
+      "en": "Hold still. Beemo is the photographer today.",
+      "ko": "가만히 있어 봐. 오늘은 비모가 사진사야.",
+      "category": "photo",
+      "duration_seconds": 3.762,
+      "events": [
+        "photo_ready"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_READY_03": {
+      "en": "Ready? You do the pose. I will do the counting.",
+      "ko": "준비됐어? 넌 포즈를 잡아. 숫자는 내가 셀게.",
+      "category": "photo",
+      "duration_seconds": 3.715,
+      "events": [
+        "photo_ready"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_READY_04": {
+      "en": "Everybody ready? Stay together. Here we go!",
+      "ko": "다들 준비됐어? 같이 모여 있어. 간다!",
+      "category": "photo",
+      "duration_seconds": 3.529,
+      "events": [
+        "photo_group_ready"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit group-photo context; do not infer multiple people.",
+      "contexts": [
+        "group_photo"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_READY_05": {
+      "en": "This is important camera business. No wiggling!",
+      "ko": "아주 중요한 카메라 일이야. 꼼지락거리면 안 돼!",
+      "category": "photo",
+      "duration_seconds": 4.598,
+      "events": [
+        "photo_ready"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_READY_06": {
+      "en": "A picture? Yes! Let us keep a little piece of today.",
+      "ko": "사진? 좋아! 오늘의 작은 조각을 간직하자.",
+      "category": "photo",
+      "duration_seconds": 4.69,
+      "events": [
+        "photo_ready"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_COUNTDOWN_05S": {
+      "en": "Five. Four. Three. Two. One.",
+      "ko": "다섯. 넷. 셋. 둘. 하나.",
+      "category": "photo",
+      "duration_seconds": 5.0,
+      "events": [
+        "photo_countdown"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_REVIEW_01": {
+      "en": "There you are! What do you think?",
+      "ko": "네가 여기 있네! 어때?",
+      "category": "photo",
+      "duration_seconds": 2.368,
+      "events": [
+        "photo_saved"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_REVIEW_02": {
+      "en": "Ta-da! A picture by Beemo.",
+      "ko": "짜잔! 비모가 찍은 사진이야.",
+      "category": "photo",
+      "duration_seconds": 2.926,
+      "events": [
+        "photo_saved"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_REVIEW_03": {
+      "en": "Saved! Beemo, photographer.",
+      "ko": "저장했어! 비모, 사진사.",
+      "category": "photo",
+      "duration_seconds": 3.065,
+      "events": [
+        "photo_saved"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_REVIEW_04": {
+      "en": "How do you like it? I did the camera part.",
+      "ko": "마음에 들어? 카메라는 내가 맡았어.",
+      "category": "photo",
+      "duration_seconds": 3.204,
+      "events": [
+        "photo_saved"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_REVIEW_05": {
+      "en": "There! A little piece of today.",
+      "ko": "자! 오늘의 작은 조각이야.",
+      "category": "photo",
+      "duration_seconds": 2.833,
+      "events": [
+        "photo_saved"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_REVIEW_06": {
+      "en": "I took it! You can be the judge.",
+      "ko": "내가 찍었어! 평가는 네가 해 줘.",
+      "category": "photo",
+      "duration_seconds": 2.647,
+      "events": [
+        "photo_saved"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_RETAKE_01": {
+      "en": "Another one? All right. A new pose!",
+      "ko": "한 장 더? 좋아. 새 포즈로!",
+      "category": "photo",
+      "duration_seconds": 3.529,
+      "events": [
+        "photo_retake"
+      ],
+      "status": "conditional",
+      "reason": "Requires a new explicit retake request; repeat cannot take a photo.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_RETAKE_02": {
+      "en": "Again? Okay. Beemo is still the photographer.",
+      "ko": "다시? 좋아. 아직 비모가 사진사야.",
+      "category": "photo",
+      "duration_seconds": 4.18,
+      "events": [
+        "photo_retake"
+      ],
+      "status": "conditional",
+      "reason": "Requires a new explicit retake request; repeat cannot take a photo.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_RETURN_GUIDE_01": {
+      "en": "Press the back button when you are done looking.",
+      "ko": "다 봤으면 뒤로 가기 버튼을 눌러 줘.",
+      "category": "photo",
+      "duration_seconds": 3.204,
+      "events": [
+        "photo_return_guide"
+      ],
+      "status": "conditional",
+      "reason": "Requires a saved-photo review and a one-time return hint.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_EXIT_01": {
+      "en": "I'm back! Camera business is finished.",
+      "ko": "나 돌아왔어! 카메라 일은 끝났어.",
+      "category": "photo",
+      "duration_seconds": 3.622,
+      "events": [
+        "photo_exit"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_EXIT_02": {
+      "en": "And now, back to being Beemo.",
+      "ko": "자, 이제 다시 비모로 돌아갈 시간.",
+      "category": "photo",
+      "duration_seconds": 2.647,
+      "events": [
+        "photo_exit"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_EXIT_03": {
+      "en": "Photo time is over. Beemo time!",
+      "ko": "사진 시간 끝. 비모 시간!",
+      "category": "photo",
+      "duration_seconds": 3.019,
+      "events": [
+        "photo_exit"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PH_CANCEL_01": {
+      "en": "Okay. No picture.",
+      "ko": "알겠어. 사진은 안 찍을게.",
+      "category": "photo",
+      "duration_seconds": 2.601,
+      "events": [
+        "photo_cancelled"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E01": {
+      "en": "Hmm? The words got fuzzy. Say that again?",
+      "ko": "응? 말이 흐릿하게 들렸어. 다시 말해 줄래?",
+      "category": "errors",
+      "duration_seconds": 3.808,
+      "events": [
+        "error_unrecognized"
+      ],
+      "status": "conditional",
+      "reason": "Retained for an explicit unrecognized-speech event; no automatic STT-error cache producer is connected.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E02": {
+      "en": "Oh. I did not hear any words.",
+      "ko": "어. 아무 말도 못 들었어.",
+      "category": "errors",
+      "duration_seconds": 3.344,
+      "events": [
+        "error_no_speech"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a no-speech event; current empty-input handling remains silent.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E03": {
+      "en": "Oh. My microphone is not working.",
+      "ko": "어. 내 마이크가 작동하지 않아.",
+      "category": "errors",
+      "duration_seconds": 2.926,
+      "events": [
+        "error_microphone"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a confirmed microphone failure; no automatic microphone-error cache producer is connected.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E04": {
+      "en": "Which one? Beemo needs one more clue.",
+      "ko": "어느 거? 비모에게 단서 하나만 더 줘.",
+      "category": "errors",
+      "duration_seconds": 3.204,
+      "events": [
+        "clarification"
+      ],
+      "status": "conditional",
+      "reason": "Requires a current clarification question; not a device failure.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E05": {
+      "en": "Hmm. This is taking a little longer.",
+      "ko": "음. 시간이 조금 더 걸리네.",
+      "category": "errors",
+      "duration_seconds": 4.272,
+      "events": [
+        "waiting_reply"
+      ],
+      "status": "conditional",
+      "reason": "Requires a measured pending reply; never loop a waiting announcement.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E06": {
+      "en": "The answer did not come back. Oh, bother.",
+      "ko": "답이 돌아오지 않았어. 아, 이런.",
+      "category": "errors",
+      "duration_seconds": 4.133,
+      "events": [
+        "error_timeout"
+      ],
+      "status": "conditional",
+      "reason": "Requires an actual response timeout; not an arbitrary service failure.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E07": {
+      "en": "Oh. I cannot get online right now.",
+      "ko": "어. 지금 인터넷에 연결할 수 없어.",
+      "category": "errors",
+      "duration_seconds": 3.576,
+      "events": [
+        "error_network"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a confirmed network failure; no automatic network-error cache producer is connected.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E08": {
+      "en": "I cannot get an answer right now. That is not very helpful.",
+      "ko": "지금 답을 받을 수가 없어. 별로 도움이 안 되네.",
+      "category": "errors",
+      "duration_seconds": 4.83,
+      "events": [
+        "error_service",
+        "error_authentication",
+        "error_rate_limit"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a confirmed response-service failure; no automatic provider-error cache producer is connected.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E09": {
+      "en": "I do not have that trick.",
+      "ko": "나한테는 그런 재주가 없어.",
+      "category": "errors",
+      "duration_seconds": 2.136,
+      "events": [
+        "unsupported_action"
+      ],
+      "status": "conditional",
+      "reason": "Requires an unsupported requested action.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E10": {
+      "en": "Huh. That did not go according to Beemo's plan.",
+      "ko": "어라. 비모의 계획대로 되지 않았네.",
+      "category": "errors",
+      "duration_seconds": 4.737,
+      "events": [
+        "error_action"
+      ],
+      "status": "conditional",
+      "reason": "Requires a confirmed generic action failure.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E11": {
+      "en": "That song is not in my music box.",
+      "ko": "그 노래는 내 음악 상자에 없어.",
+      "category": "errors",
+      "duration_seconds": 2.879,
+      "events": [
+        "error_music_missing"
+      ],
+      "status": "conditional",
+      "reason": "Retained for an unknown-song result; current Host reports this through its generic music-error path.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E12": {
+      "en": "My music box is empty. We need some songs.",
+      "ko": "내 음악 상자가 비었어. 노래가 좀 필요해.",
+      "category": "errors",
+      "duration_seconds": 4.272,
+      "events": [
+        "error_music_empty"
+      ],
+      "status": "conditional",
+      "reason": "Retained for an empty music library; no separate empty-library voice producer is connected.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E13": {
+      "en": "That song will not play. A very stubborn song.",
+      "ko": "그 노래가 재생되지 않아. 아주 고집 센 노래야.",
+      "category": "errors",
+      "duration_seconds": 5.294,
+      "events": [
+        "error_music"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E14": {
+      "en": "My camera is not ready. No picture yet.",
+      "ko": "내 카메라가 준비되지 않았어. 아직 사진은 못 찍어.",
+      "category": "errors",
+      "duration_seconds": 3.669,
+      "events": [
+        "error_camera"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E15": {
+      "en": "Oh. I did not get the picture.",
+      "ko": "어. 사진을 찍지 못했어.",
+      "category": "errors",
+      "duration_seconds": 3.622,
+      "events": [
+        "error_capture"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "E16": {
+      "en": "Oh, no. I could not save the picture.",
+      "ko": "아, 이런. 사진을 저장하지 못했어.",
+      "category": "errors",
+      "duration_seconds": 3.715,
+      "events": [
+        "error_storage"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "RX01": {
+      "en": "",
+      "ko": "",
+      "category": "reaction",
+      "duration_seconds": 1.347,
+      "events": [
+        "reaction_chuckle"
+      ],
+      "status": "connected",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "playful",
+        "celebration",
+        "acting"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "RX02": {
+      "en": "Oh!",
+      "ko": "오!",
+      "category": "reaction",
+      "duration_seconds": 2.183,
+      "events": [
+        "reaction_gasp"
+      ],
+      "status": "connected",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "dialogue",
+        "surprise",
+        "acting"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "RX03": {
+      "en": "Hmph!",
+      "ko": "흥!",
+      "category": "reaction",
+      "duration_seconds": 1.068,
+      "events": [
+        "reaction_playful_puff"
+      ],
+      "status": "connected",
+      "reason": "Explicit acting only; never a spontaneous reaction to a serious concern.",
+      "contexts": [
+        "acting"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "RX04": {
+      "en": "Oh, dear.",
+      "ko": "아이고.",
+      "category": "reaction",
+      "duration_seconds": 1.486,
+      "events": [
+        "reaction_sob"
+      ],
+      "status": "connected",
+      "reason": "Explicit acting only; never a spontaneous reaction to a serious concern.",
+      "contexts": [
+        "acting"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "RX05": {
+      "en": "Yay!",
+      "ko": "야호!",
+      "category": "reaction",
+      "duration_seconds": 1.022,
+      "events": [
+        "reaction_cheer"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "celebration"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "RX06": {
+      "en": "Hmm?",
+      "ko": "음?",
+      "category": "reaction",
+      "duration_seconds": 0.789,
+      "events": [
+        "reaction_hmm"
+      ],
+      "status": "connected",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "curious",
+        "uncertain"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "RX07": {
+      "en": "Aha!",
+      "ko": "아하!",
+      "category": "reaction",
+      "duration_seconds": 1.022,
+      "events": [
+        "reaction_aha"
+      ],
+      "status": "connected",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "idea",
+        "discovery"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "RX08": {
+      "en": "Whoa...",
+      "ko": "우와...",
+      "category": "reaction",
+      "duration_seconds": 1.811,
+      "events": [
+        "reaction_whoa"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "surprise"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "C01": {
+      "en": "Finn? Jake? ... Hmm. I wonder what those two are doing.",
+      "ko": "핀? 제이크? ... 음. 둘이 뭘 하고 있을까?",
+      "category": "idle",
+      "duration_seconds": 4.923,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral",
+        "gaze": {
+          "x": 0.08,
+          "y": -0.04,
+          "hold_seconds": 1.2
+        }
+      }
+    },
+    "C02": {
+      "en": "I like it when Finn and Jake play games with me.",
+      "ko": "핀과 제이크가 나랑 게임할 때가 좋아.",
+      "category": "idle",
+      "duration_seconds": 3.158,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C03": {
+      "en": "Finn and Jake went inside one of my games once. Playing from the outside is much less trouble.",
+      "ko": "핀과 제이크가 내 게임 속에 들어간 적이 있어. 밖에서 하는 게 훨씬 덜 복잡해.",
+      "category": "idle",
+      "duration_seconds": 6.734,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral"
+      }
+    },
+    "C04": {
+      "en": "Hello, Football. ... Oh. I should find a mirror first.",
+      "ko": "안녕, 풋볼. ... 아. 먼저 거울을 찾아야겠다.",
+      "category": "idle",
+      "duration_seconds": 4.505,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral",
+        "gaze": {
+          "x": -0.08,
+          "y": 0.0,
+          "hold_seconds": 1.0
+        }
+      }
+    },
+    "C05": {
+      "en": "Football and I look very much alike. But I am Beemo. That is an important difference.",
+      "ko": "풋볼과 나는 아주 닮았어. 하지만 나는 비모야. 그건 중요한 차이지.",
+      "category": "idle",
+      "duration_seconds": 7.105,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C06": {
+      "en": "Football wanted a turn outside the mirror. Changing places sounded simple. Hmm. It was not simple.",
+      "ko": "풋볼은 거울 밖에 나와 보고 싶어 했어. 자리를 바꾸는 건 간단해 보였지. 음. 간단하지 않았어.",
+      "category": "idle",
+      "duration_seconds": 8.127,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral"
+      }
+    },
+    "C07": {
+      "en": "Finn's missing sock... That was a serious case.",
+      "ko": "핀의 잃어버린 양말... 그건 중대한 사건이었어.",
+      "category": "idle",
+      "duration_seconds": 3.947,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral",
+        "gaze": {
+          "x": 0.0,
+          "y": 0.05,
+          "hold_seconds": 0.8
+        }
+      }
+    },
+    "C08": {
+      "en": "I was a detective once. Finn needed a sock. I found a whole mystery.",
+      "ko": "나도 한때 탐정이었어. 핀은 양말이 필요했는데, 나는 거대한 수수께끼를 찾아냈지.",
+      "category": "idle",
+      "duration_seconds": 6.269,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C09": {
+      "en": "I remember looking for Finn's sock. Such a small thing. Such a big case. Hmm. A detective cannot ignore a sock just because it is a sock.",
+      "ko": "핀의 양말을 찾던 때가 생각나. 그렇게 작은 물건이 그렇게 큰 사건이었지. 음. 탐정은 양말이라고 해서 양말을 무시하면 안 돼.",
+      "category": "idle",
+      "duration_seconds": 13.189,
+      "events": [
+        "idle"
+      ],
+      "status": "conditional",
+      "reason": "13.189s exceeds the initial 10s automatic-idle length limit; retained for explicit review.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral"
+      }
+    },
+    "C10": {
+      "en": "Movie night at the tree house. Hmm. That was nice.",
+      "ko": "트리하우스에서 영화를 보던 밤. 음. 참 좋았어.",
+      "category": "idle",
+      "duration_seconds": 4.319,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C11": {
+      "en": "Finn and Jake made a movie. I did the camera work. Yes. Beemo has experience.",
+      "ko": "핀과 제이크가 영화를 만들었어. 촬영은 내가 했지. 그래. 비모는 경험이 있어.",
+      "category": "idle",
+      "duration_seconds": 6.594,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C12": {
+      "en": "Finn wanted an action movie. Jake wanted a romantic comedy. They argued. I made something about being friends instead. I liked my version.",
+      "ko": "핀은 액션 영화를, 제이크는 로맨틱 코미디를 원했어. 둘은 다퉜지. 나는 대신 친구에 대한 영화를 만들었어. 내 버전이 마음에 들었어.",
+      "category": "idle",
+      "duration_seconds": 11.099,
+      "events": [
+        "idle"
+      ],
+      "status": "conditional",
+      "reason": "11.099s exceeds the initial 10s automatic-idle length limit; retained for explicit review.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C13": {
+      "en": "Moe made me to play. Good idea, Moe.",
+      "ko": "모는 내가 놀도록 만들었어. 좋은 생각이야, 모.",
+      "category": "idle",
+      "duration_seconds": 3.576,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C14": {
+      "en": "Finn and Jake came with me to the MO factory. I was glad they were there.",
+      "ko": "핀과 제이크가 나와 모 공장에 갔어. 둘이 함께 있어서 좋았어.",
+      "category": "idle",
+      "duration_seconds": 5.062,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C15": {
+      "en": "Moe wanted me to find a family. I found Finn and Jake. Hmm. That was a very good thing to find.",
+      "ko": "모는 내가 가족을 찾길 바랐어. 나는 핀과 제이크를 찾았지. 음. 정말 좋은 걸 찾은 거야.",
+      "category": "idle",
+      "duration_seconds": 7.988,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C16": {
+      "en": "Card Wars with Jake? Hmm. I think I will watch.",
+      "ko": "제이크랑 카드 워즈? 음. 나는 구경할래.",
+      "category": "idle",
+      "duration_seconds": 4.505,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral"
+      }
+    },
+    "F01": {
+      "en": "Bye-bye! Go have a good adventure.",
+      "ko": "안녕! 멋진 모험을 하고 와.",
+      "category": "goodbye",
+      "duration_seconds": 2.972,
+      "events": [
+        "goodbye"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit farewell; not app termination by inference.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "F02": {
+      "en": "See you next time. I will still be Beemo.",
+      "ko": "다음에 또 봐. 그때도 나는 비모일 거야.",
+      "category": "goodbye",
+      "duration_seconds": 3.762,
+      "events": [
+        "goodbye"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit farewell; not app termination by inference.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "F03": {
+      "en": "That was fun. The end! For now.",
+      "ko": "재미있었어. 끝! 일단은.",
+      "category": "goodbye",
+      "duration_seconds": 3.901,
+      "events": [
+        "goodbye"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit farewell; not app termination by inference.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "F04": {
+      "en": "Okay. Beemo is going to sleep now.",
+      "ko": "좋아. 이제 비모는 잘 거야.",
+      "category": "goodbye",
+      "duration_seconds": 3.39,
+      "events": [
+        "sleep"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit sleep transition.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "F05": {
+      "en": "Good night. Have a very interesting dream.",
+      "ko": "잘 자. 아주 흥미로운 꿈을 꿔.",
+      "category": "goodbye",
+      "duration_seconds": 3.344,
+      "events": [
+        "goodnight"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit goodnight context.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "F06": {
+      "en": "Good night. Even heroes need pajamas.",
+      "ko": "잘 자. 영웅도 잠옷은 필요하거든.",
+      "category": "goodbye",
+      "duration_seconds": 3.39,
+      "events": [
+        "goodnight"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit goodnight context.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "C17": {
+      "en": "Y5 was a scientist on a space station. I was Beemo on a space station. A very good team.",
+      "ko": "와이파이브는 우주 정거장의 과학자였어. 나는 우주 정거장에 있는 비모였지. 아주 좋은 팀이었어.",
+      "category": "idle",
+      "duration_seconds": 8.313,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "happy"
+      }
+    },
+    "C18": {
+      "en": "I made a friend a long way from Ooo. Her name is Y5. I wonder what she is working on now.",
+      "ko": "우랜드에서 아주 먼 곳에서 친구를 사귀었어. 이름은 와이파이브야. 지금은 뭘 연구하고 있을까?",
+      "category": "idle",
+      "duration_seconds": 8.731,
+      "events": [
+        "idle"
+      ],
+      "status": "connected",
+      "reason": "Local idle only: normal mode, settled context, neutral/happy emotion, quiet owner, rate and per-clip cooldown.",
+      "contexts": [
+        "settled",
+        "playful",
+        "curious"
+      ],
+      "emotions": [
+        "neutral",
+        "happy"
+      ],
+      "max_duration_seconds": 10.0,
+      "performance": {
+        "face_emotion": "neutral",
+        "gaze": {
+          "x": 0.08,
+          "y": -0.04,
+          "hold_seconds": 1.2
+        }
+      }
+    },
+    "A01": {
+      "en": "Press my talk button, then tell me something!",
+      "ko": "내 말하기 버튼을 누르고, 나한테 이야기를 해 줘!",
+      "category": "utility",
+      "duration_seconds": 3.019,
+      "events": [
+        "utility"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit talk-button help context.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "A02": {
+      "en": "Okay. Quiet Beemo.",
+      "ko": "알겠어. 조용한 비모.",
+      "category": "utility",
+      "duration_seconds": 2.322,
+      "events": [
+        "quiet"
+      ],
+      "status": "conditional",
+      "reason": "Retained for an explicit quiet acknowledgement; current presence changes do not start a second cached reply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "A03": {
+      "en": "Oh! It works again!",
+      "ko": "오! 다시 된다!",
+      "category": "utility",
+      "duration_seconds": 2.136,
+      "events": [
+        "recovered"
+      ],
+      "status": "conditional",
+      "reason": "Requires an observed recovery; never claim success after an error.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "wake_ack_01": {
+      "en": "Yeah? What's up?",
+      "ko": "응? 무슨 일이야?",
+      "category": "wake",
+      "duration_seconds": 1.765,
+      "events": [
+        "wake_ack"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "REACTION_LINE_CHUCKLE_SILLY": {
+      "en": "That was silly.",
+      "ko": "그거 엉뚱했네.",
+      "category": "reaction_line",
+      "duration_seconds": 2.833,
+      "events": [
+        "reaction_silly"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "playful"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_OOH_INTERESTING": {
+      "en": "Ooooh. Now that is interesting.",
+      "ko": "오오. 그거 정말 흥미로운데.",
+      "category": "reaction_line",
+      "duration_seconds": 4.505,
+      "events": [
+        "reaction_interesting"
+      ],
+      "status": "connected",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "curious"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_AHA_IDEA": {
+      "en": "Aha! Beemo has an idea.",
+      "ko": "아하! 비모에게 생각이 났어.",
+      "category": "reaction_line",
+      "duration_seconds": 3.019,
+      "events": [
+        "reaction_idea"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "idea"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_OH_SURPRISE": {
+      "en": "Oh! I was not expecting that.",
+      "ko": "오! 그건 예상 못 했어.",
+      "category": "reaction_line",
+      "duration_seconds": 4.087,
+      "events": [
+        "reaction_surprise"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "surprise"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_HMM_MYSTERY": {
+      "en": "Hmm... a mystery.",
+      "ko": "음... 수수께끼네.",
+      "category": "reaction_line",
+      "duration_seconds": 3.111,
+      "events": [
+        "reaction_mystery"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "curious"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_POUT_NO_FAIR": {
+      "en": "Hmph! No fair.",
+      "ko": "흥! 불공평해.",
+      "category": "reaction_line",
+      "duration_seconds": 2.461,
+      "events": [
+        "reaction_unfair"
+      ],
+      "status": "conditional",
+      "reason": "Explicit acting only; never a spontaneous reaction to a serious concern.",
+      "contexts": [
+        "acting"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_WHEW_RELIEF": {
+      "en": "Whew! That was close.",
+      "ko": "휴! 아슬아슬했어.",
+      "category": "reaction_line",
+      "duration_seconds": 2.694,
+      "events": [
+        "reaction_relief"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "relief"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_TADA_SUCCESS": {
+      "en": "Ta-da! Beemo did it.",
+      "ko": "짜잔! 비모가 해냈어.",
+      "category": "reaction_line",
+      "duration_seconds": 2.322,
+      "events": [
+        "reaction_tada",
+        "photo_saved",
+        "video_saved"
+      ],
+      "status": "connected",
+      "reason": "Only after a verified successful photo or video save; generic dialogue cannot claim a successful action.",
+      "contexts": [
+        "success"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_GIGGLE_FUNNY": {
+      "en": "Oh, that was funny.",
+      "ko": "아, 그거 웃겼어.",
+      "category": "reaction_line",
+      "duration_seconds": 3.529,
+      "events": [
+        "reaction_funny"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "playful"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_AWW_KIND": {
+      "en": "Aww. That was kind.",
+      "ko": "아아. 다정하네.",
+      "category": "reaction_line",
+      "duration_seconds": 2.833,
+      "events": [
+        "reaction_kind"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "kindness"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_OOPS_MY_MISTAKE": {
+      "en": "Oops. That was my mistake.",
+      "ko": "앗. 그건 내 실수였어.",
+      "category": "reaction_line",
+      "duration_seconds": 2.833,
+      "events": [
+        "reaction_oops"
+      ],
+      "status": "connected",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "correction"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_GASP_AMAZING": {
+      "en": "Oh! That is amazing!",
+      "ko": "오! 굉장한데!",
+      "category": "reaction_line",
+      "duration_seconds": 3.715,
+      "events": [
+        "reaction_amazing"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "surprise"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_PROUD_HELP": {
+      "en": "Heh. Beemo is pretty good at this.",
+      "ko": "헤. 비모는 이런 걸 꽤 잘해.",
+      "category": "reaction_line",
+      "duration_seconds": 3.39,
+      "events": [
+        "reaction_proud"
+      ],
+      "status": "conditional",
+      "reason": "Requires matching non-sensitive dialogue context and the shared one-in-three reaction budget; never a fixed prefix.",
+      "contexts": [
+        "success"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "REACTION_LINE_SOFT_SOB_ACTING": {
+      "en": "Oh... I need a tiny moment.",
+      "ko": "아... 잠깐만 쉬어야겠어.",
+      "category": "reaction_line",
+      "duration_seconds": 4.04,
+      "events": [
+        "reaction_sob_acting"
+      ],
+      "status": "conditional",
+      "reason": "Explicit acting only; never a spontaneous reaction to a serious concern.",
+      "contexts": [
+        "acting"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 6.0
+    },
+    "VIDEO_PREP_MOVIE": {
+      "en": "Ooh! A movie! I will be the camera.",
+      "ko": "오! 영화다! 내가 카메라가 될게.",
+      "category": "video",
+      "duration_seconds": 3.576,
+      "events": [
+        "video_ready"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_PREP_READY": {
+      "en": "Ready? Beemo is making a movie.",
+      "ko": "준비됐어? 비모가 영화를 만들 거야.",
+      "category": "video",
+      "duration_seconds": 2.833,
+      "events": [
+        "video_ready"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_PREP_ACTING": {
+      "en": "You do the acting. I will do the filming.",
+      "ko": "연기는 네가 해. 촬영은 내가 할게.",
+      "category": "video",
+      "duration_seconds": 3.019,
+      "events": [
+        "video_ready"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_RECORDING_STARTED": {
+      "en": "We are recording!",
+      "ko": "녹화 중이야!",
+      "category": "video",
+      "duration_seconds": 1.533,
+      "events": [
+        "video_recording_started"
+      ],
+      "status": "excluded",
+      "reason": "Recording suppresses speech; retain this asset for manual review but do not auto-play it during capture.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_TAKE_FINISHED": {
+      "en": "And... cut!",
+      "ko": "자... 컷!",
+      "category": "video",
+      "duration_seconds": 1.533,
+      "events": [
+        "video_stopped"
+      ],
+      "status": "conditional",
+      "reason": "Retained for an observed recording-stop event; current flow waits for save feedback and does not announce cut separately.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_SAVED_PRODUCTION": {
+      "en": "Saved! A Beemo production.",
+      "ko": "저장했어! 비모 제작 영화야.",
+      "category": "video",
+      "duration_seconds": 2.879,
+      "events": [
+        "video_saved"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_REVIEW_WATCH": {
+      "en": "There is our movie. Want to watch?",
+      "ko": "우리 영화가 여기 있네. 볼래?",
+      "category": "video",
+      "duration_seconds": 2.461,
+      "events": [
+        "video_review"
+      ],
+      "status": "conditional",
+      "reason": "Requires a saved playable video and an explicit review hint.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_RETAKE": {
+      "en": "Another take? Okay! We are very professional.",
+      "ko": "한 번 더 찍자고? 좋아! 우리 아주 전문가 같아.",
+      "category": "video",
+      "duration_seconds": 3.808,
+      "events": [
+        "video_retake"
+      ],
+      "status": "conditional",
+      "reason": "Requires a new explicit video retake request.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_ERROR_START": {
+      "en": "Oh. The movie did not start.",
+      "ko": "어. 영상 촬영이 시작되지 않았어.",
+      "category": "video",
+      "duration_seconds": 3.437,
+      "events": [
+        "video_start_failed"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_ERROR_SAVE": {
+      "en": "Oh, no. I could not save the movie.",
+      "ko": "아, 이런. 영상을 저장하지 못했어.",
+      "category": "video",
+      "duration_seconds": 4.133,
+      "events": [
+        "video_save_failed"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_LIMIT_REACHED": {
+      "en": "Recording stopped. The time is up.",
+      "ko": "녹화가 멈췄어. 시간이 다 됐거든.",
+      "category": "video",
+      "duration_seconds": 2.554,
+      "events": [
+        "video_limit"
+      ],
+      "status": "conditional",
+      "reason": "Retained for an observed recording time limit; no separate time-limit voice producer is connected.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_CAMERA_BUSY": {
+      "en": "The camera is busy. One camera, one job.",
+      "ko": "카메라가 사용 중이야. 카메라 하나에 일 하나.",
+      "category": "video",
+      "duration_seconds": 3.762,
+      "events": [
+        "video_camera_busy"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a camera-busy result; no separate busy-camera voice producer is connected.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_NOT_RECORDING": {
+      "en": "There is no movie recording right now.",
+      "ko": "지금 녹화 중인 영상은 없어.",
+      "category": "video",
+      "duration_seconds": 2.601,
+      "events": [
+        "video_not_recording"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a stop request with no recording; no separate not-recording voice producer is connected.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "VIDEO_REVIEW_EXIT": {
+      "en": "Movie time is finished. Back to Beemo.",
+      "ko": "영화 시간 끝. 다시 비모로 돌아가자.",
+      "category": "video",
+      "duration_seconds": 3.019,
+      "events": [
+        "video_exit"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a completed video-review exit; current Back returns silently.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "TRACK_START": {
+      "en": "Okay. My eyes will follow you.",
+      "ko": "좋아. 내 눈이 너를 따라갈게.",
+      "category": "tracking",
+      "duration_seconds": 2.926,
+      "events": [
+        "tracking_started"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "TRACK_TARGET_FOUND": {
+      "en": "Oh! There you are.",
+      "ko": "오! 거기 있구나.",
+      "category": "tracking",
+      "duration_seconds": 1.811,
+      "events": [
+        "tracking_found"
+      ],
+      "status": "conditional",
+      "reason": "Requires a real tracker found event with deduplication.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "TRACK_TARGET_LOST": {
+      "en": "Hmm. I lost sight of you.",
+      "ko": "음. 네 모습이 안 보이네.",
+      "category": "tracking",
+      "duration_seconds": 2.74,
+      "events": [
+        "tracking_lost"
+      ],
+      "status": "conditional",
+      "reason": "Requires a real tracker lost event with deduplication.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "TRACK_TARGET_RETURNED": {
+      "en": "Ah! There you are again.",
+      "ko": "아! 다시 거기 있구나.",
+      "category": "tracking",
+      "duration_seconds": 2.415,
+      "events": [
+        "tracking_returned"
+      ],
+      "status": "conditional",
+      "reason": "Requires a real tracker return event with deduplication.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "TRACK_STOP": {
+      "en": "Okay. No more following.",
+      "ko": "알겠어. 이제 따라가지 않을게.",
+      "category": "tracking",
+      "duration_seconds": 2.368,
+      "events": [
+        "tracking_stopped"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "TRACK_UNAVAILABLE": {
+      "en": "My camera cannot do that right now.",
+      "ko": "지금 내 카메라로는 그걸 할 수 없어.",
+      "category": "tracking",
+      "duration_seconds": 3.204,
+      "events": [
+        "tracking_failed"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "TRACK_NO_TARGET_YET": {
+      "en": "Hmm. I do not see a face yet.",
+      "ko": "음. 아직 얼굴이 안 보여.",
+      "category": "tracking",
+      "duration_seconds": 3.204,
+      "events": [
+        "tracking_no_target"
+      ],
+      "status": "conditional",
+      "reason": "Requires a qualified no-target state; no repeated search chatter.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "MUSIC_CHOOSE_MODE": {
+      "en": "A surprise song, or one you choose?",
+      "ko": "깜짝 노래로 할까, 네가 고를까?",
+      "category": "music",
+      "duration_seconds": 3.019,
+      "events": [
+        "music_choose_mode"
+      ],
+      "status": "conditional",
+      "reason": "Requires an explicit choice prompt before song selection.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "MUSIC_REPEAT_SELECTED": {
+      "en": "This one again? Okay. One more time!",
+      "ko": "이 곡을 다시? 좋아. 한 번 더!",
+      "category": "music",
+      "duration_seconds": 3.483,
+      "events": [
+        "music_repeat"
+      ],
+      "status": "conditional",
+      "reason": "Requires explicit song replay; not dialogue repeat.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "MUSIC_PLAYLIST_FINISHED": {
+      "en": "That was the last song. The music box is taking a rest.",
+      "ko": "그게 마지막 곡이었어. 음악 상자가 잠깐 쉴 거야.",
+      "category": "music",
+      "duration_seconds": 4.226,
+      "events": [
+        "music_finished"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "SYSTEM_VOLUME_UP": {
+      "en": "A little louder. Okay!",
+      "ko": "조금 더 크게. 좋아!",
+      "category": "system",
+      "duration_seconds": 2.554,
+      "events": [
+        "volume_up"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "SYSTEM_VOLUME_DOWN": {
+      "en": "Softer. Got it.",
+      "ko": "더 작게. 알겠어.",
+      "category": "system",
+      "duration_seconds": 1.904,
+      "events": [
+        "volume_down"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PHOTO_FOCUS_UNCERTAIN": {
+      "en": "Hmm. I am not sure about the focus. Take it anyway?",
+      "ko": "음. 초점이 잘 맞았는지 모르겠어. 그래도 찍을까?",
+      "category": "system",
+      "duration_seconds": 4.783,
+      "events": [
+        "focus_uncertain"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "PHOTO_REFOCUS_ONCE": {
+      "en": "Okay. I will try focusing once more.",
+      "ko": "좋아. 초점을 한 번 더 맞춰 볼게.",
+      "category": "system",
+      "duration_seconds": 3.715,
+      "events": [
+        "focus_retry"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a new explicit refocus attempt; current refocus does not announce this cue.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "SYSTEM_STORAGE_FULL": {
+      "en": "There is no room to save that.",
+      "ko": "그걸 저장할 공간이 없어.",
+      "category": "system",
+      "duration_seconds": 2.508,
+      "events": [
+        "storage_full"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "SYSTEM_SAVED_FILE_OPEN_FAILED": {
+      "en": "I could not open the saved file.",
+      "ko": "저장된 파일을 열지 못했어.",
+      "category": "system",
+      "duration_seconds": 2.554,
+      "events": [
+        "error_file"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "SYSTEM_CAMERA_OFF": {
+      "en": "My camera is off now.",
+      "ko": "이제 내 카메라는 꺼졌어.",
+      "category": "system",
+      "duration_seconds": 1.811,
+      "events": [
+        "camera_off"
+      ],
+      "status": "conditional",
+      "reason": "Retained for a completed camera-off operation; current off control returns silently.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "SYSTEM_VOLUME_MAX": {
+      "en": "That is as loud as I can go.",
+      "ko": "이게 내가 낼 수 있는 가장 큰 소리야.",
+      "category": "system",
+      "duration_seconds": 2.879,
+      "events": [
+        "volume_max"
+      ],
+      "status": "connected",
+      "reason": "Bound to the matching observed event; runtime authorization, cancellation and SHA checks still apply.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    },
+    "SYSTEM_NOTHING_TO_REPEAT": {
+      "en": "I have nothing to repeat yet.",
+      "ko": "아직 반복할 말이 없어.",
+      "category": "system",
+      "duration_seconds": 2.461,
+      "events": [
+        "nothing_to_repeat"
+      ],
+      "status": "conditional",
+      "reason": "Retained for an empty repeat cache; current empty-repeat handling does not play a separate cue.",
+      "contexts": [
+        "any"
+      ],
+      "emotions": [
+        "any"
+      ],
+      "max_duration_seconds": 30.0
+    }
+  },
+  "performance_policy": "Script-specific static poses use existing R10 expressions. Only selected verified clip ID/transcript/PCM SHA may carry a plan; optional gaze is one short onset glance. Phrase timing and listening approval are not inferred."
+}

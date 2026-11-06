@@ -1,6 +1,15 @@
 #!/bin/sh
 set -eu
 bmo_desktop_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-bmo_desktop_python=${BMO_PYTHON:-"$bmo_desktop_dir/.venv/bin/python"}
+bmo_desktop_default_python="$bmo_desktop_dir/.venv/bin/python"
+# Desktop entries do not inherit the terminal's BMO_PYTHON. Character Life
+# uses the same candidate interpreter as launch-character-life, including
+# plans produced by the existing installer; never silently fall back to .venv.
+for bmo_desktop_option do
+    if [ "$bmo_desktop_option" = --character-life ]; then
+        bmo_desktop_default_python="$bmo_desktop_dir/.venv-device/bin/python"
+    fi
+done
+bmo_desktop_python=${BMO_PYTHON:-"$bmo_desktop_default_python"}
 cd "$bmo_desktop_dir/software"
 exec "$bmo_desktop_python" -B -m bmo_ai.desktop_app "$@"

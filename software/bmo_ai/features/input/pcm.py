@@ -1,5 +1,6 @@
 """Pure injected-PCM PTT/VAD state; no recorder, STT, wake model or device IO."""
 from dataclasses import dataclass
+from collections import deque
 import math
 import struct
 import time
@@ -41,12 +42,14 @@ class PcmTurnGate:
     def __init__(self, audio_focus, *, enabled=False, clock=time.monotonic,
                  playback_active=None, sample_rate=16000, threshold=.02,
                  min_speech=.08, silence_timeout=.3, no_speech_timeout=3.,
-                 max_duration=15., freshness=.25):
+                 max_duration=15., freshness=.25, speech_window=None):
         durations = (min_speech, silence_timeout, no_speech_timeout, max_duration, freshness)
         if (type(enabled) is not bool or type(sample_rate) is not int or sample_rate not in (8000, 16000, 48000)
                 or not _finite(threshold, positive=True) or threshold > 1
                 or any(not _finite(v, positive=True) or v > 60 for v in durations)
                 or min_speech > max_duration or silence_timeout > max_duration
+                or speech_window is not None and (not _finite(speech_window, positive=True)
+                    or not min_speech <= speech_window <= min(1., max_duration))
                 or no_speech_timeout > max_duration or freshness > 5):
             raise FeatureError("invalid_pcm_configuration")
         self.audio_focus, self.enabled, self.clock = audio_focus, enabled, clock
@@ -54,6 +57,7 @@ class PcmTurnGate:
         self.sample_rate, self.threshold = sample_rate, threshold
         self.min_speech, self.silence_timeout = min_speech, silence_timeout
         self.no_speech_timeout, self.max_duration, self.freshness = no_speech_timeout, max_duration, freshness
+        self.speech_window = speech_window
         self.max_buffer_bytes = int(sample_rate * 2 * max_duration) // 2 * 2
         self.max_frame_bytes = sample_rate * 2 // 10
         self._closed, self._state, self._last_code = False, "idle", "disabled" if not enabled else "ok"
@@ -62,12 +66,16 @@ class PcmTurnGate:
         self._capture_id, self._began = None, None
         self._sequence, self._frame_at = -1, None
         self._voiced, self._silent, self._speech_seen = 0., 0., False
+        self._entry, self._entry_duration, self._entry_positive = deque(), 0., 0.
+        self._entry_start_sample = self._entry_start_at = None
 
     def snapshot(self):
         return dict(state=self._state, enabled=self.enabled and not self._closed,
                     reason_code=self._last_code, generation=self._generation,
                     buffered_bytes=len(self._buffer), result_pending=self._pending is not None,
                     max_buffer_bytes=self.max_buffer_bytes, speech_detected=self._speech_seen,
+                    speech_entry_window=self.speech_window,
+                    entry_start_sample=self._entry_start_sample, entry_start_timestamp=self._entry_start_at,
                     microphone_open=False, real_audio="NOT_RUN", automatic_capture=False)
 
     def _output_busy(self):
@@ -102,6 +110,9 @@ class PcmTurnGate:
         self._buffer.clear()
         self._sequence, self._frame_at = -1, None
         self._voiced, self._silent, self._speech_seen = 0., 0., False
+        self._entry.clear()
+        self._entry_duration = self._entry_positive = 0.
+        self._entry_start_sample = self._entry_start_at = None
         self._state, self._last_code = "listening", "ok"
         return True
 
@@ -129,7 +140,7 @@ class PcmTurnGate:
         elif now - self._began >= self.max_duration:
             self._finish("max_duration", ready=True)
 
-    def feed(self, pcm, *, sequence, timestamp, generation):
+    def feed(self, pcm, *, sequence, timestamp, generation, voiced=None, voiced_seconds=None):
         self.tick()
         if self._state not in ("listening", "speech"):
             return False
@@ -153,15 +164,39 @@ class PcmTurnGate:
         if type(pcm) is not bytes or not pcm or len(pcm) % 2 or len(pcm) > self.max_frame_bytes:
             self._finish("invalid_pcm")
             return False
+        if voiced is not None and type(voiced) is not bool:
+            self._finish("invalid_voicing")
+            return False
+        duration = len(pcm) / (self.sample_rate * 2)
+        if (voiced_seconds is not None and (voiced is None or not _finite(voiced_seconds)
+                or voiced_seconds > duration + 1e-9 or bool(voiced_seconds) != voiced)):
+            self._finish("invalid_voicing")
+            return False
         remaining = self.max_buffer_bytes - len(self._buffer)
         if len(pcm) > remaining:
             self._buffer.extend(pcm[:remaining])
             self._finish("max_buffer", ready=True)
             return False
+        frame_start = len(self._buffer) // 2
         self._buffer.extend(pcm)
-        duration = len(pcm) / (self.sample_rate * 2)
-        rms = math.sqrt(sum(sample[0] ** 2 for sample in struct.iter_unpack("<h", pcm)) / (len(pcm) // 2)) / 32768
-        if rms >= self.threshold:
+        if voiced is None:
+            rms = math.sqrt(sum(sample[0] ** 2 for sample in struct.iter_unpack("<h", pcm)) / (len(pcm) // 2)) / 32768
+            voiced = rms >= self.threshold
+        if self.speech_window is not None and not self._speech_seen:
+            positive = voiced_seconds if voiced_seconds is not None else duration if voiced else 0.
+            self._entry.append((duration, positive, frame_start, timestamp))
+            self._entry_duration += duration
+            self._entry_positive += positive
+            while self._entry_duration > self.speech_window + 1e-9:
+                expired = self._entry.popleft()
+                self._entry_duration -= expired[0]
+                self._entry_positive -= expired[1]
+            if self._entry_positive + 1e-9 >= self.min_speech:
+                self._speech_seen, self._state = True, "speech"
+                first = next(item for item in self._entry if item[1] > 0)
+                self._entry_start_sample, self._entry_start_at = first[2], first[3]
+            return True
+        if voiced:
             self._voiced += duration
             self._silent = 0.
             if self._voiced + 1e-9 >= self.min_speech:
@@ -198,6 +233,7 @@ class PcmTurnGate:
 
     def close(self):
         self._buffer.clear()
+        self._entry.clear()
         self._pending = None
         self._closed, self._state = True, "closed"
 

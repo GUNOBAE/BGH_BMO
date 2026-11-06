@@ -78,7 +78,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, include_media=T
 
                     def gp8():
                         page.wait_for_function("()=>BMODesktop.state?.phase==='ready'&&BMODesktop.features?.ptt?.enabled===true&&!BMODesktop.features.conversation_busy")
-                        page.locator("#face").click(position={"x": 400, "y": 230})
+                        page.locator("#face").focus()
                         page.keyboard.press("Enter")
 
                     gp8()

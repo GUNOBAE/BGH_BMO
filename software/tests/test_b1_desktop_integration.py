@@ -6,7 +6,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from bmo_ai.features.host import FeatureHost, FeatureSimulatedClient
+from bmo_ai.features.host import FeatureHost, FeatureSimulatedClient, HostIntent, HostControl
 from bmo_ai.features.input.microphone import SyntheticPcmSource
 from bmo_ai.features.motion.legacy_host import LegacyArmLink, LegacyMotionFeature
 from bmo_ai.features.runtime import RuntimePolicy
@@ -106,6 +106,22 @@ class B1DesktopIntegrationTests(unittest.TestCase):
     def do_frames(self):
         return [f for f in self.wire.sent if f.startswith(b"B1 DO ")]
 
+    def test_host_keeps_static_source_and_actual_adapter_evidence_separate(self):
+        arms = self.host.snapshot()['system_diagnostics']['arms']
+        self.assertEqual(arms['source']['readiness'], 'BLOCKED')
+        self.assertEqual(arms['source']['scope'], 'legacy_static_admission')
+        self.assertEqual(arms['adapter_readiness'], 'UNVERIFIED')
+        self.assertEqual(arms['transport']['status'], 'NOT_CONNECTED')
+        self.link.hello()
+        self.host.poll()
+        arms = self.host.snapshot()['system_diagnostics']['arms']
+        self.assertEqual(arms['source']['readiness'], 'BLOCKED')
+        self.assertEqual(arms['adapter_readiness'], 'READY')
+        self.assertEqual(arms['preflight']['scope'], 'software_adapter')
+        self.assertEqual(arms['transport']['status'], 'ACKNOWLEDGED')
+        self.assertFalse(arms['physical_verified'])
+        self.assertFalse(self.moves)
+
     def test_gp8_to_actual_speech_start_sends_one_emotion_b1_and_repeat_sends_none(self):
         self.assertTrue(self.host.ptt_button())
         self.assertTrue(self.started.wait(2))
@@ -125,7 +141,8 @@ class B1DesktopIntegrationTests(unittest.TestCase):
         self.assertFalse(self.host.camera.snapshot()["on"])
         self.release.set()
         self.pump(lambda: not self.host.session.busy)
-        self.host.control("repeat", request="repeatIntegration")
+        repeat = self.host.control(HostControl("repeat"), request="repeatIntegration")
+        self.assertEqual(repeat.status, 'running')
         self.pump(lambda: not self.host.session.busy)
         self.assertEqual(len(self.do_frames()), 1)
         self.assertEqual(self.host.session.snapshot()["emotion"], "happy")
@@ -155,6 +172,34 @@ class B1DesktopIntegrationTests(unittest.TestCase):
         self.controller.poll()
         self.assertFalse(self.controller.steps)
         self.assertEqual(self.moves, before)
+
+    def test_explicit_named_gesture_duplicate_cancel_stop_uses_one_host_without_voice(self):
+        self.assertEqual(self.host.snapshot()['motion']['readiness'], 'UNVERIFIED')
+        request = 'supervised_wave'
+        result = self.host.execute(HostIntent('arm_gesture', 'wave'), request_id=request)
+        self.assertEqual(result.status, 'accepted')
+        self.assertEqual(self.wire.sent, [])
+        self.pump(lambda: len(self.do_frames()) == 1)
+        self.assertEqual(self.host.snapshot()['motion']['transport']['status'], 'ACKNOWLEDGED')
+        self.assertFalse(self.host.snapshot()['motion']['physical_verified'])
+        self.host.execute(HostIntent('arm_gesture', 'wave'), request_id=request)
+        self.host.poll()
+        self.assertEqual(len(self.do_frames()), 1)
+        self.host.control(HostControl('cancel'), request='cancelSupervisedWave')
+        self.host.poll()
+        self.assertFalse(self.controller.steps)
+        self.assertEqual(sum(frame.startswith(b'B1 HOLD ') for frame in self.wire.sent), 1)
+        self.host.control(HostControl('stop'), request='stopSupervisedWave')
+        self.host.poll()
+        self.assertEqual(sum(frame.startswith(b'B1 STOP ') for frame in self.wire.sent), 1)
+        self.assertEqual(self.host.snapshot()['motion']['readiness'], 'BLOCKED')
+        self.assertEqual(self.host.snapshot()['motion']['transport']['status'], 'STOPPED')
+        self.host.execute(HostIntent('arm_gesture', 'wave'), request_id='lateSupervisedWave')
+        self.host.control(HostControl('repeat'), request='repeatSupervisedWave')
+        self.host.poll()
+        self.assertEqual(len(self.do_frames()), 1)
+        self.assertEqual((self.stt_calls, len(self.client.requests)), (0, 0))
+        self.assertFalse(self.started.is_set())
 
 
 if __name__ == "__main__":

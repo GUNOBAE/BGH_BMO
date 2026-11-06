@@ -16,7 +16,8 @@ from ..contracts import FeatureError, valid_id
 MAX_ASSET_BYTES = 256 * 1024 * 1024
 MAX_MANIFEST_ITEMS = 128
 MEDIA_TYPES = frozenset({"audio/wav", "audio/mpeg", "audio/ogg", "audio/flac", "video/mp4", "video/webm", "video/x-msvideo"})
-_FIELDS = frozenset({"id", "title", "source", "path", "sha256", "media_type", "duration", "cue_path", "cue_sha256"})
+_FIELDS = frozenset({"id", "title", "source", "path", "sha256", "media_type", "duration", "cue_path", "cue_sha256",
+                     "cue_kind", "video_path", "video_sha256", "video_audio_path", "video_audio_sha256", "video_audio_duration"})
 _REQUIRED = frozenset({"id", "title", "source", "path", "sha256", "media_type"})
 
 
@@ -46,6 +47,12 @@ class MediaAsset:
     duration: float | None = None
     cue_path: str | None = None
     cue_sha256: str | None = None
+    cue_kind: str = "provided"
+    video_path: str | None = None
+    video_sha256: str | None = None
+    video_audio_path: str | None = None
+    video_audio_sha256: str | None = None
+    video_audio_duration: float | None = None
 
     def __post_init__(self):
         if (not valid_id(self.id) or type(self.title) is not str or not self.title.strip()
@@ -62,6 +69,31 @@ class MediaAsset:
             raise FeatureError("invalid_media_cue")
         if self.cue_path is not None:
             _relative(self.cue_path); _digest(self.cue_sha256)
+        if self.cue_kind not in ("provided", "whole_mix_energy_approximation"):
+            raise FeatureError("invalid_media_cue")
+        video = (self.video_path, self.video_sha256, self.video_audio_path,
+                 self.video_audio_sha256, self.video_audio_duration)
+        if any(value is not None for value in video):
+            if (any(value is None for value in video) or self.media_type != "audio/wav"
+                    or type(self.video_audio_duration) not in (int, float)
+                    or not math.isfinite(self.video_audio_duration) or not 0 < self.video_audio_duration <= 7200):
+                raise FeatureError("invalid_media_variant")
+            _relative(self.video_path); _digest(self.video_sha256)
+            _relative(self.video_audio_path); _digest(self.video_audio_sha256)
+
+    @property
+    def variants(self):
+        return ("face", "video") if self.video_path is not None else ("face",)
+
+    def playback_asset(self, variant="face"):
+        if variant == "face":
+            return self
+        if variant != "video" or self.video_path is None:
+            raise FeatureError("media_variant_unavailable")
+        # Video audio is decoded from this MP4's own stream at import. The
+        # separate user MP3/face WAV is never used for video output.
+        return MediaAsset(self.id, self.title, self.source, self.video_audio_path,
+                          self.video_audio_sha256, "audio/wav", self.video_audio_duration)
 
 
 def _open_root(root):
