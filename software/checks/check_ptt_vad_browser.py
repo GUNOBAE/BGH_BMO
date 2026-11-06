@@ -35,6 +35,17 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                 time.sleep(.01)""")
     child=child.replace("brain_instances=1)",
         "brain_instances=1,game_inputs=list(getattr(host.games._runner,'inputs',())))")
+    # Delay one synthetic frame beyond the product's .25s freshness bound.
+    # Its pre-pacing timestamp would be rejected; the fixture must stamp the
+    # actual delivery. This exercises native input rather than weakening VAD.
+    anchor="                    if scenario=='ptt_slow':time.sleep(.03)"
+    assert child.count(anchor)==1
+    child=child.replace(anchor,"""                    if scenario=='ptt_slow':
+                        if counts['mic_sources']==1 and frame.sequence==7:
+                            time.sleep(.30)
+                            counts['synthetic_delayed_frame_age']=clock()-frame.timestamp
+                            counts['synthetic_pacing_delays']=1
+                        else:time.sleep(.03)""")
     checks=[]
     with tempfile.TemporaryDirectory(prefix="bmo-ptt-focus-") as directory:
         with patch.object(desktop,"CHILD",child):
@@ -187,6 +198,9 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     code,counts,error=fixture.finish()
                     assert code==0,error
                     assert counts['forbidden']==0 and counts['mic_sources']==counts['mic_closed']==6
+                    assert counts['synthetic_pacing_delays']==1
+                    assert counts['synthetic_delayed_frame_age']>=.25
+                    checks.append("one paced synthetic frame exceeds the old timestamp freshness limit but is stamped at actual delivery; all six native PTT admissions preserve production PCM validation")
                     assert counts['active_mics']==0 and counts['max_mics']==counts['max_players']==1
                     assert counts['players']==counts['reaped'] and counts['browsers']==counts['browser_reaped']==1
                     return {"status":"PASS","checks":checks,"counts":counts,

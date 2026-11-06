@@ -33,6 +33,7 @@ from bmo_ai.screen_profiles import SCREEN_PROFILES
 CHILD = r'''
 import builtins,hashlib,json,os,signal,subprocess,sys,tempfile,time
 from contextlib import ExitStack
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -174,7 +175,10 @@ def host_factory(**settings):
                 for frame in super().frames(*args,**kwargs):
                     if scenario=='ptt_slow':time.sleep(.03)
                     elif scenario in ('ptt','release','character'):time.sleep(.01)
-                    yield frame
+                    # Synthetic receipt time belongs to delivery after fixture
+                    # pacing, not before an artificial/scheduled wait. Keep
+                    # the product's real PCM freshness checks unchanged.
+                    yield replace(frame,timestamp=clock())
             def close(self):
                 if not self.closed_once:
                     counts['mic_closed']+=1;counts['active_mics']-=1;self.closed_once=True
