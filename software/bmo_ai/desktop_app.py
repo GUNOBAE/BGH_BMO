@@ -40,6 +40,10 @@ def parser():
     p.add_argument("--demo-assets", action="store_true", help="simulation-only generated fixtures")
     p.add_argument('--playable-games', action=argparse.BooleanOptionalAction, default=None,
                    help='reviewed bundled games: enabled in Character Life; --no-playable-games explicitly disables them')
+    p.add_argument('--native-supertux', action='store_true',
+                   help='explicit live opt-in to the installed official SuperTux game; silent initial profile, no download or automatic start')
+    p.add_argument('--native-gamepad-profile', type=Path,
+                   help='private observed native pad mapping; requires --native-supertux, missing/invalid profile leaves the game unavailable')
     p.add_argument("--video-directory", type=Path, help="private local video storage; Character Life records verified silent H264/MP4 when camera video is opted in")
     p.add_argument("--music-directory", type=Path, help="reviewed private music library (WAV and pinned face/video variants); live playback needs --music-supervised")
     p.add_argument("--music-supervised", action="store_true", help="explicit opt-in to requested local WAV playback; requires --live and --music-directory")
@@ -164,6 +168,11 @@ def public_plan(args):
         "games": {"enabled": args.playable_games,
                   "profile": "character_life" if args.character_life else "desktop",
                   "bundle_validation": "NOT_CHECKED", "automatic_download": False},
+        "native_supertux": {"requested": args.native_supertux,
+                            "gamepad_profile_selected": args.native_gamepad_profile is not None,
+                            "installation": "NOT_CHECKED", "screen_input_readiness": "NOT_RUN",
+                            "audio": "silent", "master_volume_scope": "conversation_and_music",
+                            "automatic_download": False, "automatic_start": False},
         "usb_gamepad": {"enabled": args.usb_gamepad, "physical_verified": False,
                         "conversation_input": False, "motor_input": False},
         "pi_kiosk_verified": "NOT_RUN"}
@@ -192,6 +201,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--music-directory and --demo-assets are separate catalogs")
     if args.music_supervised and (not args.live or args.music_directory is None):
         p.error("--music-supervised requires --live and --music-directory")
+    if args.native_supertux and not args.live:
+        p.error("--native-supertux requires explicit --live")
+    if args.native_gamepad_profile is not None and not args.native_supertux:
+        p.error("--native-gamepad-profile requires --native-supertux")
     if args.ptt_ambient_profile is not None and not args.ptt_microphone:
         p.error("--ptt-ambient-profile requires --ptt-microphone")
     if args.ptt_vad_mode != "rms" and (not args.character_life or not (args.simulate or args.ptt_microphone)):
@@ -274,6 +287,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 install_settings["ptt_microphone"] = True
             if args.usb_gamepad:
                 install_settings["usb_gamepad"] = True
+            if args.native_supertux:
+                install_settings['native_supertux'] = True
+            if args.native_gamepad_profile is not None:
+                install_settings['native_gamepad_profile'] = args.native_gamepad_profile
             # Persist the resolved profile, including an explicit disable.
             if args.character_life or args.playable_games:
                 install_settings['playable_games'] = args.playable_games
@@ -425,6 +442,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                 settings["music_supervised"] = True
             if args.usb_gamepad:
                 settings["usb_gamepad"] = True
+            if args.native_supertux:
+                settings['native_supertux'] = True
+            if args.native_gamepad_profile is not None:
+                settings['native_gamepad_profile'] = args.native_gamepad_profile
             if args.playable_games:
                 settings['playable_games'] = True
             if args.voice_pack_directory is not None:

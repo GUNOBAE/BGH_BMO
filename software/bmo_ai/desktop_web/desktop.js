@@ -4,6 +4,8 @@ const $=id=>document.getElementById(id),frame=$('face'),token=document.querySele
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null,presentationGeneration=0;
 let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0;
 let featureState=null,musicCatalogKey=null,gameCatalogKey=null,lastFeatureMode=null;
+let nativeLaunchPending=null,nativeInputActive=false,nativeInputEpoch=0;
+const nativeHeldKeys=new Set();
 let photoReviewKeyHeld=false,photoPreviewContext=null,photoPreviewAcknowledged=null,photoFocusPending=null,suppressedCaption=null,subtitlePending=null,subtitleRequest=0;
 let videoKeyHeld=false,videoPreviewContext=null,videoPreviewAcknowledged=null,videoActionPending=false,videoReviewId=null;
 let volumePending=null,volumeSerial=0,volumeRequest=null,volumeQueue=Promise.resolve(),armCatalogKey=null,voiceCatalogKey=null;
@@ -25,6 +27,8 @@ const desktop=(action,value=null)=>post('/api/desktop',{action,value});
 function hideCaption(){$('subtitles').textContent='';$('subtitles').hidden=true;}
 function clearCaption(){const current=window.BMOIntegration?.state;suppressedCaption=current?.utterance_id||null;hideCaption();}
 function control(action,value=null){
+ if(nativeOwnsInput()&&['gamepad','game_key','game_ready','game_event','input'].includes(action))
+  return Promise.resolve({status:'rejected',code:'native_input_owned'});
  if(['ptt','question','cancel','stop','reset','repeat'].includes(action))clearCaption();
  if(['cancel','stop','reset'].includes(action)||action==='preview'&&value===false)stopPreview(true);
  if(action==='subtitles'&&['off','en','ko'].includes(value)){
@@ -33,7 +37,40 @@ function control(action,value=null){
  }
  return post('/api/control',{action,value});
 }
-function intent(name,target=null,media_mode=null){if(name==='return_to_face'){clearCaption();stopVideoReview();}if(name==='return_to_face')stopPreview(true);const payload={name,target};if(media_mode!==null)payload.media_mode=media_mode;return post('/api/intent',payload);}
+function intent(name,target=null,media_mode=null){
+ if(name==='return_to_face'){clearCaption();stopVideoReview();stopPreview(true);}
+ const payload={name,target};if(media_mode!==null)payload.media_mode=media_mode;
+ const nativeRequest=name==='launch_game'&&target==='supertux'?{request_id:null}:null;
+ if(nativeRequest){nativeLaunchPending=nativeRequest;retireBrowserGameInput();}
+ return post('/api/intent',payload).then(result=>{
+  if(nativeRequest&&nativeLaunchPending===nativeRequest){
+   nativeRequest.request_id=result.request_id;
+   if(!['accepted','running'].includes(result.status))nativeLaunchPending=null;
+  }
+  return result;
+ }).catch(reason=>{if(nativeRequest&&nativeLaunchPending===nativeRequest)nativeLaunchPending=null;throw reason;});
+}
+function nativeOwnsInput(next=featureState){return nativeLaunchPending!==null||next?.games?.native?.active===true;}
+function syncNativeGame(next){
+ const native=next.games?.native;
+ if(nativeLaunchPending?.request_id){
+  const receipt=(next.requests||[]).find(item=>item.request_id===nativeLaunchPending.request_id);
+  if(native?.active===true||receipt&&!['accepted','running'].includes(receipt.status))nativeLaunchPending=null;
+ }
+ const active=nativeOwnsInput(next);
+ if(active&&!nativeInputActive)retireBrowserGameInput();
+ nativeInputActive=active;
+ const status=$('native-game-status');status.hidden=!native?.enabled;
+ if(!status.hidden){
+  const label={not_installed:'SuperTux is not installed.',setup_required:'SuperTux needs setup before launch.',
+   ready:'SuperTux is ready to launch. Screen and controller checks are still required.',
+   starting:'Starting SuperTux. Waiting for its window…',running:'SuperTux is open.',
+   failed:'SuperTux could not finish this session.',exited:'SuperTux has closed.',
+   cleanup_failed:'SuperTux could not be fully closed. Check the running session before starting again.'}[native.state]||'SuperTux is unavailable.';
+  status.dataset.state=native.state||'unknown';status.dataset.code=native.code||'';
+  status.textContent=label+(native.audio_scope==='silent_native'?' This version plays without game audio.':'');
+ }
+}
 function error(message){
  noticeText=message;noticeUntil=performance.now()+4200;
  const notice=$('notice');notice.hidden=false;$('notice-message').textContent=message;
@@ -66,7 +103,7 @@ function hideFaceVolume(){
  syncUiActivity();if(hadFocus)restoreFaceFocus();
 }
 function showFaceVolume(){
- if(!canTalk()||currentMode!=='conversation'||document.querySelector('dialog[open]'))return;
+ if(!canTalk()||nativeOwnsInput()||currentMode!=='conversation'||document.querySelector('dialog[open]'))return;
  $('face-volume').hidden=false;$('face-volume-trigger').setAttribute('aria-expanded','true');
  clearTimeout(faceVolumeTimer);faceVolumeTimer=setTimeout(hideFaceVolume,3000);syncUiActivity();
  renderVolume(featureState||{});
@@ -158,7 +195,7 @@ function presenceTestMessage(code){
 }
 async function modes(){if(!canTalk())return;const r=await fetch('/api/features',{cache:'no-store'});if(!r.ok)return;const next=await r.json();currentMode=next.mode;
  window.BMODesktop.features=next;
- featureState=next;renderFeatures(next);
+ featureState=next;syncNativeGame(next);renderFeatures(next);
  syncGamepad(next);
  pttEnabled=next.ptt?.enabled===true&&next.capabilities?.conversation_ptt_microphone!=='denied';
  // Bind completion to THIS admitted command, rather than a stale snapshot's
@@ -186,6 +223,10 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
     const reasons={games_disabled:'현재 실행에서 게임이 꺼져 있어요. 후보 실행 설정을 확인해 주세요.',playable_games_disabled:'현재 실행에서 게임이 꺼져 있어요. 후보 실행 설정을 확인해 주세요.',game_bundle_missing:'게임 묶음 파일이 없어요. 후보 설치 상태를 확인해 주세요.',game_bundle_hash_mismatch:'게임 묶음 검증에 실패했어요. 검토된 후보 파일을 확인해 주세요.',game_manifest_hash_mismatch:'게임 목록 SHA가 검토된 후보와 달라요.',game_asset_hash_mismatch:'게임 파일 SHA가 검토된 후보와 달라요.',game_pack_missing:'게임 묶음 파일이 없어요. 후보 설치 상태를 확인해 주세요.'};
     $('game-list').textContent=(reasons[code]||'게임을 준비하지 못했어요. 준비 상태의 원인을 확인해 주세요.')+' · '+code;}
    for(const item of next.games.catalog){const b=document.createElement('button');b.dataset.gameId=item.id;b.textContent=item.title;b.disabled=item.readiness!=='READY';
+    if(item.id==='supertux'){b.dataset.nativeGame='true';b.dataset.readiness=item.readiness;
+     const native=next.games.native;
+     b.textContent+=' · '+(item.readiness==='READY'?'Ready to launch':native?.state==='not_installed'?'Not installed':'Setup needed');
+     b.setAttribute('aria-describedby','native-game-status');}
     b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}
   }
   for(const button of $('game-list').querySelectorAll('button'))button.setAttribute('aria-current',String(button.dataset.gameId===next.games.selected_id));
@@ -205,7 +246,7 @@ function renderFeatures(next){
    hideFaceVolume();for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();restoreFaceFocus();
   }}
  }
- const faceControls=canTalk()&&next.mode==='conversation'&&!document.querySelector('dialog[open]');
+ const faceControls=canTalk()&&!nativeOwnsInput(next)&&next.mode==='conversation'&&!document.querySelector('dialog[open]');
  $('face-volume-trigger').hidden=!faceControls;
  if(!faceControls&&!$('face-volume').hidden)hideFaceVolume();
  if(lastFeatureMode==='music'&&next.mode==='conversation'&&$('music-dialog').open)$('music-dialog').close();
@@ -249,7 +290,8 @@ function renderFeatures(next){
   camera_open:'The camera could not be opened.',cancel:'Photo cancelled.'};
  document.body.dataset.photoScreen=String(photoScreen);
  $('photo-view').hidden=!photoScreen;
- if(!videoScreen)$('foreground-status').textContent=next.mode==='game'?'게임 실행 중':
+ if(!videoScreen)$('foreground-status').textContent=next.mode==='game'?(next.games?.native?.active===true?
+  ({starting:'Starting SuperTux. Waiting for its window…',running:'SuperTux is open. Return here to stop it.',cleanup_failed:'SuperTux cleanup needs attention.'}[next.games.native.state]||'Preparing SuperTux…'):'게임 실행 중'):
   (photoPhase==='failed'?(photoReasons[photoFailure?.stage]||'Couldn’t finish that photo.'):
    ({preparing:'Getting the camera ready…',preparing_voice:'Getting ready for your photo…',countdown_audio_start:'Starting the five-second countdown…',countdown:'Hold still!',focusing:'Checking the focus…',
     focus_review:focusMessage,capturing:'Taking your photo…',
@@ -980,7 +1022,20 @@ $('music-video').addEventListener('error',()=>{if(!closed&&$('music-video').erro
 
 for(const id of ['game-back','foreground-back'])$(id).onclick=()=>intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
 const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',z:'A',b:'B',x:'B',' ':'A',Enter:'START',Shift:'SELECT',Escape:'ESC'};
-function key(event,pressed){if(event.isComposing)return;if(pressed&&event.key==='Enter'&&!$('face-volume').hidden)hideFaceVolume();if(event.key==='Enter'){if(!pressed){enterDown=false;bump('keyups');}else if(event.repeat)bump('repeats_ignored');else bump('enter_presses');}
+function key(event,pressed){if(event.isComposing)return;
+ const nativeKey=event.code||event.key;
+ if(nativeOwnsInput()&&keys[event.key]){
+  event.preventDefault();event.stopPropagation();
+  if(pressed)nativeHeldKeys.add(nativeKey);else nativeHeldKeys.delete(nativeKey);
+  return;
+ }
+ if(nativeHeldKeys.has(nativeKey)){
+  // A held native-game edge may arrive after the face is restored. Consume
+  // its release/repeats; a genuinely new press remains the next GP8 question.
+  if(!pressed||event.repeat){event.preventDefault();event.stopPropagation();if(!pressed)nativeHeldKeys.delete(nativeKey);return;}
+  nativeHeldKeys.delete(nativeKey);
+ }
+ if(pressed&&event.key==='Enter'&&!$('face-volume').hidden)hideFaceVolume();if(event.key==='Enter'){if(!pressed){enterDown=false;bump('keyups');}else if(event.repeat)bump('repeats_ignored');else bump('enter_presses');}
  if(event.key==='Enter'&&mediaKeyHeld){
   event.preventDefault();event.stopPropagation();
   if(!pressed){
@@ -1035,15 +1090,15 @@ function key(event,pressed){if(event.isComposing)return;if(pressed&&event.key===
   if(currentMode==='game'&&featureState?.games?.web?.active===true&&window.BMOPlayableGames){window.BMOPlayableGames.input(event.code==='Space'?'B':keys[event.key],pressed);return;}
   control('input',{key:keys[event.key],pressed}).catch(()=>error('게임 입력 상태를 확인해 주세요.'));return;}}
 window.addEventListener('keydown',event=>key(event,true));window.addEventListener('keyup',event=>key(event,false));
-function blurPTT(event){setTimeout(()=>{
+function blurPTT(event){const nativeAtEvent=nativeOwnsInput();setTimeout(()=>{
  // Focusing the iframe blurs its parent window. A later move back to a notice
  // button is still inside BMO, even if it happens before this callback runs.
  // Only loss of the whole document's focus cancels trusted input here.
- if(event.isTrusted&&document.hasFocus())return;photoReviewKeyHeld=false;videoKeyHeld=false;mediaKeyHeld=false;mediaHoldTriggered=false;clearTimeout(mediaHoldTimer);if(currentMode==='music'&&!mediaStopping)control('pause').catch(()=>{});bump('cancelled_blur');cancelPTT();window.BMOPlayableGames?.suspend('blur');
+ if(nativeAtEvent||nativeOwnsInput()||event.isTrusted&&document.hasFocus())return;photoReviewKeyHeld=false;videoKeyHeld=false;mediaKeyHeld=false;mediaHoldTriggered=false;clearTimeout(mediaHoldTimer);if(currentMode==='music'&&!mediaStopping)control('pause').catch(()=>{});bump('cancelled_blur');cancelPTT();window.BMOPlayableGames?.suspend('blur');
 },0);}
 window.addEventListener('blur',blurPTT);
 let touchStart=null,inputDocument=null;
-function faceTapAllowed(){return canTalk()&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&$('face-volume').hidden;}
+function faceTapAllowed(){return canTalk()&&!nativeOwnsInput()&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&$('face-volume').hidden;}
 function clearFaceTouch(){clearTimeout(touchStart?.timer);touchStart=null;}
 function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',blurPTT);
  doc.addEventListener('pointerdown',event=>{
@@ -1068,11 +1123,17 @@ frame.addEventListener('load',()=>{cancelPTT();bindFrameInputs();});bindFrameInp
 let padTimer=null,padIndex=null,padGeneration=null,padHeld=new Set(),padSuppressed=new Set(),padSequence=0,padHeartbeat=0,padChain=Promise.resolve(),padPending=0;
 const padEvidence={polls:0,edges:0,disconnects:0,mapping:'standard_game_only',physical_verified:false};
 function sendPad(key,pressed,generation){
- if(generation===null||closed||padPending>=32)return;
- const value={key,pressed,sequence:++padSequence,generation},created=performance.now();padPending++;
- padChain=padChain.catch(()=>{}).then(()=>{if(closed||performance.now()-created>450)return;return control('gamepad',value);}).catch(()=>{}).finally(()=>{padPending--;});
+ if(generation===null||closed||nativeOwnsInput()||padPending>=32)return;
+ const value={key,pressed,sequence:++padSequence,generation},created=performance.now(),ownerEpoch=nativeInputEpoch;padPending++;
+ padChain=padChain.catch(()=>{}).then(()=>{if(closed||nativeOwnsInput()||ownerEpoch!==nativeInputEpoch||performance.now()-created>450)return;return control('gamepad',value);}).catch(()=>{}).finally(()=>{padPending--;});
+}
+function retireBrowserGameInput(){
+ nativeInputEpoch++;clearTimeout(padTimer);padTimer=null;
+ padIndex=null;padGeneration=null;padHeld=new Set();padSuppressed=new Set();padHeartbeat=0;
+ if(enterDown)nativeHeldKeys.add('Enter');enterDown=false;
 }
 function releasePad(disconnected=true){
+ if(nativeOwnsInput()){retireBrowserGameInput();return;}
  clearTimeout(padTimer);padTimer=null;
  for(const key of padHeld)sendPad(key,false,padGeneration);
  if(padIndex!==null){if(disconnected)padEvidence.disconnects++;sendPad(disconnected?'PAD_LOST':'RELEASE',true,padGeneration);}
@@ -1084,7 +1145,7 @@ function normalizedPad(pad){
  const x=pad.axes?.[0],y=pad.axes?.[1];if(Number.isFinite(x)){if(x<-.6)keys.add('LEFT');if(x>.6)keys.add('RIGHT');}if(Number.isFinite(y)){if(y<-.6)keys.add('UP');if(y>.6)keys.add('DOWN');}
  return keys;
 }
-function gamepadAllowed(next){return next?.usb_gamepad?.enabled===true&&state?.phase==='ready'&&!document.hidden&&document.hasFocus()&&['game','game_menu'].includes(next.mode)&&!document.querySelector('dialog[open]:not(#game-menu)');}
+function gamepadAllowed(next){return !nativeOwnsInput(next)&&next?.usb_gamepad?.enabled===true&&state?.phase==='ready'&&!document.hidden&&document.hasFocus()&&['game','game_menu'].includes(next.mode)&&!document.querySelector('dialog[open]:not(#game-menu)');}
 function pollPad(){
  padTimer=null;if(!gamepadAllowed(featureState)){releasePad();return;}
  let pad;try{padEvidence.polls++;pad=Array.from(navigator.getGamepads?.()||[]).find(p=>p&&p.connected&&p.mapping==='standard');}catch(_){releasePad();return;}
@@ -1099,16 +1160,16 @@ function pollPad(){
 }
 function syncGamepad(next){padSequence=Math.max(padSequence,next?.usb_gamepad?.sequence_floor||0);if(!gamepadAllowed(next)){releasePad(false);return;}if(padTimer===null)padTimer=setTimeout(pollPad,0);}
 window.addEventListener('blur',event=>{
- const index=padIndex,generation=padGeneration;
+ const index=padIndex,generation=padGeneration,ownerEpoch=nativeInputEpoch;
  setTimeout(()=>{
   // A trusted parent/iframe focus move stays inside BMO. A delayed callback
   // belongs to the pad owner present at that event, never a later game.
-  if(event.isTrusted&&document.hasFocus()||padIndex!==index||padGeneration!==generation)return;
+  if(nativeOwnsInput()||nativeInputEpoch!==ownerEpoch||event.isTrusted&&document.hasFocus()||padIndex!==index||padGeneration!==generation)return;
   releasePad();
  },0);
 });
 window.addEventListener('gamepaddisconnected',()=>releasePad());
 window.addEventListener('pagehide',()=>{clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
-document.addEventListener('visibilitychange',()=>{clearCaption();epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){hideFaceVolume();stopPreview();$('video-review-player').pause();$('music-video').pause();if(currentMode==='music')control('pause').catch(()=>{});window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();}else{syncUiActivity();refreshAdapter();poll();}});
+document.addEventListener('visibilitychange',()=>{clearCaption();epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){hideFaceVolume();stopPreview();$('video-review-player').pause();$('music-video').pause();if(currentMode==='music')control('pause').catch(()=>{});window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();if(!nativeOwnsInput())cancelPTT();}else{syncUiActivity();refreshAdapter();poll();}});
 window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence,previewEvidence};window.BMOPlayableGames?.configure({control,intent});poll();
 })();

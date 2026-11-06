@@ -156,7 +156,8 @@ class FeatureHost(ProductVideoFlow):
                  playable_games=False, voice_pack_directory=None, request_cooldown=0,
                  session_request_limit=None, estimated_request_cost=None, estimated_session_cost_limit=None,
                  completed_turn_store=None, arm_supervision_requested=None, emotion_arms_requested=None,
-                 arm_usage=None, preferences=None):
+                 arm_usage=None, preferences=None,
+                 native_supertux=False, native_gamepad_profile=None, native_game_feature=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -208,6 +209,13 @@ class FeatureHost(ProductVideoFlow):
             raise FeatureError('arm_commissioned_injection_required')
         if arm_usage is not None and arm_usage.motion is not None and not self.runtime.arms_commissioned:
             raise FeatureError('arm_configuration_conflict')
+        if (type(native_supertux) is not bool or native_supertux and self.runtime.simulate
+                or not native_supertux and (native_gamepad_profile is not None or native_game_feature is not None)):
+            raise FeatureError('invalid_native_game_configuration')
+        if native_supertux:
+            self.runtime = replace(self.runtime, native_supertux=True)
+        elif self.runtime.native_supertux:
+            raise FeatureError('native_game_configuration_conflict')
         if (type(emotion_arms) is not bool or
                 (emotion_arms and not (self.runtime.simulate or self.runtime.arms_enabled))):
             raise FeatureError("emotion_arms_requires_supervision")
@@ -281,6 +289,15 @@ class FeatureHost(ProductVideoFlow):
             except FeatureError as error:
                 self._games_setup_error = error.code
         self.games = self._packaged_games or games or GamesFeature(fixture=demo_assets and not playable_games, clock=clock)
+        self._native_games = None
+        self._native_return_grace_until = None
+        if native_supertux:
+            from .games.native import NativeGamesFeature, build_native_supertux
+            from .games.combined import CombinedGamesFeature
+            if native_game_feature is not None and not isinstance(native_game_feature, NativeGamesFeature):
+                raise FeatureError('invalid_native_game_configuration')
+            self._native_games = native_game_feature or build_native_supertux(profile_path=native_gamepad_profile, clock=clock)
+            self.games = CombinedGamesFeature(self.games, self._native_games, clock=clock)
         if music_directory is not None:
             content = Path(music_directory)
             media_items = selected_music
@@ -692,14 +709,24 @@ class FeatureHost(ProductVideoFlow):
 
     def _enter_game(self, context):
         self._game_lease = self.audio.acquire("game", stop=self._stop_game_audio)
+        self._active_game_request = context['request_id']
         result = self.games.start(context["target"], request_id=context["request_id"],
                                   mode_generation=self.modes.generation)
         self._check_start(result)
-        self._active_game_request = context["request_id"]
+
+    @property
+    def native_game_foreground(self):
+        """An owned native session replaces browser gameplay/input liveness.
+
+        This is not a synthetic HTTP heartbeat or evidence of physical input.
+        Desktop still checks its owned browser process on every owner poll.
+        """
+        return (self.modes.mode == 'game' and self._native_games is not None
+                and getattr(self.games, 'native_active', False) is True)
 
     def _stop_game_audio(self):
         result = self.games.stop('mode_change')
-        if self._packaged_games is not None and self._active_game_request:
+        if (self._packaged_games is not None or self._native_games is not None) and self._active_game_request and result.status not in ('unknown', 'failed', 'rejected'):
             previous = self._result_history.get(self._active_game_request)
             if previous and previous.status in ('accepted', 'running'):
                 self._finish_result(HostResult(previous.request_id, 'cancelled', 'game_stopped',
@@ -710,10 +737,13 @@ class FeatureHost(ProductVideoFlow):
         if self._local_event_active and self.session.busy:
             self.cancel_conversation()
             raise FeatureError('voice_cleanup_pending')
+        native = self.native_game_foreground
         if not self._stop_game_audio():
             raise FeatureError("cleanup_failed")
         self.audio.release(self._game_lease)
         self._game_lease = self._active_game_request = None
+        if native:
+            self._native_return_grace_until = self.clock() + 3.
 
     def _enter_music(self, context):
         self._music_start_held = False
@@ -1262,10 +1292,13 @@ class FeatureHost(ProductVideoFlow):
                 raise FeatureError('camera_human_action_required' if name in ('start_face_tracking', 'start_video')
                                    else 'current_user_action_required')
             media_was_active = self.media.snapshot()["active_id"] is not None
+            native_was_active = self.native_game_foreground
             capability = {"launch_game": "external_games", "play_song": "music", "play_random": "music",
                 "take_photo": "camera", "start_video": "camera_video",
                 "start_face_tracking": "camera", "arm_gesture": "arms"}.get(name)
             packaged = name == 'launch_game' and self._packaged_games is not None and self._packaged_games.is_packaged(intent.target)
+            native = (name == 'launch_game' and self._native_games is not None
+                      and self.runtime.native_supertux and self.games.is_native(intent.target))
             if capability is not None and not packaged:
                 self.runtime.require(capability)
                 if capability in ('camera', 'camera_video', 'arms') and not self.runtime.simulate and request.startswith("model_"):
@@ -1283,7 +1316,7 @@ class FeatureHost(ProductVideoFlow):
                 if item is None or item.readiness != "READY":
                     raise FeatureError("unknown_game" if item is None and name == "launch_game" else
                                        "unknown_media" if item is None else item.reason_code)
-                if item.simulated is not True and not packaged and not (name in ("play_song", "play_random") and self.runtime.music_supervised):
+                if item.simulated is not True and not packaged and not native and not (name in ("play_song", "play_random") and self.runtime.music_supervised):
                     raise FeatureError("real_disabled")
             if name in ('open_menu', 'close_menu'):
                 self._ui_menu = dict(sequence=self._ui_menu['sequence']+1, open=name == 'open_menu')
@@ -1298,15 +1331,19 @@ class FeatureHost(ProductVideoFlow):
                 self._queue_local_event("game_menu")
             elif name == "launch_game":
                 self._transition("game", {"target": intent.target, "request_id": request}, force=True)
+                if native:
+                    return self._finish_result(HostResult(request, 'accepted', 'native_game_starting',
+                        simulated=False, completed=False, completion='not_started'))
                 if packaged:
                     return self._finish_result(HostResult(request, 'accepted', 'web_game_loading',
                         simulated=False, completed=False, completion='not_started'))
             elif name == "exit_game":
+                destination = 'conversation' if self.native_game_foreground else 'game_menu'
                 if self._local_event_active and self.session.busy:
                     self.cancel_conversation()
-                    self._game_return_pending = 'game_menu'
+                    self._game_return_pending = destination
                 else:
-                    self._transition("game_menu")
+                    self._transition(destination)
             elif name == "return_to_face":
                 if self.modes.mode == 'game' and self._local_event_active and self.session.busy:
                     self.cancel_conversation()
@@ -1408,6 +1445,9 @@ class FeatureHost(ProductVideoFlow):
             elif name == "stop_media" and self.runtime.music_supervised:
                 result = HostResult(request, "succeeded", "media_stopped", simulated=False,
                                     executed=media_was_active, completed=True, completion="stopped")
+            elif name in ('exit_game', 'return_to_face') and native_was_active:
+                result = HostResult(request, 'succeeded', 'native_game_stopped', simulated=False,
+                                    executed=True, completed=True, completion='stopped')
             else:
                 result = HostResult(request, "simulated", "ok", completed=True, completion="simulated")
         except FeatureError as error:
@@ -1429,6 +1469,8 @@ class FeatureHost(ProductVideoFlow):
         fingerprint = json.dumps(intent.public(), sort_keys=True)
         with self._records_lock:
             if isinstance(intent, HostControl) and intent.action in ('gamepad', 'game_key'):
+                if self.native_game_foreground:
+                    raise FeatureError('native_game_owns_input')
                 gate = self.gamepad if intent.action == 'gamepad' else self.game_keyboard
                 if not gate.enabled:
                     raise FeatureError("gamepad_disabled")
@@ -1697,6 +1739,8 @@ class FeatureHost(ProductVideoFlow):
                     return self._remember(HostResult(request, "succeeded", "ok", simulated=False,
                         executed=True, completed=True, completion="camera_request_applied"))
             elif action == "input":
+                if self.native_game_foreground and value['key'] != 'STOP':
+                    raise FeatureError('native_game_owns_input')
                 if self._video_flow_enabled and self.modes.mode == 'video':
                     outcome = self._video_input(value['key'], value['pressed'], self.clock())
                 elif value['key'] == 'TALK' and (self.modes.mode == 'music' or self.inputs._music_talk_held):
@@ -1715,14 +1759,18 @@ class FeatureHost(ProductVideoFlow):
                     return self._remember(HostResult(request, outcome.status, outcome.code,
                         outcome.simulated, outcome.executed, outcome.completed, outcome.completion))
             elif action == "gamepad":
+                if self.native_game_foreground:
+                    raise FeatureError('native_game_owns_input')
                 outcome = self.gamepad.feed(value)
                 if isinstance(outcome, HostResult):
                     return self._remember(HostResult(request, outcome.status, outcome.code,
                         outcome.simulated, outcome.executed, outcome.completed, outcome.completion))
             elif action == 'game_key':
+                if self.native_game_foreground:
+                    raise FeatureError('native_game_owns_input')
                 self.game_keyboard.feed(value)
             elif action in ('game_ready', 'game_event'):
-                if self._packaged_games is None or self.modes.mode != 'game':
+                if self._packaged_games is None or self.modes.mode != 'game' or self.native_game_foreground:
                     raise FeatureError('stale_game_launch')
                 if action == 'game_ready':
                     self.gamepad.release()
@@ -1785,6 +1833,11 @@ class FeatureHost(ProductVideoFlow):
         return self.inputs.route(key, pressed, now=now)
 
     def _game_input_source(self, source, key, pressed, now):
+        if self.native_game_foreground:
+            # SDL owns native gameplay. A retired browser pad/key/blur event
+            # cannot be mistaken for native unplug/exit. Explicit Back/Stop
+            # remains an ordinary authenticated intent/control.
+            return dict(consumed=False, action='native_game_owns_input')
         if self._packaged_games is None:
             return self.games.game_input('PAD_DISCONNECTED' if key == 'PAD_LOST' else key, pressed, now)
         if key == 'PAD_LOST':
@@ -2186,6 +2239,7 @@ class FeatureHost(ProductVideoFlow):
         # Shell liveness is independent of whether the retained face iframe is
         # visible behind a game/photo/music foreground.
         self._last_shell_seen = self.clock()
+        self._native_return_grace_until = None
         self.session.browser_snapshot()
 
     def face_snapshot(self):
@@ -2217,14 +2271,17 @@ class FeatureHost(ProductVideoFlow):
         with self._records_lock:
             gamepad, self._gamepad_commands = self._gamepad_commands, deque(maxlen=64)
         for request, control, generation, epoch, received in gamepad:
+            if self.native_game_foreground:
+                continue
             age = self.clock() - received
             if (epoch != self._command_epoch or generation != self.modes.generation
                     or not 0 <= age <= .5):
                 (self.game_keyboard if control.action == 'game_key' else self.gamepad).release(disconnected=True)
                 continue
             self.control(control, request)
-        self.gamepad.poll()
-        self.game_keyboard.poll()
+        if not self.native_game_foreground:
+            self.gamepad.poll()
+            self.game_keyboard.poll()
         for _ in range(32):
             try:
                 _, _, request, intent, generation, epoch = self._commands.get_nowait()
@@ -2479,27 +2536,51 @@ class FeatureHost(ProductVideoFlow):
                                  expected_generation=generation)
                 finally:
                     self._next_photo_success = self._next_photo_preparation = None
+        native_before_poll = self.native_game_foreground
         for event in self.games.poll():
+            native_event = event.data.get('backend') == 'native'
             if event.mode_generation == self.modes.generation and event.request_id == self._active_game_request:
-                if event.kind == 'game_started' and self._packaged_games is not None:
+                if event.kind == 'game_started' and native_event:
+                    self._finish_result(HostResult(event.request_id, 'running', event.code, simulated=False,
+                        executed=True, completed=False, completion='window_observed'))
+                elif event.kind == 'game_started' and self._packaged_games is not None:
                     self._finish_result(HostResult(event.request_id, 'running', 'web_game_ready', simulated=False,
                         executed=True, completed=False, completion='running'))
                     self._queue_local_event('game_start')
                 elif event.kind == 'game_outcome' and self._packaged_games is not None:
                     self._queue_local_event('game_win' if event.code == 'won' else 'game_loss')
-                elif event.kind in ('game_ended', 'game_failed', 'game_exit_requested') and self._packaged_games is not None:
+                elif native_event and event.kind in ('game_ended', 'game_failed'):
+                    released = event.data.get('resource_released') is True
+                    self._finish_result(HostResult(event.request_id,
+                        ('failed' if event.kind == 'game_failed' else 'succeeded') if released else 'unknown',
+                        event.code, simulated=False, executed=True,
+                        completed=released and event.kind != 'game_failed',
+                        completion='stopped' if released else 'cleanup_pending'))
+                elif not native_event and event.kind in ('game_ended', 'game_failed', 'game_exit_requested') and self._packaged_games is not None:
                     self._finish_result(HostResult(event.request_id, 'failed' if event.kind == 'game_failed' else 'succeeded',
                         event.code, simulated=False, executed=True, completed=event.kind != 'game_failed',
                         completion='stopped'))
             if (event.mode_generation == self.modes.generation and self.modes.mode == "game"
                     and event.request_id == self._active_game_request
                     and event.kind in ("game_ended", "game_failed", "game_exit_requested")):
+                if native_event and event.kind != 'game_exit_requested' and event.data.get('resource_released') is not True:
+                    continue  # Keep ownership until the native adapter verifies cleanup.
+                destination = 'conversation' if native_event else 'game_menu'
                 if self._local_event_active and self.session.busy:
                     self.cancel_conversation()
-                    self._game_return_pending = 'game_menu'
+                    self._game_return_pending = destination
                 else:
-                    self._transition("game_menu")
+                    try:
+                        self._transition(destination)
+                    except FeatureError:
+                        if not native_event:
+                            raise
+                        self._finish_result(HostResult(event.request_id, 'unknown', 'native_cleanup_failed',
+                            simulated=False, executed=True, completion='cleanup_pending'))
+                        continue
                     self._queue_local_event('game_launch_failed' if event.kind == 'game_failed' else 'game_exit')
+        if native_before_poll and not self.native_game_foreground:
+            self._native_return_grace_until = self.clock()+3.
         for event in self.media.poll():
             if (self.runtime.music_supervised and event.kind in ("media_ended", "media_failed")
                     and event.data.get("simulated") is False):
@@ -2580,7 +2661,9 @@ class FeatureHost(ProductVideoFlow):
             self._start_photo_feedback(value, pending_feedback)
         if self._photo_back_pending and not self.session.busy and self._photo_job is None:
             self._transition('conversation')
-        if self._last_shell_seen is not None and self.clock() - self._last_shell_seen > 3.0:
+        if (self._last_shell_seen is not None and self.clock() - self._last_shell_seen > 3.0
+                and not self.native_game_foreground
+                and (self._native_return_grace_until is None or self.clock() > self._native_return_grace_until)):
             self.stop()
             self._last_shell_seen = None
         self._tick_music_preparation()
@@ -2595,6 +2678,10 @@ class FeatureHost(ProductVideoFlow):
         face = self.session.snapshot()
         camera = self.camera.snapshot()
         motion = self.motion.snapshot()
+        game_state = self.games.snapshot()
+        game_catalog = self.games.catalog()
+        native_ready = bool(self._native_games is not None and any(item.id == 'supertux' and item.readiness == 'READY'
+                                                                  for item in game_catalog))
         # The old source-admission checker and the active B1 adapter describe
         # different evidence. Neither is proof of wiring or servo movement.
         arms = dict(source=dict(self._system_diagnostics['arms'], scope='legacy_static_admission'),
@@ -2634,11 +2721,16 @@ class FeatureHost(ProductVideoFlow):
             "arm_usage": self.arm_usage.snapshot() if self.arm_usage is not None else None,
             "conversation_busy": self.session.busy, "emotion": face["emotion"],
             "phase": face["phase"], "gaze": self.gaze.resolve(phase=face["phase"], generation=self.modes.generation),
-            "games": {"catalog": [item.public() for item in self.games.catalog()], **self.games.snapshot()},
-            "games_readiness": dict(enabled=self._playable_games_requested,
-                status='READY' if self._packaged_games else 'BLOCKED',
-                code=self._games_setup_error or ('games_ready' if self._packaged_games else 'games_disabled'),
-                catalog_count=len(self.games.catalog()), validation='verified_bundle' if self._packaged_games else 'not_ready'),
+            "games": {"catalog": [item.public() for item in game_catalog], **game_state},
+            "games_readiness": dict(enabled=self._playable_games_requested or self.runtime.native_supertux,
+                status='READY' if self._packaged_games or native_ready else 'BLOCKED',
+                code=self._games_setup_error or ('games_ready' if self._packaged_games else
+                    game_state.get('native', {}).get('code', 'native_game_setup_required') if self._native_games else 'games_disabled'),
+                catalog_count=len(game_catalog), validation='verified_bundle' if self._packaged_games else
+                    'fixed_native_prerequisites' if native_ready else 'not_ready'),
+            'native_game': dict(enabled=self.runtime.native_supertux, foreground=self.native_game_foreground,
+                browser_input_owner=not self.native_game_foreground,
+                return_grace_remaining=max(0., self._native_return_grace_until-self.clock()) if self._native_return_grace_until else 0.),
             'action_plan': self.compound.snapshot(),
             "media": {"catalog": [dict(item.public(), variants=list(self.media.variants(item.id))) for item in self.media.catalog()],
                 **self.media.snapshot(),

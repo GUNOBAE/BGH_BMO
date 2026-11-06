@@ -15,7 +15,9 @@
 **34175607…의 목표·설치·runner·실제 아이콘 프로세스 SHA 일치**를 확인했다. full-use142,
 normal, M04→M06→M05 실제 재생·EN/KO 자막·기존 음악 입 동작을 관측했다. 사용자의
 추가 요청으로 마지막 상태는 level0.05/muted=true였다. 최신 idle 연출은 그 음소거 이후
-NOT_RUN이며 사람 청취/팔 검수/실제 대화 지연은 여전히 별도다. 이전 설치본432/5a 기록은
+NOT_RUN이며 사람 청취/팔 검수/실제 대화 지연은 여전히 별도다. 후속 [Pi 일상 검수 준비6685157309](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6685157309)는
+같은341을 silent-start로 실행한 뒤 실제25%/Mute 유지와 새 UI 부재를 확인했다.
+실제 완료 턴16개는 기존 baseline이며 새 사람 대화 속도 자료가 아니다. 이전 설치본432/5a 기록은
 아래 역사 항목에 남긴다. 새 READY SHA의 설치를 이 관측으로 대신하지 않는다.
 
 이번 제품 경로:
@@ -96,6 +98,53 @@ PYTHONPATH=software .venv-device/bin/python -m bmo_ai.arm_usage \
 실제 대화 단계별 시간은 최신 Pi에서도 UNMEASURED다. worktree SHA null과 합성 완료 기록
 오염은 코드에서 수정했지만 이것을 응답 속도 개선이라고 보고하지 않는다. 기존 사람 대화의
 수치가 전달되면 가장 큰 단계부터 비교하며 모델/음색/VAD를 근거 없이 바꾸지 않는다.
+
+## 별도 완료 항목 — 선택적 SuperTux 연결
+
+일상 사용 개선본을 먼저 별도 커밋/CI/READY로 인계한 뒤 이어지는 선택 기능이다.
+`--native-supertux`를 명시한 live 실행에서만 **게임 목록 → SuperTux**를 추가한다.
+기존 세 자체 게임은 그대로다. 설치 안 됨/설정 필요/실행 준비/시작 중/실행 중/실패/종료를
+구분한다. spawn은 시작 중이며, 자식 PID의 활성·매핑된 X11 창 관측 뒤에만 소프트웨어
+실행 중으로 표시한다. 사람의 화면·패드 입력 PASS는 별도다.
+
+Pi 담당의 공식 설치 대상은 배포판 `supertux`(`/usr/games/supertux2`)와 `x11-utils`다.
+Cloud는 OS 설치/실제 게임/USB 패드 실행을 하지 않았다. 기존 게임 선정 인계
+`BMO_Game_Selection_Handoff_2026-11-05_KO` 원문은 현재 자료에서 발견되지 않아 수신 대기이며,
+사용자가 지정한 첫 대상 SuperTux만 연결했다. 추가 게임 조사·다운로드·미니게임 제작은 없다.
+
+- 필요 GUI 메타데이터 DISPLAY/XAUTHORITY와 별도 private HOME만 전달한다. BMO API 키,
+  전체 환경, 세션 버스, 원래 HOME는 전달하지 않는다. X11/Xwayland 경로이며 native
+  Wayland 준비를 주장하지 않는다. 이는 OS 보안 sandbox를 새로 만든다는 뜻은 아니다.
+- 첫 범위는 **무음**(`--disable-sound --disable-music`, SDL dummy)이다. 이 게임의
+  음량을 MasterVolume이 제어한다고 표시하지 않는다. 대화·음악의 기존 음량은 유지한다.
+- 패드 입력은 게임 SDL이 소유한다. BMO는 Pi가 관측한 종료 버튼 두 개와 장치 분리만
+  읽는다. 두 버튼을1.5초 유지하면 기존 bounded process-group 종료/수거 후 얼굴로 돌아온다.
+  처음부터 눌린 버튼은 해제 뒤 새 입력부터 인정한다. 패드 분리/창 준비 실패/게임 종료도
+  같은 정리 경로를 쓰며 정리 불명확이면 소유권을 유지하고 실패를 표시한다.
+- 게임 동안 브라우저 GP8/PTT/wake/idle·오래된 keyup/pad 이벤트를 억제한다. 종료 후
+  새 GP8은 대화를 시작한다. 숨겨진 브라우저 heartbeat만으로 정상 게임을 종료하지 않되,
+  실제 브라우저 프로세스 실패와 복귀 후 끊김 감시는 유지한다.
+- 진행/게임 설정은 `~/.local/share/bmo/native-games/supertux/userdata`의 별도 private
+  경로다. 외부 종료에 따른 미저장 진행 손실 가능성을 표시한다.
+
+Pi는 USB 모델/버튼 번호를 실제 관측한 뒤 private0700 디렉터리의0600 JSON을 준비한다.
+아래는 형식이며 빈칸에 임의 모델·버튼을 대입하지 않는다.
+
+```json
+{"version":1,"game_id":"supertux","device":"/dev/input/by-id/<실제-관측-ID>-joystick","exit_buttons":["<실제-정수1>","<실제-정수2>"],"provenance":"pi_observed_20261106"}
+```
+
+실제 파일의 exit_buttons는 서로 다른 **정수** 두 개다. 장치의 실제 버튼 수와 맞는지
+실행 전에 확인한다. 같은 Candidate private runner의 기존 설정을 보존하며 다음 옵션만
+선택적으로 덧붙인다. 기본 아이콘의 일상 기능 검수를 이 설치 때문에 미루지 않는다.
+
+```text
+--native-supertux --native-gamepad-profile /absolute/private/supertux-pad.json
+```
+
+실기 최소 순서: 게임 목록의 준비 상태 → 실제 창 표시 → 실제 패드 이동/점프 → 관측한
+두 버튼 hold 종료 → 얼굴 복귀 → 새 GP8 대화. 패드 게임 매핑은 게임 SDL 설정과 현장에서
+확인하며 Cloud의 fake-pad 검사로 물리 조작을 PASS 처리하지 않는다.
 
 ## 이전 34175607 인계 기록 — 실행본 증거·완료 지연·혼잣말 연출·팔 상태
 

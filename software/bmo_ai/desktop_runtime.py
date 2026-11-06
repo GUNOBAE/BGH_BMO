@@ -139,6 +139,8 @@ class DesktopRuntime:
         # Progress is a checkpoint score, never a time estimate or paid API readiness.
         self._progress_percent, self._progress_stage = 10, "lock_acquired"
         self._began, self._last_browser = self.clock(), None
+        self._native_was_foreground = False
+        self._native_return_grace_until = None
         self._events = Queue(32)
         self._worker = self._lease = None
         self._result = None
@@ -381,6 +383,7 @@ class DesktopRuntime:
 
     def heartbeat(self):
         self._last_browser = self.clock()
+        self._native_return_grace_until = None
         if self.host is not None:
             self.host.heartbeat()
 
@@ -875,8 +878,17 @@ class DesktopRuntime:
                         self._start_greeting("idle")
                     else:
                         self._presence.completed(False)
+        native_foreground = getattr(self.host, 'native_game_foreground', False) is True
+        if self._native_was_foreground and not native_foreground:
+            # External fullscreen games may occlude/suspend the browser's
+            # page. Give the retained face a bounded opportunity to resume its
+            # real heartbeat; never fabricate one or disable process checks.
+            self._native_return_grace_until = self.clock()+self.disconnect_timeout
+        self._native_was_foreground = native_foreground
         if (self._phase != "error" and self._last_browser is not None
-                and self.clock() - self._last_browser > self.disconnect_timeout):
+                and self.clock() - self._last_browser > self.disconnect_timeout
+                and not native_foreground
+                and (self._native_return_grace_until is None or self.clock() > self._native_return_grace_until)):
             self._cancel.set()
             if self.host is not None:
                 self.host.stop()

@@ -184,17 +184,21 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
                    frontend="auto", usb_gamepad=False, music_directory=None,
                    music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None, playable_games=None, install_target="desktop-and-applications"):
+                   character_options=None, playable_games=None, install_target="desktop-and-applications",
+                   native_supertux=False, native_gamepad_profile=None):
     try:
         playable_games = playable_games_enabled(playable_games,
             character_life=bool(character_options and character_options.get("character_life")))
     except (ValueError, AttributeError):
         raise DesktopInstallError("desktop_invalid_config") from None
     if (any(type(value) is not bool for value in (simulate, ptt_microphone, usb_gamepad, music_supervised, startup_chime,
-                                                       camera_supervised, camera_video_supervised, playable_games))
+                                                       camera_supervised, camera_video_supervised, playable_games,
+                                                       native_supertux))
             or type(frontend) is not str or frontend not in ("auto", "native", "chromium")
             or type(install_target) is not str or install_target not in INSTALL_TARGETS
             or music_supervised and (simulate or music_directory is None)
+            or native_supertux and simulate
+            or native_gamepad_profile is not None and not native_supertux
             or camera_supervised and (simulate or photo_directory is None)
             or photo_directory is not None and not camera_supervised
             or camera_video_supervised and (not camera_supervised or video_directory is None)):
@@ -252,6 +256,10 @@ def _configuration(project_root, home, environ, simulate, ptt_microphone=False,
         command.append("--ptt-microphone")
     if usb_gamepad:
         command.append("--usb-gamepad")
+    if native_supertux:
+        command.append('--native-supertux')
+    if native_gamepad_profile is not None:
+        command.extend(('--native-gamepad-profile', str(_path(native_gamepad_profile))))
     if playable_games:
         command.append("--playable-games")
     elif candidate:
@@ -318,11 +326,12 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
                          frontend="auto", usb_gamepad=False, music_directory=None,
                          music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None, playable_games=None, install_target="desktop-and-applications"):
+                   character_options=None, playable_games=None, install_target="desktop-and-applications",
+                   native_supertux=False, native_gamepad_profile=None):
     _, user_home, _, command, template, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
         camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options, playable_games,
-        install_target)
+        install_target, native_supertux, native_gamepad_profile)
     rows = []
     for path, raw, mode in targets:
         directory = _directory(path.parent, home=user_home)
@@ -338,6 +347,9 @@ def desktop_install_plan(*, project_root=None, home=None, environ=None, simulate
             "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
             "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
             "playable_games_opt_in": "--playable-games" in command,
+            "native_supertux_opt_in": native_supertux,
+            "native_gamepad_profile_selected": native_gamepad_profile is not None,
+            "native_game_readiness": "NOT_RUN", "native_game_audio": "silent",
             "install_target": install_target,
             "launcher_kind": "private_candidate_wrapper" if character_options and character_options.get("character_life") and install_target == "applications-only" else "repository_launcher",
             "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
@@ -359,7 +371,8 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                     frontend="auto", usb_gamepad=False, music_directory=None,
                     music_supervised=False, startup_chime=True, camera_supervised=False,
                    photo_directory=None, camera_video_supervised=False, video_directory=None,
-                   character_options=None, playable_games=None, install_target="desktop-and-applications"):
+                   character_options=None, playable_games=None, install_target="desktop-and-applications",
+                   native_supertux=False, native_gamepad_profile=None):
     if type(install) is not bool:
         raise DesktopInstallError("desktop_invalid_config")
     if not install:
@@ -370,11 +383,12 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                                     camera_supervised=camera_supervised, photo_directory=photo_directory,
                                     camera_video_supervised=camera_video_supervised, video_directory=video_directory,
                                     character_options=character_options, playable_games=playable_games,
-                                    install_target=install_target)
+                                    install_target=install_target, native_supertux=native_supertux,
+                                    native_gamepad_profile=native_gamepad_profile)
     _, user_home, data, command, _, targets, verified = _configuration(project_root, home, environ, simulate, ptt_microphone,
         frontend, usb_gamepad, music_directory, music_supervised, startup_chime,
         camera_supervised, photo_directory, camera_video_supervised, video_directory, character_options, playable_games,
-        install_target)
+        install_target, native_supertux, native_gamepad_profile)
     if not verified:
         raise DesktopInstallError("desktop_launcher_pending")
     created, descriptors, stages, published = [], [], [], []
@@ -427,6 +441,9 @@ def install_desktop(*, project_root=None, home=None, environ=None, simulate=Fals
                 "microphone_button_opt_in": ptt_microphone, "automatic_capture": False,
             "frontend": frontend, "usb_gamepad_opt_in": usb_gamepad,
             "playable_games_opt_in": "--playable-games" in command,
+            "native_supertux_opt_in": native_supertux,
+            "native_gamepad_profile_selected": native_gamepad_profile is not None,
+            "native_game_readiness": "NOT_RUN", "native_game_audio": "silent",
             "install_target": install_target,
             "launcher_kind": "private_candidate_wrapper" if character_options and character_options.get("character_life") and install_target == "applications-only" else "repository_launcher",
             "music_playback_opt_in": music_supervised, "startup_chime": startup_chime,
@@ -473,6 +490,9 @@ def main(argv=None):
     parser.add_argument("--frontend", choices=("auto", "native", "chromium"), default="auto")
     parser.add_argument("--usb-gamepad", action="store_true")
     parser.add_argument("--playable-games", action="store_true")
+    parser.add_argument('--native-supertux', action='store_true',
+                        help='persist explicit installed SuperTux opt-in; silent, no install or automatic game start')
+    parser.add_argument('--native-gamepad-profile', type=Path)
     parser.add_argument("--desktop-install-target", choices=INSTALL_TARGETS, default="desktop-and-applications")
     parser.add_argument("--music-directory", type=Path)
     parser.add_argument("--music-supervised", action="store_true")
@@ -488,6 +508,8 @@ def main(argv=None):
                                  install=args.install_desktop, ptt_microphone=args.ptt_microphone,
                                  frontend=args.frontend, usb_gamepad=args.usb_gamepad,
                                  playable_games=args.playable_games,
+                                 native_supertux=args.native_supertux,
+                                 native_gamepad_profile=args.native_gamepad_profile,
                                  install_target=args.desktop_install_target,
                                  music_directory=args.music_directory, music_supervised=args.music_supervised,
                                  startup_chime=not args.no_startup_chime,
