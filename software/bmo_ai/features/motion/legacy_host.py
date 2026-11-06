@@ -69,9 +69,13 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
 
 class LegacyArmLink:
     """One outstanding B1 request. Require exact ACK and fresh boot token."""
-    def __init__(self, port, *, motor_permission=None, sequence_clock=None):
+    def __init__(self, port, *, motor_permission=None, sequence_clock=None,
+                 permission_code="physical_supervision_required"):
         if not callable(getattr(port, "write", None)) or not callable(getattr(port, "read_until", None)):
             raise LegacyArmError("owned_cdc_port_required")
+        if permission_code not in ("physical_supervision_required", "daily_arm_permission_required"):
+            raise LegacyArmError("invalid_permission_code")
+        self.permission_code = permission_code
         self.port, self.boot = port, None
         self.motor_permission = motor_permission or (lambda: False)
         # Linux monotonic_ns is shared across processes during the same Pi boot,
@@ -156,7 +160,7 @@ class LegacyArmLink:
         except Exception:
             permission = False
         if permission is not True:
-            raise LegacyArmError("physical_supervision_required")
+            raise LegacyArmError(self.permission_code)
         code = self._request("DO {rid} {boot} " + name, before_write=before_write)
         if code != "ACCEPTED":
             raise LegacyArmError("gesture_" + code.lower())
@@ -447,6 +451,8 @@ class LegacyMotionFeature:
             blocked.append('arm_board_disabled')
         if self.last_error == 'physical_supervision_required':
             blocked.append('arm_operator_condition_missing')
+        elif self.last_error == 'daily_arm_permission_required':
+            blocked.append('arm_runtime_not_ready')
         if closed:
             blocked.append('arm_closed')
         elif stopped:

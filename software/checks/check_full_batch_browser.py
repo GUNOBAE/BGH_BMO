@@ -263,7 +263,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 (Path(directory)/'inject-provider-failure').write_text('synthetic authentication boundary only')
                 provider_failed=wait(lambda state:state['providers']['voice']['blocked'])
                 wait_provider_ui(provider_failed,'voice','Fish 인증',recheck_disabled=False)
-                page.locator('#face').click(position={'x':400,'y':230});page.keyboard.press('Enter')
+                page.locator('#face').focus();page.keyboard.press('Enter')
                 page.wait_for_timeout(300)
                 blocked=fixture.features()['test_fixture']
                 assert (blocked['mic_sources'],blocked['brain'],blocked['synthesis'])==(before_provider['mic_sources'],before_provider['brain'],before_provider['synthesis'])
@@ -279,7 +279,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 (Path(directory)/'inject-cloud-failure').write_text('synthetic OpenAI authentication boundary')
                 cloud_failed=wait(lambda state:state['providers']['cloud']['blocked'])
                 wait_provider_ui(cloud_failed,'cloud','OpenAI 인증',recheck_disabled=False)
-                page.locator('#face').click(position={'x':400,'y':230});page.keyboard.press('Enter');page.wait_for_timeout(250)
+                page.locator('#face').focus();page.keyboard.press('Enter');page.wait_for_timeout(250)
                 cloud_blocked=fixture.features()['test_fixture']
                 assert (cloud_blocked['mic_sources'],cloud_blocked['stt'],cloud_blocked['brain'],cloud_blocked['synthesis'])==(before_cloud['mic_sources'],before_cloud['stt'],before_cloud['brain'],before_cloud['synthesis'])
                 panel('system-menu');wait_provider_ui(cloud_failed,'cloud','OpenAI 인증',recheck_disabled=False)
@@ -527,7 +527,7 @@ def run_arm_menu(profile,chromium):
                     assert stopped['test_fixture']['b1_commands']==1 and stopped['test_fixture']['b1_stops']==1
                     assert stopped['motion']['stopped'] and stopped['test_fixture']['b1_latched']
                     page.locator('#arms-dialog .dialog-close').click()
-                    page.locator('#face').click(position={'x':400,'y':230});page.keyboard.press('Enter')
+                    page.locator('#face').focus();page.keyboard.press('Enter')
                     deadline=time.monotonic()+10
                     while time.monotonic()<deadline:
                         state=fixture.features()

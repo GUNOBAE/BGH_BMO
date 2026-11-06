@@ -38,6 +38,8 @@ class PresenceScheduler:
     """Idle speech is opt-in, rare, and charged only after actual playback."""
     MODES = ("normal", "quiet", "sleep", "off")
     WINDOW = 15 * 60
+    LIMIT = 3
+    INTERVAL = (180., 300.)
 
     def __init__(self, *, clock=time.monotonic, interval=None, mode="off"):
         self.clock, self.interval = clock, interval or random.SystemRandom().uniform
@@ -49,7 +51,10 @@ class PresenceScheduler:
         self.set_mode(mode)
 
     def _schedule(self, now):
-        self._next_at = now + _delay(self.interval, 180., 420.)
+        # After a full rolling window, leave a fresh opportunity interval.
+        # Expiring quota must not release a backlog of waiting utterances.
+        after = self._heard[0] + self.WINDOW if len(self._heard) >= self.LIMIT else now
+        self._next_at = max(now, after) + _delay(self.interval, *self.INTERVAL)
 
     def _prune(self, now):
         while self._heard and now - self._heard[0] >= self.WINDOW:
@@ -87,35 +92,51 @@ class PresenceScheduler:
         if self._blocked_reason(now, **self._last_context):
             self._schedule(now)
             return False
-        if self._pending or now < self._next_at or len(self._heard) >= 2:
+        if self._pending or now < self._next_at or len(self._heard) >= self.LIMIT:
             return False
         self._pending = True
         self._charged = False
         return True
 
-    def started(self):
+    def started(self, at=None):
         """Owner confirms a real player start, including interrupted speech."""
         now = _now(self.clock)
+        at = now if at is None else at
+        if type(at) not in (int, float) or not math.isfinite(at) or not 0 <= at <= now:
+            raise PresenceError()
         self._prune(now)
         if not self._charged:
-            self._heard.append(now)
+            if now-at < self.WINDOW:
+                self._heard.append(at)
             self._charged = True
+            if len(self._heard) >= self.LIMIT:
+                self._schedule(now)
 
     def completed(self, heard):
         if type(heard) is not bool:
             raise PresenceError()
         now = _now(self.clock)
         self._prune(now)
-        if self._pending and heard and not self._charged:
-            self._heard.append(now)
+        # Completion is not evidence that output actually started. Only the
+        # owner's started() callback charges a real, possibly interrupted clip.
         self._charged = True
         self._pending = False
         self._schedule(now)
 
+    def manual_blocked_reason(self, **context):
+        """Manual playback skips automatic mode, timer, quota and menu lease.
+
+        It still shares sensitive-context suppression and every real owner.
+        This read never selects a clip or changes the automatic setting.
+        """
+        values = dict(context, settings_active=False)
+        return self._blocked_reason(_now(self.clock), ignore_mode=True, **values)
+
     def _blocked_reason(self, now, *, emotion='neutral', phase='idle', activity_mode='conversation',
                         conversation_busy=False, audio_busy=False, game_active=False,
-                        video_active=False, sensitive=False, muted=False, settings_active=False):
-        if self.mode != 'normal': return 'mode_' + self.mode
+                        video_active=False, sensitive=False, muted=False, settings_active=False,
+                        ignore_mode=False):
+        if not ignore_mode and self.mode != 'normal': return 'mode_' + self.mode
         if muted: return 'muted'
         if settings_active: return 'settings_active'
         if sensitive or now < self._distress_until: return 'recent_distress'
@@ -131,11 +152,12 @@ class PresenceScheduler:
         now = _now(self.clock)
         self._prune(now)
         blocked = self._blocked_reason(now, **(context or self._last_context))
-        next_at = max(self._next_at, self._heard[0]+self.WINDOW if len(self._heard) >= 2 else 0.)
-        reason = (blocked or ('pending' if self._pending else 'quota' if len(self._heard) >= 2
+        next_at = max(self._next_at, self._heard[0]+self.WINDOW if len(self._heard) >= self.LIMIT else 0.)
+        reason = (blocked or ('pending' if self._pending else 'quota' if len(self._heard) >= self.LIMIT
                             else 'interval' if now < next_at else 'ready'))
         return dict(mode=self.mode, enabled=self.mode == "normal", pending=self._pending,
-                    heard_in_15_minutes=len(self._heard), limit_per_15_minutes=2,
+                    heard_in_15_minutes=len(self._heard), limit_per_15_minutes=self.LIMIT,
+                    interval_seconds=list(self.INTERVAL), same_clip_cooldown_seconds=1800,
                     next_in_seconds=max(0., next_at-now), suppression_reason=reason,
                     recent_distress=now < self._distress_until, automatic_generation=False)
 

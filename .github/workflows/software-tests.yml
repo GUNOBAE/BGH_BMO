@@ -74,6 +74,9 @@ jobs:
       - run: python -B software/checks/check_face_controls_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_daily_controls_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
       - run: python -B software/checks/check_playable_games_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'

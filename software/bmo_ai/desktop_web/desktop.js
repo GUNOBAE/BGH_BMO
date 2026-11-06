@@ -8,6 +8,7 @@ let photoReviewKeyHeld=false,photoPreviewContext=null,photoPreviewAcknowledged=n
 let videoKeyHeld=false,videoPreviewContext=null,videoPreviewAcknowledged=null,videoActionPending=false,videoReviewId=null;
 let volumePending=null,volumeSerial=0,volumeRequest=null,volumeQueue=Promise.resolve(),armCatalogKey=null,voiceCatalogKey=null;
 let faceVolumeTimer=null,uiActivityTimer=null,uiActivitySent=false,uiMenuSequence=null;
+let noticeUntil=0,noticeText='',presenceTestPending=false,presenceTestSeen=null,armPreferencePending=false,armRequest=null;
 let mediaKeyHeld=false,mediaVideoKey=null,mediaSeekPending=false,mediaVideoFailure=null,mediaSyncRequired=false,mediaPlayPending=null;
 let mediaHoldTimer=null,mediaHoldStarted=0,mediaHoldTriggered=false,mediaStopping=false,mediaControlsTimer=null,musicErrorTimer=null;
 let previewRun=null,previewSerial=0,previewTimer=null,previewAbort=null,previewBitmap=null,previewDraw=null,previewBusy=false,previewSuppressedKey=null;
@@ -34,6 +35,7 @@ function control(action,value=null){
 }
 function intent(name,target=null,media_mode=null){if(name==='return_to_face'){clearCaption();stopVideoReview();}if(name==='return_to_face')stopPreview(true);const payload={name,target};if(media_mode!==null)payload.media_mode=media_mode;return post('/api/intent',payload);}
 function error(message){
+ noticeText=message;noticeUntil=performance.now()+4200;
  const notice=$('notice');notice.hidden=false;$('notice-message').textContent=message;
  if(currentMode==='music'){
   notice.dataset.musicError='true';clearTimeout(musicErrorTimer);
@@ -117,12 +119,43 @@ function render(next){state=next;window.BMODesktop.state=next;
   $('progress-track').setAttribute('aria-label','Getting BMO ready');
   $('loading-stage').textContent=next.progress_percent===100?'Ready!':'Getting ready…';
  }else $('loading-stage').textContent=stages[next.progress_stage]||'실행 상태를 확인하고 있어요.';
- const problem=next.phase==='error'||next.phase==='ready'&&next.code!=='greeting_completed'&&!(next.character_life?.enabled&&next.code==='greeting_cancelled');
- $('notice').hidden=!problem;if(problem)$('notice-message').textContent=messages[next.code]||'준비 상태를 확인해 주세요. 메뉴에서 재시도하거나 종료할 수 있어요.';
+ // An optional spoken greeting never reserves or covers the normal face.
+ // Its state, distinct from the approved startup chime, belongs in readiness.
+ const problem=next.phase==='error',transient=performance.now()<noticeUntil;
+ $('notice').hidden=!problem&&!transient;
+ if(problem||transient)$('notice-message').textContent=transient?noticeText:messages[next.code]||'준비 상태를 확인해 주세요. 메뉴에서 재시도하거나 종료할 수 있어요.';
  $('diagnostic').textContent=next.code;$('talk').disabled=!canTalk();$('repeat').disabled=next.phase!=='ready';
+ const greeting=next.spoken_greeting_status||next.code;
+ $('greeting-readiness').textContent='시작 인사: '+(messages[greeting]||({greeting_completed:'재생 완료',greeting_cancelled:'취소됨'})[greeting]||greeting)+' · '+greeting;
+ const chime=next.startup_chime_status||next.character_life?.startup_chime_status||'NOT_ATTEMPTED';
+ $('chime-readiness').textContent='시작 효과음: '+chime;
  $('presence-controls').hidden=!next.character_life?.enabled;
  if(next.character_life?.enabled)$('presence-mode').value=next.character_life.presence.mode;
+ renderPresenceTest(next);
  $('greeting-retry').disabled=next.phase!=='ready'||next.code==='greeting_completed';}
+function renderPresenceTest(next){
+ const test=next.character_life?.manual_test||{},active=['queued','preparing','playing'].includes(test.state);
+ $('presence-test').disabled=presenceTestPending||active||!next.character_life?.enabled||!canTalk();
+ const key=JSON.stringify([test.state,test.code,test.attempts]);
+ if(presenceTestSeen!==key){
+  const changed=presenceTestSeen!==null;presenceTestSeen=key;
+  if(changed&&['blocked','error'].includes(test.state))presenceTestMessage(test.code);
+ }
+ const presence=next.character_life?.presence;
+ $('presence-rule').textContent='자동: 3–5분마다 기회 판단 · 최근 15분에 최대 3회 · 같은 대사는 30분 동안 쉬어요.';
+ $('presence-readiness').textContent=JSON.stringify({presence:presence||null,manual_test:test},null,2);
+}
+function presenceTestMessage(code){
+ const messages={presence_test_muted:'음소거 중이에요. 볼륨에서 Mute를 끈 뒤 다시 눌러 주세요.',
+  presence_test_busy:'혼잣말을 이미 준비하거나 말하고 있어요.',presence_test_conversation_active:'대화가 끝난 뒤 다시 눌러 주세요.',
+  presence_test_audio_busy:'다른 소리가 끝난 뒤 다시 눌러 주세요.',presence_test_game_active:'게임에서 얼굴로 돌아온 뒤 눌러 주세요.',
+  presence_test_recording_active:'녹화가 끝난 뒤 눌러 주세요.',presence_test_foreground_activity:'얼굴 화면으로 돌아온 뒤 눌러 주세요.',
+  presence_test_recent_distress:'지금은 조용히 함께 있을게요. 조금 뒤에 다시 눌러 주세요.',
+  presence_test_strong_emotion:'지금은 조용히 함께 있을게요. 조금 뒤에 다시 눌러 주세요.',
+  presence_test_assets_unavailable:'사용할 혼잣말 음성이 없어요. 음성팩 설정을 확인해 주세요.',
+  presence_test_not_ready:'BMO 준비가 끝난 뒤 다시 눌러 주세요.'};
+ error(messages[code]||'혼잣말을 재생하지 못했어요. 준비 상태를 확인해 주세요.');
+}
 async function modes(){if(!canTalk())return;const r=await fetch('/api/features',{cache:'no-store'});if(!r.ok)return;const next=await r.json();currentMode=next.mode;
  window.BMODesktop.features=next;
  featureState=next;renderFeatures(next);
@@ -364,32 +397,46 @@ function renderVolume(next){
   $('face-volume-mute').textContent=volume.muted?'Unmute':'Mute';$('face-volume-mute').setAttribute('aria-pressed',String(volume.muted));}
 }
 function renderArms(next){
- const arms=next.system_diagnostics?.arms||{},motion=next.motion||{};
- const gestures=arms.supported_gestures||motion.supported_gestures||motion.capabilities||[];
- const names=Array.isArray(gestures)?gestures.filter(id=>typeof id==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(id)):[];
+ const arms=next.system_diagnostics?.arms||{},motion=next.motion||{},usage=next.arm_usage||{};
+ const titles={wave:'손 흔들기',raise_left_arm:'왼팔 들기',raise_right_arm:'오른팔 들기',both_up:'양팔 들기',both_down:'양팔 내리기',celebrate:'만세',shrug:'어깨 으쓱'};
+ const names=Object.keys(titles);
  const blocked=motion.blocked_reasons||arms.blocked_reasons||[];
- const reason=blocked[0]||motion.reason_code||arms.reason_code||arms.preflight?.code||'arm_state_unverified';
+ const reason=usage.requires_first_test?'arm_first_test_required':usage.enabled===false?'arm_runtime_off':arms.action_status?.code||blocked[0]||motion.reason_code||arms.reason_code||arms.preflight?.code||'arm_state_unverified';
  const labels={arm_runtime_off:'팔 동작이 현재 실행에서 꺼져 있어요.',real_disabled:'실물 팔 동작이 현재 실행에서 꺼져 있어요.',
+  arm_first_test_required:'처음 한 번은 파이에서 입회 검사를 완료해 주세요. 동작 버튼은 그대로 표시돼요.',
   operator_conditions_missing:'현재 감독 조건이 준비되지 않았어요.',arm_operator_required:'현재 감독 조건이 준비되지 않았어요.',
   arm_firmware_mismatch:'검토된 보드 SHA와 일치하지 않아요.',arm_controller_disabled:'보드 원격 동작이 비활성 상태예요.',arm_board_disabled:'보드 원격 동작이 비활성 상태예요.',
   arm_port_busy:'팔 포트를 다른 프로그램이 사용하고 있어요.',arm_link_unknown:'팔 통신 상태를 확인할 수 없어요.',
   arm_stop_unverified:'팔 중지 응답을 확인하지 못했어요.',arm_operator_condition_missing:'현재 감독 조건이 준비되지 않았어요.',arm_transport_error:'팔 통신 상태를 확인할 수 없어요.',
   hello_required:'감독 실행이 설정됐어요. 첫 명령에서 기존 B1 연결 응답을 확인해요.',position_unverified:'B1 연결 응답을 확인했어요. 실제 위치는 미확인이에요.',
   arm_closed:'팔 연결이 닫혔어요.',arm_stopped:'팔이 중지됐어요. 자동으로 다시 활성화하지 않아요.',motion_stopped:'팔이 중지됐어요. 자동으로 다시 활성화하지 않아요.'};
- const link=arms.transport?.status||motion.controller?.status||'UNVERIFIED';
- $('arms-status').textContent=(labels[reason]||reason)+' · '+link+' · 실제 위치·배선·움직임은 미검수';
- const allowed=next.capabilities?.arms==='mock'||next.capabilities?.arms==='explicit_supervised';
- const ready=allowed&&arms.preflight?.status!=='BLOCKED'&&motion.closed!==true&&motion.stopped!==true;
+ const allowed=['mock','explicit_supervised','explicit_commissioned'].includes(next.capabilities?.arms);
+ const ready=typeof arms.action_status?.request_allowed==='boolean'?arms.action_status.request_allowed:
+  allowed&&usage.enabled!==false&&!usage.requires_first_test&&arms.preflight?.status!=='BLOCKED'&&motion.closed!==true&&motion.stopped!==true;
+ $('arms-status').textContent=ready?'팔 요청을 보낼 수 있어요. 실제 움직임은 직접 확인해 주세요.':
+  (labels[reason]||'팔을 사용할 준비가 아직 안 됐어요. 준비 상태를 확인해 주세요.')+
+  (reason==='arm_runtime_off'?' 아래에서 팔 사용을 켜 주세요.':'');
+ if(!armPreferencePending){$('arms-enabled').checked=usage.enabled===true;$('arms-conversation').checked=usage.conversation_gestures===true;}
+ $('arms-enabled').disabled=armPreferencePending;$('arms-conversation').disabled=armPreferencePending;
  const key=JSON.stringify([names,ready]);
  if(key!==armCatalogKey){
   armCatalogKey=key;$('arms-gestures').replaceChildren();
-  if(!names.length)$('arms-gestures').textContent='이 실행에서 지원하는 명명 제스처가 아직 준비되지 않았어요.';
-  const titles={wave:'손 흔들기',raise_left_arm:'왼팔 들기',raise_right_arm:'오른팔 들기',both_up:'양팔 들기',both_down:'양팔 내리기',celebrate:'만세',shrug:'어깨 으쓱'};
   for(const name of names){const button=document.createElement('button');button.textContent=titles[name]||name;button.dataset.gesture=name;button.disabled=!ready;
-   button.onclick=()=>{button.disabled=true;intent('arm_gesture',name).then(result=>{$('arms-result').textContent=result.code||'팔 요청을 전달했어요. 실제 움직임은 미검수예요.';})
+   button.onclick=()=>{button.disabled=true;intent('arm_gesture',name).then(result=>{armRequest=result.request_id;renderArmReceipt(result);})
     .catch(()=>{$('arms-result').textContent='팔 요청을 완료하지 못했어요. 연결·감독 상태를 확인해 주세요.';}).finally(()=>{armCatalogKey=null;});};$('arms-gestures').append(button);}
  }
- $('arms-stop').disabled=motion.closed===true;
+ $('arms-stop').disabled=false;
+ const receipt=armRequest&&(next.requests||[]).find(item=>item.request_id===armRequest);
+ if(receipt)renderArmReceipt(receipt);
+}
+function renderArmReceipt(result){
+ const failed=['rejected','failed','unknown'].includes(result.status);
+ $('arms-result').textContent=failed?'팔 요청을 완료하지 못했어요. 현재 연결·중지 상태를 준비 상태에서 확인해 주세요.':
+  result.status==='cancelled'?'팔 요청이 취소됐어요. 실제 움직임과 중지 상태는 직접 확인해 주세요.':
+  result.code==='arm_stop_requested'?'팔 중지를 요청했어요. 실제 움직임과 전원은 직접 확인해 주세요.':
+  result.code==='ack_position_unverified'?'팔 통신 응답을 확인했어요. 실제 움직임은 직접 확인해 주세요.':
+  result.simulated===true&&result.status==='simulated'?'소프트웨어에서 요청을 확인했어요. 실물 팔 동작은 확인하지 않았어요.':
+  '팔 요청을 받았어요. 통신 응답을 확인하고 있어요.';
 }
 function stopMediaVideo(){
  const player=$('music-video');mediaVideoKey=null;mediaVideoFailure=null;mediaPlayPending=null;player.pause();
@@ -800,6 +847,19 @@ function cancelPTT(){window.BMOIntegration?.cancelEntrance('input_cancelled');en
 $('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));$('menu').close();};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
 $('presence-mode').onchange=()=>desktop('presence_mode',$('presence-mode').value).catch(()=>error('대기 음성 설정을 확인해 주세요.'));
+$('presence-test').onclick=async()=>{
+ if(presenceTestPending||$('presence-test').disabled)return;
+ presenceTestPending=true;$('presence-test').disabled=true;
+ for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
+ hideFaceVolume();restoreFaceFocus();
+ try{
+  // Wait for the closed menu lease before asking the existing idle owner.
+  await desktop('ui_activity',false);
+  const result=await desktop('presence_test');
+  if(['blocked','rejected','failed'].includes(result.status))presenceTestMessage(result.code);
+ }catch(_){error('혼잣말을 시작하지 못했어요. 준비 상태를 확인해 주세요.');}
+ finally{presenceTestPending=false;if(state)renderPresenceTest(state);}
+};
 $('subtitle-mode').onchange=()=>control('subtitles',$('subtitle-mode').value).catch(()=>error('자막 설정을 확인해 주세요.'));
 $('system-dialog').addEventListener('close',()=>{$('turn-diagnostics').textContent='';});
 $('wake-off').onclick=()=>desktop('wake_off').catch(()=>error('호출어 종료 상태를 확인해 주세요.'));
@@ -837,7 +897,16 @@ for(const [id,action] of [['photo-take-anyway','take_anyway'],['photo-refocus','
 $('camera-preview').onclick=()=>control('preview',featureState?.camera?.preview!==true).catch(()=>error('미리보기를 준비하지 못했어요.'));
 $('camera-track').onclick=()=>intent(featureState?.camera?.tracking===true||featureState?.camera?.tracker?.enabled===true?'stop_face_tracking':'start_face_tracking').catch(()=>error('시선 추적을 준비하지 못했어요.'));
 $('camera-off').onclick=()=>control('camera_off').catch(()=>error('카메라 종료를 확인해 주세요.'));
-$('arms-stop').onclick=()=>intent('stop_arms').then(result=>{$('arms-result').textContent=result.code||'팔 중지를 요청했어요. 실제 전원과 위치는 별도로 확인해 주세요.';}).catch(()=>error('팔 중지 상태를 확인해 주세요.'));
+$('arms-stop').onclick=()=>intent('stop_arms').then(result=>{armRequest=result.request_id;renderArmReceipt(result);}).catch(()=>error('팔 중지 상태를 확인해 주세요.'));
+for(const id of ['arms-enabled','arms-conversation'])$(id).onchange=()=>{
+ if(armPreferencePending)return;armPreferencePending=true;
+ const value={enabled:$('arms-enabled').checked,conversation_gestures:$('arms-conversation').checked};
+ control('arm_usage',value).then(result=>{
+  $('arms-result').textContent=['rejected','failed','unknown'].includes(result.status)?'팔 설정을 저장하지 못했어요. 준비 상태를 확인해 주세요.':
+   '팔 사용 선호를 저장했어요. 연결·중지 상태와 처음 실물 검사는 별도로 확인해요.';
+ }).catch(()=>{$('arms-result').textContent='팔 설정을 저장하지 못했어요. 준비 상태를 확인해 주세요.';})
+ .finally(()=>{armPreferencePending=false;if(featureState)renderArms(featureState);});
+};
 $('provider-recheck').onclick=()=>control('provider_recheck').catch(()=>error('음성 상태 초기화를 완료하지 못했어요.'));
 $('voice-batch-preview').onclick=()=>auditionVoiceBatch();
 $('voice-batch-preview-stop').onclick=()=>{
@@ -973,8 +1042,26 @@ function blurPTT(event){setTimeout(()=>{
  if(event.isTrusted&&document.hasFocus())return;photoReviewKeyHeld=false;videoKeyHeld=false;mediaKeyHeld=false;mediaHoldTriggered=false;clearTimeout(mediaHoldTimer);if(currentMode==='music'&&!mediaStopping)control('pause').catch(()=>{});bump('cancelled_blur');cancelPTT();window.BMOPlayableGames?.suspend('blur');
 },0);}
 window.addEventListener('blur',blurPTT);
-let touchStart=null,inputDocument=null;function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',blurPTT);
- doc.addEventListener('pointerdown',event=>{touchStart={x:event.clientX,y:event.clientY};if(event.clientX<60&&event.clientY<60)touchStart.timer=setTimeout(menu,1200);});for(const name of ['pointerup','pointercancel'])doc.addEventListener(name,()=>{clearTimeout(touchStart?.timer);touchStart=null;});doc.addEventListener('pointermove',event=>{if(touchStart&&Math.hypot(event.clientX-touchStart.x,event.clientY-touchStart.y)>12){clearTimeout(touchStart.timer);touchStart=null;}});}catch(_){}}
+let touchStart=null,inputDocument=null;
+function faceTapAllowed(){return canTalk()&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&$('face-volume').hidden;}
+function clearFaceTouch(){clearTimeout(touchStart?.timer);touchStart=null;}
+function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',blurPTT);
+ doc.addEventListener('pointerdown',event=>{
+  clearFaceTouch();if(!faceTapAllowed()||event.isPrimary===false||event.button!==0)return;
+  touchStart={id:event.pointerId,x:event.clientX,y:event.clientY,at:performance.now(),held:false};
+  if(event.clientX<60&&event.clientY<60)touchStart.timer=setTimeout(()=>{
+   if(touchStart&&faceTapAllowed()){touchStart.held=true;menu();}
+  },1200);
+ });
+ doc.addEventListener('pointerup',event=>{
+  const start=touchStart;clearFaceTouch();
+  if(!start||start.id!==event.pointerId||start.held||!faceTapAllowed())return;
+  if(performance.now()-start.at<=650&&Math.hypot(event.clientX-start.x,event.clientY-start.y)<=12)menu();
+ });
+ for(const event of ['pointercancel','lostpointercapture'])doc.addEventListener(event,clearFaceTouch);
+ doc.addEventListener('pointermove',event=>{if(touchStart&&(event.pointerId!==touchStart.id||Math.hypot(event.clientX-touchStart.x,event.clientY-touchStart.y)>12))clearFaceTouch();});
+ doc.defaultView.addEventListener('blur',clearFaceTouch);
+}catch(_){}}
 frame.addEventListener('load',()=>{cancelPTT();bindFrameInputs();});bindFrameInputs();
 // The standard browser mapping is opt-in and game-only. Never map a pad button
 // to GP8/TALK, GP7, a servo command, camera capture or a provider API.

@@ -63,7 +63,8 @@ def _character_arguments(options, *, simulate, ptt_microphone):
     choices = {"ptt_vad_profile": ("baseline", "balanced", "quick"),
                "ptt_vad_mode": ("rms", "webrtc"),
                "presence_mode": ("normal", "quiet", "sleep", "off")}
-    paths = ("voice_bank_directory", "voice_pack_directory", "wake_model_manifest")
+    paths = ("voice_bank_directory", "voice_pack_directory", "wake_model_manifest",
+             "preferences_directory", "arm_usage_directory")
     numbers = ("wake_question_wait", "request_cooldown", "session_request_limit",
                "estimated_request_cost", "estimated_session_cost_limit")
     if (type(options) is not dict
@@ -77,7 +78,8 @@ def _character_arguments(options, *, simulate, ptt_microphone):
                 or options.get("wake_word") is not True)
             or options.keys() - {"character_life"} and options.get("character_life") is not True
             or options.get("wake_word") is True and not (ptt_microphone or simulate)
-            or "wake_model_manifest" in options and (options.get("wake_word") is not True or simulate)):
+            or "wake_model_manifest" in options and (options.get("wake_word") is not True or simulate)
+            or "arm_usage_directory" in options and simulate):
         raise DesktopInstallError("desktop_invalid_config")
     if any(key in options for key in numbers if key != 'wake_question_wait'):
         # Reuse the admission contract without consuming a request or probing
@@ -96,7 +98,7 @@ def _character_arguments(options, *, simulate, ptt_microphone):
     for key in ("character_life", "ptt_trace", "ptt_vad_profile", "ptt_vad_mode", "plain_voice",
                 "voice_bank_directory", "voice_pack_directory", "idle_voice", "presence_mode", "wake_word", "wake_model_manifest", "wake_question_wait",
                 "silent_start", "no_feedback_voice", "request_cooldown", "session_request_limit",
-                "estimated_request_cost", "estimated_session_cost_limit"):
+                "estimated_request_cost", "estimated_session_cost_limit", "preferences_directory", "arm_usage_directory"):
         if key not in options:
             continue
         flag = "--" + key.replace("_", "-")

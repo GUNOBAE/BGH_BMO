@@ -169,7 +169,7 @@ def run(profile="ci-synthetic",chromium="/usr/bin/chromium"):
                 question("우는 연기를 해봐","crying","crying","neutral")
 
                 hold=Path(directory)/"hold-provider";hold.write_text("public fixture gate")
-                page.locator("#face").click(position={"x":400,"y":230});page.keyboard.press("Enter")
+                page.locator("#face").focus();page.keyboard.press("Enter")
                 listening=wait(lambda s:s["ptt"]["microphone_open"] and s["phase"]=="listening")
                 assert listening["emotion"]=="crying"
                 thinking=wait(lambda s:s["phase"]=="thinking" and s["test_fixture"]["brain"]==len(comparisons)+1)

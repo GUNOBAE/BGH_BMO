@@ -26,7 +26,8 @@ def _code(value):
 def conversation_arm_status(*, simulate, supervised_requested,
                             supervised_effective, emotion_arms_requested,
                             emotion_arms_effective, motion, turn_state=None,
-                            setup_error=None):
+                            setup_error=None, commissioned_requested=False,
+                            commissioned_effective=False, usage_enabled=None):
     """Project bounded status only; do not use it as a motion authorization.
 
     The caller records ``turn_state`` at the existing reply/player-start/result
@@ -50,6 +51,10 @@ def conversation_arm_status(*, simulate, supervised_requested,
                     emotion_arms_requested=emotion_arms_requested is True,
                     emotion_arms_effective=emotion_arms_effective is True,
                     setup_code=setup_code)
+    if commissioned_requested is True or commissioned_effective is True or type(usage_enabled) is bool:
+        launcher.update(commissioned_requested=commissioned_requested is True,
+                        commissioned_effective=commissioned_effective is True,
+                        usage_enabled=usage_enabled is True, current_supervision_stored=False)
     turn = state.get("turn_id")
     gesture = state.get("gesture_id", "none")
     gesture = gesture if type(gesture) is str and gesture in MODEL_ONLY else "none"
@@ -61,8 +66,10 @@ def conversation_arm_status(*, simulate, supervised_requested,
     reasons = []
     if setup_code:
         reasons.append(setup_code)
-    if simulate is not True and supervised_effective is not True:
+    if simulate is not True and supervised_effective is not True and commissioned_effective is not True:
         reasons.append("arm_runtime_off")
+    if usage_enabled is False:
+        reasons.append("arm_usage_off")
     if emotion_arms_effective is not True:
         reasons.append("emotion_arms_off")
     if simulate is not True and adapter.get("real_enabled") is not True:

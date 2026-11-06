@@ -80,7 +80,7 @@ def public_code(code, default="startup_failed"):
 class DesktopRuntime:
     def __init__(self, *, clock=time.monotonic, simulate=False, developer=False,
                  startup_timeout=15., greeting_timeout=30., disconnect_timeout=5., require_face_presented=False,
-                 character_life=False, presence_mode="off", silent_start=False):
+                 character_life=False, presence_mode="off", silent_start=False, preferences=None):
         if any(type(value) not in (float, int) or not 0 < value <= 120 for value in
                (startup_timeout, greeting_timeout, disconnect_timeout)):
             raise FeatureError("invalid_desktop_timeout")
@@ -88,6 +88,15 @@ class DesktopRuntime:
         if type(character_life) is not bool or type(silent_start) is not bool or presence_mode not in ("normal", "quiet", "sleep", "off"):
             raise FeatureError("invalid_character_configuration")
         self.character_life = character_life
+        self.preferences = preferences
+        if preferences is not None:
+            try:
+                stored = preferences.load().get('presence_mode')
+                if stored in ('normal', 'quiet', 'sleep', 'off'):
+                    presence_mode = stored
+            except Exception:
+                # Optional local preferences must never prevent conversation.
+                pass
         self.silent_start = silent_start
         self._presence = None
         if character_life:
@@ -98,7 +107,13 @@ class DesktopRuntime:
         self._ui_activity_requested = False
         self._cutscene_category = "boot"
         self._cutscene_heard = False
+        self._cutscene_started_at = None
         self._cutscene_charged = False
+        self._cutscene_manual = False
+        self._manual_test_requested = False
+        self._manual_test_epoch = 0
+        self._manual_test_nonces = deque(maxlen=64)
+        self._manual_test = dict(state='idle', code='presence_test_idle', attempts=0, started_count=0)
         self._idle_restore_code = None
         self._last_idle_code = None
         self._boot_attempts = self._idle_attempts = 0
@@ -136,6 +151,7 @@ class DesktopRuntime:
         self._overlay_generation = None
         self._greeting_started = None
         self._ever_played = False
+        self._spoken_greeting_status = 'not_attempted'
         self._greeting_timed_out = False
         self._greeting_suppressed = False
         self._audit = deque(maxlen=64)
@@ -201,16 +217,35 @@ class DesktopRuntime:
                 "progress_error": self._code if self._phase == "error" else None,
                 "face_presented": self._face_presented.is_set(),
                 "greeting_played": self._ever_played,
+                "spoken_greeting_status": self._spoken_greeting_status,
                 "startup_chime_status": getattr(getattr(self.greeting, "greeting_player", self.greeting),
                                                 "startup_chime_status", "NOT_ATTEMPTED"),
                 "developer_enabled": self.developer, "external_api_ready": "NOT_CHECKED",
                 "live_verified": False, "exit_requested": self.exiting,
                 "character_life": {"enabled": self.character_life,
                     "presence": self._presence_snapshot(),
+                    "manual_test": dict(self._manual_test),
+                    "preferences": self._preferences_status(),
                     "settings_active": self.clock() < self._ui_active_until,
                     "last_idle_code": self._last_idle_code,
                     "voice_bank": self.greeting.bank.snapshot() if self.character_life
                         and hasattr(self.greeting, "bank") else {"status": "AUDIO_NOT_GENERATED"}}}
+
+    def _preferences_status(self):
+        if self.preferences is None:
+            return {'enabled': False, 'code': 'not_configured'}
+        try:
+            return self.preferences.snapshot()
+        except Exception:
+            return {'enabled': False, 'code': 'preferences_unavailable'}
+
+    def _set_presence_mode(self, mode):
+        self._presence.set_mode(mode)
+        if self.preferences is not None:
+            try:
+                self.preferences.update(presence_mode=mode)
+            except Exception:
+                pass
 
     def _presence_context(self):
         if self.host is None:
@@ -284,6 +319,22 @@ class DesktopRuntime:
         elif action == "presence_mode" and self.character_life and value in ("normal", "quiet", "sleep", "off"):
             with self._lock:
                 self._requested_presence_mode = value
+        elif action == "presence_test" and self.character_life and value is None:
+            with self._lock:
+                if nonce in self._manual_test_nonces:
+                    return {'status': 'accepted', 'code': 'already_requested'}
+                self._manual_test_nonces.append(nonce)
+                reason = self._manual_presence_blocked()
+                if reason is not None:
+                    # An extra click cannot overwrite the active attempt's
+                    # receipt or enqueue another clip behind it.
+                    if self._manual_test['state'] not in ('queued', 'preparing', 'playing'):
+                        self._manual_test.update(state='blocked', code='presence_test_'+reason)
+                    return {'status': 'blocked', 'code': 'presence_test_'+reason}
+                self._manual_test_requested = True
+                self._manual_test_epoch = self._input_epoch
+                self._manual_test.update(state='queued', code='presence_test_queued')
+            return {'status': 'accepted', 'code': 'presence_test_queued'}
         elif action == "ui_activity" and self.character_life and type(value) is bool:
             # The GUI renews this short lease while a dialog/HUD is open.
             # HTTP admission never touches the audio owner or worker.
@@ -297,6 +348,36 @@ class DesktopRuntime:
         else:
             raise FeatureError("invalid_desktop_control")
         return {"status": "accepted", "code": "queued"}
+
+    def _manual_presence_blocked(self, *, queued=False):
+        if (self._closed or not self._ready or self._phase != 'ready' or self.host is None
+                or self.greeting is None or not callable(getattr(self.greeting, 'play_idle', None))
+                or self._require_face_presented and not self._face_presented.is_set()):
+            return 'not_ready'
+        if self._worker is not None or self._manual_test_requested and not queued:
+            return 'busy'
+        if self._input_waiting or self._user_cancel.is_set():
+            return 'conversation_active'
+        return self._presence.manual_blocked_reason(**self._presence_context())
+
+    def _run_manual_presence(self):
+        with self._lock:
+            if not self._manual_test_requested:
+                return
+            reason = self._manual_presence_blocked(queued=True)
+            if self._manual_test_epoch != self._input_epoch:
+                reason = 'conversation_active'
+            self._manual_test_requested = False
+            if reason is not None:
+                self._manual_test.update(state='blocked', code='presence_test_'+reason)
+                return
+            # A deliberate test never modifies mode or the rolling automatic
+            # counter. It does postpone the next natural opportunity.
+            self._presence.cancel()
+            self._manual_test.update(state='preparing', code='presence_test_preparing',
+                attempts=self._manual_test['attempts']+1)
+            if not self._start_greeting('idle', manual=True):
+                self._manual_test.update(state='blocked', code='presence_test_busy')
 
     def heartbeat(self):
         self._last_browser = self.clock()
@@ -421,20 +502,20 @@ class DesktopRuntime:
             raise FeatureError("desktop_not_ready")
         return self.host.queue_command(nonce, command)
 
-    def _start_greeting(self, category="boot"):
+    def _start_greeting(self, category="boot", *, manual=False):
         # Serialize admission with HTTP priority input. The worker only takes
         # this re-entrant lock for bounded event/result publication.
         with self._lock:
-            return self._start_cutscene(category)
+            return self._start_cutscene(category, manual=manual)
 
-    def _start_cutscene(self, category):
+    def _start_cutscene(self, category, *, manual=False):
         if self._require_face_presented and not self._face_presented.is_set():
             return
         if self._worker is not None or self.host is None or self.greeting is None or self.host.session.busy:
             return
         with self._lock:
             if self.character_life and self._input_waiting:
-                if category == "idle":
+                if category == "idle" and not manual:
                     self._presence.completed(False)
                 return
             if self._user_cancel.is_set():
@@ -443,20 +524,25 @@ class DesktopRuntime:
             self._cancel.clear()
         self._attempt += 1
         self._cutscene_category = category
+        self._cutscene_manual = manual
         self._cutscene_heard = False
+        self._cutscene_started_at = None
         self._cutscene_charged = False
         if category == "idle":
             self._idle_restore_code = self._code
         if category == "boot":
             self._boot_attempts += 1
+            self._spoken_greeting_status = 'loading_cached_greeting'
         else:
             self._idle_attempts += 1
         attempt = self._attempt
         try:
             self._lease = self.host.audio.acquire("greeting" if category == "boot" else "idle", stop=self.cancel_greeting)
         except FeatureError:
-            if category == "idle" and self._presence:
+            if category == "idle" and self._presence and not manual:
                 self._presence.completed(False)
+            if category == 'boot':
+                self._spoken_greeting_status = 'greeting_audio_busy'
             self._state("ready", "greeting_audio_busy")
             return
         self._result = None
@@ -483,9 +569,12 @@ class DesktopRuntime:
                 # A subsequent cancellation may retire UI events, but cannot
                 # undo the fact that the Python player already started.
                 with self._lock:
+                    if not self._cutscene_heard:
+                        self._cutscene_started_at = safe['at']
                     self._cutscene_heard = True
                     if category == "boot":
                         self._ever_played = True
+                        self._spoken_greeting_status = 'greeting_playing'
             if kind == "prepared":
                 safe["cues"] = fields.get("cues", [])
                 from .expression_contract import FACE_EMOTIONS
@@ -535,9 +624,13 @@ class DesktopRuntime:
             self._worker = None
             self.host.audio.release(self._lease)
             self._lease = None
-            if category == "idle" and self._presence:
+            if category == "idle" and self._presence and not manual:
                 self._presence.completed(False)
+            if category == 'boot':
+                self._spoken_greeting_status = 'greeting_worker_failed'
             self._state("ready", "greeting_worker_failed")
+            return False
+        return True
 
     def cancel_greeting(self):
         self._cancel.set()
@@ -574,7 +667,7 @@ class DesktopRuntime:
                 if self._cutscene_category == 'idle':
                     self.cancel_greeting()
             if requested is not None:
-                self._presence.set_mode(requested)
+                self._set_presence_mode(requested)
                 if requested != "normal" and self._cutscene_category == "idle":
                     self.cancel_greeting()
             if wake_off and self.host is not None:
@@ -594,6 +687,8 @@ class DesktopRuntime:
             self._user_cancel.clear()
             self._auto_attempted = True
             self._greeting_suppressed = True
+            if self._spoken_greeting_status == 'not_attempted':
+                self._spoken_greeting_status = 'greeting_cancelled'
             self._retry.clear()
         if self.browser is not None:
             try:
@@ -629,6 +724,7 @@ class DesktopRuntime:
             self._auto_attempted = True
             if self.silent_start:
                 self._greeting_suppressed = True
+                self._spoken_greeting_status = 'greeting_disabled'
                 self._state('ready', 'greeting_cancelled')
             else:
                 self._start_greeting()
@@ -678,11 +774,16 @@ class DesktopRuntime:
         if not self._performance_active():
             self._clear_presence_gaze()
         # A start may have been followed by GP8 cancellation before UI events
-        # were consumed. It still counts toward the audible 2/15-minute quota.
+        # were consumed. It still counts toward the audible 3/15-minute quota.
+        # Manual tests use the identical player path but a separate counter.
         with self._lock:
             if (self._cutscene_category == 'idle' and self._presence
                     and self._cutscene_heard and not self._cutscene_charged):
-                self._presence.started()
+                if self._cutscene_manual:
+                    self._manual_test.update(state='playing', code='presence_test_playing',
+                        started_count=self._manual_test['started_count']+1)
+                else:
+                    self._presence.started(at=self._cutscene_started_at)
                 self._cutscene_charged = True
         if self._worker is not None:
             if self._worker.is_alive() and self.clock() >= self._greeting_deadline:
@@ -710,13 +811,29 @@ class DesktopRuntime:
                     result = self._result or (False, "greeting_failed")
                     if self._greeting_timed_out:
                         result = (False, "greeting_timeout")
-                if self._phase == "error" and self._code == "browser_disconnected":
-                    self._disconnect_restore_code = result[1]
-                elif self._cutscene_category == "idle" and self._presence:
-                    self._presence.completed(bool(result[0] and self._cutscene_heard))
+                    if self._cutscene_category == 'boot':
+                        self._spoken_greeting_status = result[1]
+                if self._cutscene_category == "idle" and self._presence:
+                    if self._cutscene_manual:
+                        self._presence.cancel()
+                        if result[0] and self._cutscene_heard:
+                            state, code = 'completed', 'completed'
+                        elif result[1] == 'greeting_cancelled' or self._cancel.is_set() and not self._greeting_timed_out:
+                            state, code = 'cancelled', 'cancelled'
+                        elif result[1] == 'idle_unavailable':
+                            state, code = 'blocked', 'assets_unavailable'
+                        else:
+                            state, code = 'error', 'failed'
+                        self._manual_test.update(state=state, code='presence_test_'+code)
+                    else:
+                        self._presence.completed(bool(result[0] and self._cutscene_heard))
                     self._last_idle_code = result[1]
-                    if self._phase != "error" or self._code == "greeting_timeout":
+                    if self._phase == 'error' and self._code == 'browser_disconnected':
+                        self._disconnect_restore_code = self._idle_restore_code or 'greeting_completed'
+                    elif self._phase != "error" or self._code == "greeting_timeout":
                         self._state("ready", self._idle_restore_code or "greeting_completed")
+                elif self._phase == 'error' and self._code == 'browser_disconnected':
+                    self._disconnect_restore_code = result[1]
                 elif self._phase != "error" or self._code == "greeting_timeout":
                     self._state("ready", result[1])
         if self.host is not None and not (self.character_life and self._worker is not None and self._pending_user_input):
@@ -732,11 +849,13 @@ class DesktopRuntime:
             consume = getattr(self.host, 'consume_presence_request', None)
             requested = consume() if callable(consume) else None
             if requested in ('normal', 'quiet', 'sleep', 'off'):
-                self._presence.set_mode(requested)
+                self._set_presence_mode(requested)
                 if requested != 'normal' and self._cutscene_category == 'idle':
                     self.cancel_greeting()
             if self.host.volume.snapshot()['effective_level'] <= 0:
                 self.cancel_greeting()
+        if self.character_life:
+            self._run_manual_presence()
         if self.character_life and self.host is not None and self._ready and self._worker is None and self._phase == "ready":
             if not self._wake_attempted and not self.host.session.busy:
                 self._wake_attempted = True

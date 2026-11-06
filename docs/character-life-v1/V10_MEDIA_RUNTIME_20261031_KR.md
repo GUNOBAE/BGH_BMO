@@ -9,7 +9,95 @@
 [v10 문서](https://github.com/GUNOBAE/BGH_BMO/blob/2023f3a9c12ce4c0628afdfc8deda4a8831ec241/docs/voice-pack-v10/README_KR.md),
 [Pi 실제 인계](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6534420182).
 
-## 2026-11-06 후속 개선 — 실행본 증거·완료 지연·혼잣말 연출·팔 상태
+## 2026-11-06 일상 사용 마감 — 같은 BMO Candidate 아이콘
+
+최신 [Pi 인계6671555201](https://github.com/GUNOBAE/BGH_BMO/pull/40#issuecomment-6671555201)는
+**34175607…의 목표·설치·runner·실제 아이콘 프로세스 SHA 일치**를 확인했다. full-use142,
+normal, M04→M06→M05 실제 재생·EN/KO 자막·기존 음악 입 동작을 관측했다. 사용자의
+추가 요청으로 마지막 상태는 level0.05/muted=true였다. 최신 idle 연출은 그 음소거 이후
+NOT_RUN이며 사람 청취/팔 검수/실제 대화 지연은 여전히 별도다. 이전 설치본432/5a 기록은
+아래 역사 항목에 남긴다. 새 READY SHA의 설치를 이 관측으로 대신하지 않는다.
+
+이번 제품 경로:
+
+- 평상시 **얼굴 한 번 터치 → 메뉴 → 혼잣말 테스트 / 팔 움직이기**. 드래그·취소는
+  메뉴를 열지 않는다. 볼륨 HUD·음악·게임·사진 입력은 자기 화면이 소유한다.
+  **얼굴로 돌아가기** 후 Enter/GP8은 다시 PTT다. Esc/왼쪽 위 접근도 유지한다.
+- 정상 얼굴의 선택적 인사 캐시 안내띠를 제거했다. **준비 상태**에는 말하는 시작 인사와
+  **승인 시작 효과음** 상태를 따로 표시한다. 같은 기존 WAV를 얼굴 표시 뒤 앱당 한 번,
+  같은 MasterVolume/Mute와 단일 출력으로 재생한다. 메뉴 복귀/재연결/인사 재시도는
+  효과음을 다시 재생하지 않는다. 새 자산이나 유료 생성은 없다.
+- 자동 혼잣말은 **3–5분 기회, 이동하는15분 실제 player-start 최대3회**다. 시작 전
+  실패/취소는0회, 시작 후 중단은1회다. 자동 횟수와 수동 테스트 횟수는 분리한다.
+  쿼터 만료·활동 종료 후에는 새 간격을 두며 몰아 재생하지 않는다. 같은 클립30분 억제,
+  민감한 대화·대화/음악/게임/녹음·메뉴·음소거 억제는 유지한다.
+- **혼잣말 테스트**는 메뉴를 닫고 얼굴에서 저장 클립을 한 번 재생한다. 자동 OFF여도
+  가능하며 자동 설정·횟수를 바꾸지 않는다. 실제 ID/SHA의 표정·시선·WAV 입·선택 자막을
+  player-start에 적용한다. 연타/다른 audio owner/음소거는 이유를 표시하고 추가 예약하지
+  않는다. GP8/새 질문이 우선하며 종료·취소·오류 때 얼굴과 오디오를 정리한다.
+- **팔 움직이기**는 손 흔들기/왼팔 들기/오른팔 들기/양팔 들기/양팔 내리기/만세/
+  어깨 으쓱/팔 중지를 항상 표시한다. 버튼 존재와 현재 요청 가능 여부는 별개다.
+  자연어와 버튼은 같은 B1 named-gesture 경로를 쓴다. 요청 접수, B1 응답, 실제 움직임을
+  구분하며 대답 문구가 실물 완료를 미리 주장하지 않는다.
+- **팔 사용**과 **대화 중 몸짓**은 별도 저장 선호다. 처음 실물 검사를 통과한 뒤에만
+  아래 검수 기록을 만들고 같은 기본 아이콘에서 팔 사용을 켠다. 과거의 입회/전원 차단
+  준비를 현재 true로 저장하지 않는다. 저장하는 것은 사용자 선호와 과거 검수한 exact
+  보드 SHA/의존 파일 SHA/장치 identity/기존 보정 식별자다. 매 실행의 첫 실제 요청에
+  현재 파일·장치와 HELLO를 확인한다. 실패는 팔만 차단하고 자동 재시도하지 않는다.
+  OFF→ON/앱 재실행은 STOP/GP7/watchdog latch를 해제하지 않는다.
+- 음량/Mute·자막·혼잣말은 명시적 메뉴/음성 변경만 private
+  `${XDG_CONFIG_HOME:-~/.config}/bmo/preferences/preferences.json`에 저장한다.
+  처음 저장값이 없으면 기존 시작25%/자막OFF/런처 presence 기본값을 사용한다. 저장된
+  사용자 선택이 이후 같은 아이콘의 초기 옵션보다 우선한다. 팔 설정은 별도
+  `~/.config/bmo/arms/daily.json`이다. 잘못된 파일은 덮어쓰지 않고 해당 저장 상태를
+  준비 상태에서 알린다. 테스트는 주입 임시 저장소를 쓰며 실제 사용자 완료 턴에 쓰지 않는다.
+
+### Pi 적용과 기존 정상본 보존
+
+최신 CLOUD READY와 **그 exact SHA의 push/PR 각각3개 필수검사 성공**을 먼저 확인한다.
+현재 앱에서 **메뉴 → 종료** 후 기존 private release gate/runner로 같은 아이콘의 후보만
+ff-only 인수한다. dirty/분기/다른 실행 중 앱이면 멈추고 보존하며 reset/stash/force하지 않는다.
+**목표 SHA = 설치 SHA = runner 인수 SHA = 아이콘 실행본 SHA**를 run_id와 함께 기록한다.
+아래 read-only 확인은 실행 중 코드를 바꾸지 않는다.
+
+```bash
+cd /home/bgh/BMO_CHARACTER_LIFE
+git status --short
+git branch --show-current
+git rev-parse HEAD
+# 기존 private 인수 gate가 READY SHA/CI와 clean 상태를 검증한 후 동일 아이콘 실행
+python3 -B /home/bgh/BMO_private/tools/run_bmo_candidate.py
+```
+
+첫 전환 때 구버전의 메모리 설정은 자동 복원할 수 없다. Pi는 종료 전 실제 mute/level/
+자막/presence를 확인해 보존한다. 특히 마지막 사용자 음소거를 임의 해제하지 않는다.
+필요하면 새 코드의 `DailyPreferences().update(...)`로 확인한 값만 이관하고 같은 아이콘을
+실행한다. 이후 제품이 명시적 설정을 저장한다. OS mixer/키/기존 자산/정상본은 바꾸지 않는다.
+
+팔은 기존 아이콘의 **감독 팔 검사 (이번 실행만)** 에서 실제 현재 조건을 확인하고 검사한다.
+아래 기록 명령은 검사를 대신하지 않는다. 각 플래그는 **실제로 통과한 뒤 Pi 담당이** 넣는다.
+기본 명령은 읽기 전용이며 helper는 serial/서보/펌웨어에 쓰지 않는다.
+
+```bash
+PYTHONPATH=software .venv-device/bin/python -m bmo_ai.arm_usage
+# 실제 입회 검사 완료 뒤에만 실제 검수 세션 ID와 검토 SHA를 입력:
+PYTHONPATH=software .venv-device/bin/python -m bmo_ai.arm_usage \
+ --record-first-test --reviewed-code-sha <실제-검토한-64자리-SHA256> \
+ --test-session-id <실제-감독-검수-ID> \
+ --motion-observed --stop-verified --gp7-verified --watchdog-verified --physical-cutoff-verified
+```
+
+그 후 같은 기본 아이콘을 재실행하고 **팔 움직이기 → 팔 사용**을 켠다. 대화 몸짓은
+명시 동작·중지 검수 뒤 별도로 켠다. STOP 이후에는 현재 보드 상태에 따라 계속 차단될 수
+있으며 이 기록이나 재시작이 해제하지 않는다. 원래 GP7/8·GP10/11·600–2400µs·50Hz·좌우반전은
+그대로다. 정상본 복귀가 필요하면 후보를 메뉴에서 종료하고 기존 BMO_REAL_ROBOT의 검증된
+아이콘/실행 설정을 사용한다. 최신 전용 옵션을 옛 런처에 넘기거나 정상본을 덮어쓰지 않는다.
+
+실제 대화 단계별 시간은 최신 Pi에서도 UNMEASURED다. worktree SHA null과 합성 완료 기록
+오염은 코드에서 수정했지만 이것을 응답 속도 개선이라고 보고하지 않는다. 기존 사람 대화의
+수치가 전달되면 가장 큰 단계부터 비교하며 모델/음색/VAD를 근거 없이 바꾸지 않는다.
+
+## 이전 34175607 인계 기록 — 실행본 증거·완료 지연·혼잣말 연출·팔 상태
 
 시작 HEAD `5a926451ae08358921d7b48dce72be4484106c85`, clean, push/PR 6검사
 PASS를 확인했다. 사용자 음성 볼륨 PASS를 보존한다. 음악 반복/idle 침묵에 대해

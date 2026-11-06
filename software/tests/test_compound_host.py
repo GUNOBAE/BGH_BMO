@@ -78,12 +78,15 @@ class CompoundHostTests(unittest.TestCase):
     def pending_plan(self, *, replies=None):
         host, provider, clock, played=self.make_host(replies or [
             compound(step('stop_arms'),step('set_volume','level_100'))],arms=True)
-        # Exercise real model/session admission and B1 stop, but hold its
-        # completion receipt as position-unverified so the tail must wait.
+        # Exercise real model/session admission and B1 stop, then inject a
+        # pending receipt to exercise asynchronous compound completion. A
+        # known STOP ACK is now a terminal protocol result, not sensed motion.
         self.assertTrue(host.start_question('Stop your arms and set volume to one hundred.'))
         self.drive(host,lambda:host.compound.active is not None and host.compound.active['request_id'] is not None)
         self.assertEqual(host.compound.active['index'],0)
         self.assertEqual(host.volume.snapshot()['level'],.25)
+        host._remember(HostResult(host.compound.active['request_id'], 'accepted',
+            'arm_stop_requested', simulated=False, completed=False, completion='position_unverified'))
         return host,provider,clock,played
 
     def test_pending_receipt_waits_then_exact_completed_receipt_dispatches_tail_once(self):

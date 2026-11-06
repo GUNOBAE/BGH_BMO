@@ -524,6 +524,25 @@ class FeatureResponses:
         # root attaches it only when the operator opts into local capture.
         self.local_turn_observer = None
 
+    def _arm_preparation(self, reply):
+        """A semantic request precedes the B1 result, never proves movement."""
+        if not reply.human_device_request:
+            return reply
+        steps = reply.action_plan or ((reply.intent,) if reply.intent else ())
+        arms = [step for step in steps if step.name in ('arm_gesture', 'stop_arms')]
+        if not arms:
+            return reply
+        if len(steps) > 1:
+            speech, translation = "Okay. I'll try those steps in order.", "좋아. 순서대로 해 볼게."
+        elif arms[0].name == 'stop_arms':
+            speech, translation = "I'm asking my arms to stop.", "팔에 멈추라는 요청을 보낼게."
+        elif self.context.get('arm_status', {}).get('request_allowed') is False:
+            speech = "My arms aren't ready yet. Check Move arms in the menu."
+            translation = "아직 팔을 쓸 준비가 안 됐어. 메뉴의 팔 움직이기를 확인해 줘."
+        else:
+            speech, translation = "Okay, I'll ask my arms to do that.", "좋아, 팔에 그 동작을 요청할게."
+        return replace(reply, speech=speech, captions={'en': speech, 'ko': translation}, gesture='none')
+
     def create(self, **request):
         self.last_reply = None
         self.last_resolution = None
@@ -650,6 +669,7 @@ class FeatureResponses:
                 request_validation=reply.request_validation,
                 request_kind=reply.request_interpretation.get("kind") if reply.request_interpretation else "none",
                 semantic_emotion=semantic_acting)
+        reply = self._arm_preparation(reply)
         self.last_reply = reply
         return SimpleNamespace(status="completed", incomplete_details=None, error=None, output_text=reply.speech)
 

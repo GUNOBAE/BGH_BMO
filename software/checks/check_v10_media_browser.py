@@ -372,7 +372,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.wait_for_function("()=>document.querySelector('#face').contentWindow.BMOFace.getState().mouth==='closed'")
                 page.locator('#music-back').click();wait(lambda state:state['mode']=='conversation')
                 page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
-                page.locator('#face').click(position={'x':400,'y':200});page.keyboard.press('Enter')
+                page.locator('#face').focus();page.keyboard.press('Enter')
                 wait(lambda state:state['test_fixture']['brain']==baseline['brain']+1 and not state['conversation_busy'])
                 assert page.evaluate('()=>window.__browserAudioCalls')==0
                 # Long GP8 must stop exactly once and consume its own key-up.

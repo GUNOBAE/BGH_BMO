@@ -73,18 +73,64 @@ class PresenceSchedulerTests(unittest.TestCase):
         self.clock.now += 180
         self.assertTrue(value.due())
 
-    def test_at_most_two_successful_clips_in_rolling_fifteen_minutes(self):
+    def test_three_actual_starts_in_rolling_fifteen_minutes_then_a_fresh_interval(self):
         value = self.scheduler()
-        for now in (180, 360):
-            self.clock.now = now;self.assertTrue(value.due());value.completed(True)
-        for now in (540, 1000, 1079):
+        for now in (180, 360, 540):
+            self.clock.now = now;self.assertTrue(value.due())
+            value.started();value.completed(True)
+        self.assertEqual(value.snapshot()['heard_in_15_minutes'], 3)
+        self.assertEqual(value.snapshot()['limit_per_15_minutes'], 3)
+        # Capacity returns at1080, but no queued burst is released there.
+        for now in (720, 1000, 1079, 1080, 1259):
             self.clock.now = now;self.assertFalse(value.due())
-        self.clock.now = 1080
-        self.assertTrue(value.due());value.completed(True)
-        self.assertEqual(value.snapshot()["heard_in_15_minutes"], 2)
-        value.set_mode("quiet");value.set_mode("normal")
+        self.clock.now = 1260
+        self.assertTrue(value.due());self.assertFalse(value.due())
+        value.started();value.completed(True)
+        self.assertEqual(value.snapshot()['heard_in_15_minutes'], 2)
+        value.set_mode('quiet');value.set_mode('normal')
+        self.assertFalse(value.due())
         self.clock.now += 180
-        self.assertTrue(value.due())  # The second old event has now aged out.
+        self.assertTrue(value.due())
+
+    def test_completion_without_player_start_never_charges_and_interval_uses_new_bounds(self):
+        calls = []
+        def choose(low, high):calls.append((low, high));return high
+        value = PresenceScheduler(clock=self.clock, mode='normal', interval=choose)
+        self.clock.now = 299;self.assertFalse(value.due())
+        self.clock.now = 300;self.assertTrue(value.due())
+        value.completed(True)
+        self.assertEqual(value.snapshot()['heard_in_15_minutes'], 0)
+        self.assertEqual(value.snapshot()['next_in_seconds'], 300.)
+        self.assertTrue(all(pair == (180.,300.) for pair in calls))
+
+    def test_activity_return_and_expired_quota_cannot_flush_pending_clips(self):
+        value = self.scheduler()
+        for now in (180,360,540):
+            self.clock.now=now;self.assertTrue(value.due());value.started();value.completed(True)
+        self.clock.now=2000
+        self.assertFalse(value.due(game_active=True))
+        self.assertFalse(value.due())
+        self.clock.now=2180
+        self.assertTrue(value.due());self.assertFalse(value.due())
+        value.started();value.completed(True)
+        self.assertFalse(value.due())
+        self.assertEqual(value.snapshot()['heard_in_15_minutes'],1)
+
+    def test_manual_eligibility_ignores_mode_and_menu_but_not_real_owner_or_distress(self):
+        value = self.scheduler('off')
+        self.assertIsNone(value.manual_blocked_reason(settings_active=True))
+        self.assertEqual(value.manual_blocked_reason(muted=True),'muted')
+        self.assertEqual(value.manual_blocked_reason(audio_busy=True),'audio_busy')
+        value.note_distress()
+        self.assertEqual(value.manual_blocked_reason(),'recent_distress')
+        self.assertEqual(value.snapshot()['mode'],'off')
+        self.assertEqual(value.snapshot()['heard_in_15_minutes'],0)
+
+    def test_delayed_owner_uses_actual_start_timestamp_not_poll_time(self):
+        value=self.scheduler();self.clock.now=180;self.assertTrue(value.due())
+        self.clock.now=250;value.started(at=180);value.completed(True)
+        self.clock.now=1080
+        self.assertEqual(value.snapshot()['heard_in_15_minutes'],0)
 
     def test_modes_strong_emotions_and_all_foreground_owners_suppress_voice(self):
         cases = [dict(phase="listening"), dict(phase="thinking"), dict(phase="speaking"),
@@ -103,11 +149,11 @@ class PresenceSchedulerTests(unittest.TestCase):
 
     def test_actual_starts_count_once_even_when_cancelled_before_owner_observes_start(self):
         value = self.scheduler()
-        for now in (180, 360):
+        for now in (180, 360, 540):
             self.clock.now = now;self.assertTrue(value.due())
             value.cancel();value.started();value.started();value.completed(False)
-        self.assertEqual(value.snapshot()['heard_in_15_minutes'], 2)
-        self.clock.now = 540
+        self.assertEqual(value.snapshot()['heard_in_15_minutes'], 3)
+        self.clock.now = 720
         self.assertFalse(value.due())
 
     def test_recent_distress_and_user_input_reset_idle_without_counting_a_clip(self):
@@ -122,7 +168,7 @@ class PresenceSchedulerTests(unittest.TestCase):
         self.assertFalse(value.due(sensitive=True));self.assertTrue(value.snapshot()["recent_distress"])
 
     def test_invalid_delays_modes_and_boolean_inputs_fail_safely(self):
-        for delay in (179, 421, float("nan"), True):
+        for delay in (179, 301, float("nan"), True):
             with self.assertRaises(PresenceError): PresenceScheduler(interval=lambda *_: delay)
         value = self.scheduler()
         with self.assertRaises(PresenceError): value.set_mode("noisy")
@@ -139,9 +185,9 @@ class PresenceSchedulerTests(unittest.TestCase):
         for context, reason in cases:
             self.assertEqual(value.snapshot(**context)['suppression_reason'], reason)
             self.assertEqual(value.snapshot()['next_in_seconds'], remaining)
-        for now in (180,360):
+        for now in (180,360,540):
             self.clock.now = now;self.assertTrue(value.due());value.started();value.completed(True)
-        self.clock.now = 540
+        self.clock.now = 720
         state = value.snapshot()
         self.assertEqual(state['suppression_reason'], 'quota')
         self.assertEqual(state['next_in_seconds'], 540.)

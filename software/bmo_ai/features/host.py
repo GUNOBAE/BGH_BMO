@@ -25,6 +25,7 @@ from .resources import ModeManager, AudioFocus, InputRouter, GazeArbiter, LOGICA
 from .runtime import RuntimePolicy
 from .camera.diagnostics import photo_diagnostic, focus_diagnostic
 from .video_flow import ProductVideoFlow
+from .motion.legacy_host import NAMED_GESTURES
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +75,9 @@ class HostControl:
             valid = (type(self.value) is dict and set(self.value) == {'level', 'muted'}
                 and type(self.value['level']) in (int, float) and math.isfinite(self.value['level'])
                 and 0 <= self.value['level'] <= 1 and type(self.value['muted']) is bool)
+        elif self.action == 'arm_usage':
+            valid = (type(self.value) is dict and set(self.value) == {'enabled', 'conversation_gestures'}
+                     and all(type(value) is bool for value in self.value.values()))
         elif self.action in ('voice_select', 'voice_approve', 'voice_preview'):
             import re
             from ..voice_pack import EVENT_CANDIDATES
@@ -151,7 +155,8 @@ class FeatureHost(ProductVideoFlow):
                  wake_question_wait=5., one_turn_diagnostic=None, photo_feedback=True,
                  playable_games=False, voice_pack_directory=None, request_cooldown=0,
                  session_request_limit=None, estimated_request_cost=None, estimated_session_cost_limit=None,
-                 completed_turn_store=None, arm_supervision_requested=None, emotion_arms_requested=None):
+                 completed_turn_store=None, arm_supervision_requested=None, emotion_arms_requested=None,
+                 arm_usage=None, preferences=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
         from .camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
@@ -194,8 +199,17 @@ class FeatureHost(ProductVideoFlow):
             self.runtime = replace(self.runtime, music_supervised=True)
         elif self.runtime.music_supervised:
             raise FeatureError("music_configuration_conflict")
+        from .motion.daily_usage import DailyArmController
+        if arm_usage is not None and not isinstance(arm_usage, DailyArmController):
+            raise FeatureError('arm_usage_invalid')
+        self.arm_usage = arm_usage
+        if self.runtime.arms_commissioned and (arm_usage is None or motion is None
+                or motion is not arm_usage.motion):
+            raise FeatureError('arm_commissioned_injection_required')
+        if arm_usage is not None and arm_usage.motion is not None and not self.runtime.arms_commissioned:
+            raise FeatureError('arm_configuration_conflict')
         if (type(emotion_arms) is not bool or
-                (emotion_arms and not (self.runtime.simulate or self.runtime.arms_supervised))):
+                (emotion_arms and not (self.runtime.simulate or self.runtime.arms_enabled))):
             raise FeatureError("emotion_arms_requires_supervision")
         self._emotion_arms = emotion_arms
         self._arm_supervision_requested = (self.runtime.arms_supervised if arm_supervision_requested is None
@@ -209,8 +223,8 @@ class FeatureHost(ProductVideoFlow):
         from .motion.live_feature_v2 import LiveArmMotionFeatureV2
         from .motion.legacy_host import LegacyMotionFeature
         physical_motion = (LiveArmMotionFeatureV2, LegacyMotionFeature)
-        if ((self.runtime.arms_supervised and not isinstance(motion, physical_motion))
-                or (isinstance(motion, physical_motion) and not self.runtime.arms_supervised)):
+        if ((self.runtime.arms_enabled and not isinstance(motion, physical_motion))
+                or (isinstance(motion, physical_motion) and not self.runtime.arms_enabled)):
             raise FeatureError("arm_supervision_injection_required")
         if any(type(value) is not bool for value in (camera_supervised, camera_video_supervised)):
             raise FeatureError("invalid_camera_runtime")
@@ -381,6 +395,16 @@ class FeatureHost(ProductVideoFlow):
             **({"character_life": True} if character_life else {}))
         from ..master_volume import MasterVolume
         self.volume = getattr(self.session.voice, 'volume', None) or MasterVolume(self.config.fish_gain)
+        self.preferences = preferences
+        try:
+            saved_preferences = preferences.load() if preferences is not None else {}
+            if 'volume' in saved_preferences:
+                self.volume.set(**saved_preferences['volume'])
+            if 'subtitle_mode' in saved_preferences:
+                self.session.set_subtitles(saved_preferences['subtitle_mode'])
+        except Exception:
+            pass  # An optional settings file cannot prevent the face/dialogue startup.
+        self._saved_subtitle_mode = self.session.subtitle_snapshot()['mode']
         if getattr(self.media, 'backend', None) is not None:
             self.media.backend.volume = self.volume
         from ..voice_pack import OrganizedVoicePack, default_voice_pack_directory
@@ -1193,6 +1217,8 @@ class FeatureHost(ProductVideoFlow):
 
     def _set_volume(self, value):
         self.volume.set(level=value['level'], muted=value['muted'])
+        if self.preferences is not None:
+            self.preferences.update(volume=dict(level=value['level'], muted=value['muted']))
         # Muting is immediate for an owned utterance. It never starts playback
         # or regenerates a WAV, and does not change its synthesis fingerprint.
         if value['muted'] or value['level'] == 0:
@@ -1299,8 +1325,14 @@ class FeatureHost(ProductVideoFlow):
                 return self._finish_result(HostResult(request, 'accepted', 'video_stopping', simulated=self.runtime.simulate))
             elif name == 'stop_arms':
                 self.motion.stop()
-                return self._finish_result(HostResult(request, 'succeeded' if not self.runtime.simulate else 'simulated',
-                    'arm_stop_requested', simulated=self.runtime.simulate, completed=False, completion='position_unverified'))
+                motion = self.motion.snapshot()
+                acknowledged = motion.get('transport', {}).get('last_response_code') == 'STOPPED'
+                failed = bool(motion.get('last_error_code')) or motion.get('reason_code') in ('arm_link_unknown', 'stop_unverified')
+                return self._finish_result(HostResult(request, 'simulated' if self.runtime.simulate else
+                    'unknown' if failed else 'succeeded',
+                    'arm_stop_acknowledged' if acknowledged else 'arm_stop_unverified' if failed else 'arm_stop_requested',
+                    simulated=self.runtime.simulate, executed=acknowledged, completed=not failed,
+                    completion='ack_position_unverified' if acknowledged else 'not_verified' if failed else 'local_stop_only'))
             elif name in ('set_volume', 'mute_audio', 'unmute_audio', 'volume_up', 'volume_down'):
                 from .reply import volume_percent
                 state = self.volume.snapshot()
@@ -1360,6 +1392,8 @@ class FeatureHost(ProductVideoFlow):
                 self.gaze.clear("camera")
                 self._queue_local_event('tracking_stopped')
             elif name == "arm_gesture":
+                if self.arm_usage is not None and not self.arm_usage.enabled:
+                    raise FeatureError('arm_usage_off')
                 turn = self.session.snapshot()["turn_id"] or "idle"
                 self.motion.set_context(self.session.session_id, turn, self.modes.generation)
                 result = self.motion.submit(intent.target, request_id=request, session_id=self.session.session_id,
@@ -1428,7 +1462,8 @@ class FeatureHost(ProductVideoFlow):
             result = HostResult(request, "accepted", "queued").public()
             try:
                 self._command_sequence += 1
-                self._commands.put_nowait((1, self._command_sequence, request, intent, generation, self._command_epoch))
+                priority = 0 if isinstance(intent, HostIntent) and intent.name == 'stop_arms' else 1
+                self._commands.put_nowait((priority, self._command_sequence, request, intent, generation, self._command_epoch))
                 if ((isinstance(intent, HostIntent) and intent.name == 'return_to_face')
                         or isinstance(intent, HostControl) and intent.action in ('reset', 'ptt')):
                     self._photo_cancel_epoch += 1
@@ -1473,6 +1508,7 @@ class FeatureHost(ProductVideoFlow):
                     self.cancel_conversation()
             elif action == 'subtitles':
                 self.session.set_subtitles(value)
+                self._save_subtitle_preference()
             elif action == 'photo_preview_ready':
                 self._preview_presented(value)
             elif action == 'photo_focus':
@@ -1484,6 +1520,19 @@ class FeatureHost(ProductVideoFlow):
                 return self._remember(HostResult(request, 'simulated' if self.runtime.simulate else 'succeeded',
                     'volume_applied', simulated=self.runtime.simulate, executed=not self.runtime.simulate,
                     completed=True, completion='output_setting_applied'))
+            elif action == 'arm_usage':
+                if self.arm_usage is None:
+                    raise FeatureError('arm_usage_unavailable')
+                from .motion.daily_usage import ArmUsageError
+                try:
+                    self.arm_usage.configure(value)
+                except ArmUsageError as error:
+                    raise FeatureError(error.code) from None
+                self._emotion_arms_requested = value['conversation_gestures']
+                self._emotion_arms = (self.runtime.arms_enabled and self.arm_usage.enabled
+                                      and self.arm_usage.conversation_gestures)
+                return self._remember(HostResult(request, 'succeeded', 'arm_preferences_saved',
+                    simulated=self.runtime.simulate, completed=True, completion='setting_saved'))
             elif action == 'provider_recheck':
                 reset = getattr(self.session.voice, 'reset_provider_error', None)
                 if callable(reset):
@@ -1783,6 +1832,33 @@ class FeatureHost(ProductVideoFlow):
         requested, self._presence_request = self._presence_request, None
         return requested
 
+    def _arm_action_status(self):
+        """Admission evidence only; an ACK never verifies a servo position."""
+        motion = self.motion.snapshot()
+        if self.arm_usage is not None and not self.arm_usage.enabled:
+            reason = 'arm_usage_off'
+        elif not self.runtime.simulate and not self.runtime.arms_enabled:
+            reason = (self.arm_usage.snapshot().get('code', 'arm_commissioning_required')
+                      if self.arm_usage is not None else 'arm_runtime_off')
+        elif motion.get('closed') or motion.get('stopped'):
+            reason = 'arm_closed' if motion.get('closed') else 'arm_stopped'
+        elif motion.get('blocked_reasons'):
+            reason = motion['blocked_reasons'][0]
+        elif motion.get('active') or motion.get('queued'):
+            reason = 'arm_busy'
+        else:
+            reason = 'request_allowed'
+        return dict(request_allowed=reason == 'request_allowed', code=reason,
+                    transport_acknowledged=motion.get('transport', {}).get('negotiated') is True,
+                    physical_verified=False)
+
+    def _save_subtitle_preference(self):
+        mode = self.session.subtitle_snapshot()['mode']
+        if mode != self._saved_subtitle_mode:
+            if self.preferences is not None:
+                self.preferences.update(subtitle_mode=mode)
+            self._saved_subtitle_mode = mode
+
     def _confirmation_context(self):
         pending = self._pending_confirmation
         if (pending and pending['generation'] == self.modes.generation
@@ -1812,9 +1888,10 @@ class FeatureHost(ProductVideoFlow):
             'tracking': dict(allowed=self.runtime.simulate or self.runtime.camera_supervised,
                 detector_available=self.camera.snapshot().get('tracking_available', False), identity_recognition=False),
             'volume': self.volume.snapshot(),
-            'arm_actions': self.motion.snapshot().get('supported_gestures', []),
+            'arm_actions': sorted(NAMED_GESTURES),
+            'arm_status': self._arm_action_status(),
             "arm": ("mock_ack_position_unverified" if self.runtime.simulate
-                    else "explicit_supervised_position_unverified" if self.runtime.arms_supervised
+                    else "explicit_current_request_position_unverified" if self.runtime.arms_enabled
                     else "denied"),
             "imu": "physical_unverified_no_control",
             "subtitle_mode": self.session.subtitle_snapshot()['mode'],
@@ -2225,6 +2302,15 @@ class FeatureHost(ProductVideoFlow):
                     gesture_id=plan.gesture_id if self.character_life and plan is not None else data[0],
                     plan_emotion=plan.face_emotion if plan is not None else None,
                     player_start_seen=False, player_start_fresh=False)
+                proposal = self._proposals[turn]
+                if (proposal['human_device_request'] and not proposal['action_plan']
+                        and proposal['intent'] is not None and proposal['intent'].name == 'stop_arms'):
+                    # A validated current stop need not wait for the spoken
+                    # acknowledgement to finish. Dispatch on this owner thread
+                    # once; the later ended event cannot dispatch it again.
+                    self.execute(proposal['intent'], request_id='spoken_device_'+uuid5(self._namespace, turn).hex,
+                                 expected_generation=generation)
+                    proposal['intent'] = None
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
                 fresh = 0 <= self.clock() - at <= .5
@@ -2260,7 +2346,8 @@ class FeatureHost(ProductVideoFlow):
                 self._arm_turn_state.update(stage='player_started' if fresh else 'stale',
                     player_start_seen=True, player_start_fresh=fresh,
                     gesture_id=proposal['gesture'], playback_emotion=self.session.snapshot()['emotion'])
-                if ((self.runtime.simulate or self.runtime.arms_supervised)
+                if ((self.runtime.simulate or self.runtime.arms_enabled)
+                        and (self.arm_usage is None or self.arm_usage.enabled and self.arm_usage.conversation_gestures)
                         and (self._emotion_arms or self.runtime.simulate and not self.character_life)
                         and proposal["gesture"] != "none" and self.clock() - at <= .5
                         and self.session.snapshot()["playback"] == "started"):
@@ -2500,6 +2587,7 @@ class FeatureHost(ProductVideoFlow):
         self.compound.tick()
         self._tick_idle_gaze()
         self._tick_local_events()
+        self._save_subtitle_preference()
         self._refresh()
 
     def _refresh(self):
@@ -2513,16 +2601,21 @@ class FeatureHost(ProductVideoFlow):
             preflight=motion.get('preflight', dict(status='NOT_REPORTED', scope='software_adapter')),
             transport=motion.get('transport', dict(status='NOT_REPORTED', negotiated=False, usable=False)),
             adapter_readiness=motion.get('readiness', 'UNVERIFIED'), physical_verified=False)
-        arms.update(runtime_enabled=self.runtime.arms_supervised or self.runtime.simulate,
-            supported_gestures=motion.get('supported_gestures', []),
+        arms.update(runtime_enabled=self.runtime.arms_enabled or self.runtime.simulate,
+            supported_gestures=sorted(NAMED_GESTURES),
+            usage=self.arm_usage.snapshot() if self.arm_usage is not None else None,
+            action_status=self._arm_action_status(),
             blocked_reasons=list(motion.get('blocked_reasons', [])) +
                 ([getattr(self, '_arm_setup_error', None) or 'arm_runtime_off']
-                 if not self.runtime.simulate and not self.runtime.arms_supervised else []))
+                 if not self.runtime.simulate and not self.runtime.arms_enabled else []))
         from .motion.runtime_status import conversation_arm_status
         arms.update(conversation_arm_status(simulate=self.runtime.simulate,
             supervised_requested=self._arm_supervision_requested, supervised_effective=self.runtime.arms_supervised,
             emotion_arms_requested=self._emotion_arms_requested, emotion_arms_effective=self._emotion_arms,
-            motion=motion, turn_state=self._arm_turn_state, setup_error=getattr(self, '_arm_setup_error', None)))
+            motion=motion, turn_state=self._arm_turn_state, setup_error=getattr(self, '_arm_setup_error', None),
+            commissioned_requested=self.arm_usage is not None and self.arm_usage.enabled,
+            commissioned_effective=self.runtime.arms_commissioned and self.arm_usage.enabled,
+            usage_enabled=self.arm_usage.enabled if self.arm_usage is not None else None))
         ptt = self.microphone.snapshot() if self.microphone is not None else self.pcm.snapshot()
         if not self.turn_diagnostics.enabled:
             ptt = {key: value for key, value in ptt.items()
@@ -2537,6 +2630,8 @@ class FeatureHost(ProductVideoFlow):
             "mode": self.modes.mode, "mode_generation": self.modes.generation,
             "mode_error": self.modes.last_error, "audio_owner": self.audio.owner,
             "ui_menu": dict(self._ui_menu),
+            "preferences": self.preferences.snapshot() if self.preferences is not None else {'enabled': False, 'code': 'not_configured'},
+            "arm_usage": self.arm_usage.snapshot() if self.arm_usage is not None else None,
             "conversation_busy": self.session.busy, "emotion": face["emotion"],
             "phase": face["phase"], "gaze": self.gaze.resolve(phase=face["phase"], generation=self.modes.generation),
             "games": {"catalog": [item.public() for item in self.games.catalog()], **self.games.snapshot()},

@@ -22,7 +22,7 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
     """Product routing with native keys; only cache/PCM/provider IO is injected."""
     from playwright.sync_api import sync_playwright
     face=FIXTURE if profile=="ci-synthetic" else Path(SCREEN_PROFILES[profile]["default_path"])
-    # A genuinely missing cache exercises the product's startup notice button.
+    # A genuinely missing optional cache stays in readiness, without covering the face.
     child=desktop.CHILD.replace("if scenario=='greeting_missing':",
         "if scenario in ('greeting_missing','ptt_slow'):")
     assert child!=desktop.CHILD
@@ -74,33 +74,39 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                         return result
                     page.goto(fixture.url,wait_until="domcontentloaded")
                     page.wait_for_function("()=>BMODesktop.state?.phase==='ready'&&BMODesktop.state.code==='greeting_missing'&&BMODesktop.features?.ptt?.enabled")
-                    assert page.locator("#notice-menu").is_visible()
-                    page.locator("#notice-menu").click()
+                    assert not page.locator("#notice").is_visible()
+                    page.locator("#face").click(position={"x":400,"y":230})
+                    page.wait_for_function("()=>document.querySelector('#menu').open")
+                    page.locator("#system-menu").click()
+                    page.wait_for_function("()=>document.querySelector('#system-dialog').open")
                     page.locator("#greeting-retry").focus()
                     with page.expect_request(lambda request:request.url.endswith('/api/desktop')
                             and request.method=='POST' and request.post_data_json['payload']['action']=='retry_greeting'):
                         press_enter()
                     page.wait_for_function("()=>BMODesktop.state?.greeting_attempts===2&&BMODesktop.state.phase==='ready'&&BMODesktop.state.code==='greeting_missing'")
-                    assert page.locator("#menu").evaluate("e=>e.open")
+                    assert page.locator("#system-dialog").evaluate("e=>e.open")
                     assert fixture.features()['test_fixture']['mic_sources']==0
-                    page.locator("#resume").focus();press_enter()
-                    page.wait_for_function("()=>!document.querySelector('#menu').open&&document.activeElement.id==='face'")
-                    checks.append("startup greeting retry button keeps normal menu Enter behavior and does not become a dialogue PTT")
+                    page.locator("#system-dialog .dialog-close").focus();press_enter()
+                    page.wait_for_function("()=>!document.querySelector('#system-dialog').open&&document.activeElement.id==='face'")
+                    assert not page.locator("#notice").is_visible()
+                    checks.append("missing optional greeting leaves the face clear; readiness retry preserves native menu Enter without a dialogue PTT")
 
-                    page.locator("#notice-menu").focus()
-                    assert page.evaluate("()=>document.activeElement.id")=="notice-menu",page.evaluate("()=>document.activeElement.outerHTML")
+                    page.locator("#face-volume-trigger").wait_for(state="visible")
+                    page.locator("#face-volume-trigger").focus()
+                    assert page.evaluate("()=>document.activeElement.id")=="face-volume-trigger",page.evaluate("()=>document.activeElement.outerHTML")
                     press_enter()
                     audit=wait(lambda s:s['test_fixture']['mic_sources']>=1 or page.locator('#menu').evaluate('e=>e.open'))['test_fixture']
                     assert audit["mic_sources"]==1 and not page.locator("#menu").evaluate("e=>e.open"),{
-                        "scenario":"startup_notice_button","mic_sources":audit["mic_sources"],
+                        "scenario":"face_control_residual_focus","mic_sources":audit["mic_sources"],
                         "menu_open":page.locator("#menu").evaluate("e=>e.open"),
                         "evidence":page.evaluate("()=>BMODesktop.inputEvidence")}
                     finish_turn(1)
-                    checks.append("actual missing-cache startup notice focus + native Enter down/up starts one PTT instead of clicking menu")
+                    assert not page.locator("#face-volume").is_visible()
+                    checks.append("native Enter down/up from residual face-control focus starts one PTT without opening a menu or volume pane")
 
                     # Native Enter activation must still work INSIDE a menu.
                     # Closing it must not leave the opener's button as a trap.
-                    page.locator("#notice-menu").click()
+                    page.locator("#face").click(position={"x":400,"y":230})
                     page.wait_for_function("()=>document.querySelector('#menu').open")
                     page.locator("#resume").focus();press_enter()
                     page.wait_for_function("()=>!document.querySelector('#menu').open&&document.activeElement.id==='face'")
@@ -113,17 +119,18 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page.evaluate("""()=>{window.__focusMenuOpens=0;new MutationObserver(rows=>{
                         for(const row of rows)if(row.oldValue===null)window.__focusMenuOpens++;
                     }).observe(document.querySelector('#menu'),{attributes:true,attributeFilter:['open'],attributeOldValue:true});}""")
-                    page.locator("#notice-menu").focus()
+                    page.locator("#face-volume-trigger").wait_for(state="visible")
+                    page.locator("#face-volume-trigger").focus()
                     page.keyboard.down("Enter");page.keyboard.down("Enter");page.keyboard.up("Enter")
                     finish_turn(3)
                     assert page.evaluate("()=>window.__focusMenuOpens")==0
                     assert page.evaluate("()=>BMODesktop.inputEvidence.repeats_ignored")>=1
-                    checks.append("held native Enter/repeat on residual notice-button focus opens zero menus and admits exactly one PTT")
+                    checks.append("held native Enter/repeat on residual face-control focus opens zero menus and admits exactly one PTT")
 
-                    page.locator("#face").click(position={"x":400,"y":230});press_enter();finish_turn(4)
+                    page.locator("#face").focus();press_enter();finish_turn(4)
                     checks.append("same-origin face iframe native Enter down/up still reaches the single PTT owner")
 
-                    page.locator('#notice-menu').click();page.locator('#talk').focus();press_enter()
+                    page.locator('#face').click(position={'x':400,'y':230});page.locator('#talk').focus();press_enter()
                     page.wait_for_function("()=>!document.querySelector('#menu').open&&document.activeElement.id==='face'")
                     finish_turn(5)
                     checks.append("native menu Talk Enter starts exactly one PTT; menu-close face focus restoration does not cancel that capture")
@@ -145,7 +152,7 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page.locator('#focus-editors').evaluate('e=>e.remove()')
                     checks.append("input/textarea and nested contenteditable retain native Enter editing without PTT")
 
-                    page.locator('#notice-menu').click();page.locator('#games').click()
+                    page.locator('#face').click(position={'x':400,'y':230});page.locator('#games').click()
                     page.wait_for_function("()=>document.querySelector('#game-menu').open&&document.querySelector('#game-list button:not(:disabled)')")
                     page.locator('#game-list button:not(:disabled)').first.focus();press_enter()
                     wait(lambda s:s['mode']=='game')
@@ -162,10 +169,11 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     checks.append("open game menu native Enter launches a fixture game; gameplay Enter sends START down/up with zero PTT; game return restores face focus")
 
                     hold=Path(directory)/'hold-provider';hold.write_text('synthetic provider wait')
-                    page.locator('#notice-menu').focus();press_enter()
+                    page.locator('#face-volume-trigger').wait_for(state='visible')
+                    page.locator('#face-volume-trigger').focus();press_enter()
                     wait(lambda s:s['phase']=='thinking' and s['test_fixture']['brain']==6)
                     # Simulate the exact residual focus during thinking too.
-                    page.locator('#notice-menu').focus()
+                    page.locator('#face-volume-trigger').focus()
                     assert fixture.features()['phase']=='thinking'
                     press_enter()
                     wait(lambda s:s['phase']=='idle')
@@ -174,7 +182,7 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert cancelled['test_fixture']['mic_sources']==cancelled['test_fixture']['mic_closed']==6
                     assert cancelled['test_fixture']['synthesis']==5
                     assert not page.locator('#menu').evaluate('e=>e.open')
-                    checks.append("thinking GP8/Enter from residual notice-button focus cancels the actual pending provider without a menu or late playback")
+                    checks.append("thinking GP8/Enter from residual face-control focus cancels the actual pending provider without a menu or late playback")
 
                     code,counts,error=fixture.finish()
                     assert code==0,error
@@ -235,7 +243,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                     checks.append("startup greeting is cache-only; idle opens zero PCM sources/STT/brain")
 
                     # Focus the unchanged face iframe; all input belongs to the parent adapter.
-                    page.locator("#face").click(position={"x": 400, "y": 230})
+                    page.locator("#face").focus()
                     page.keyboard.down("Enter")
                     page.keyboard.down("Enter")  # Browser repeat must not create a second turn.
                     wait_features(lambda s:s['ptt']['microphone_open'] and s['phase']=='listening')
@@ -308,7 +316,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                     checks.append("game Enter increments only the blocked-mode input evidence and preserves the single admitted PTT request")
 
                     # New capture, then focus-loss cancellation before speech validation.
-                    page.locator("#face").click(position={"x": 400, "y": 230})
+                    page.locator("#face").focus()
                     page.keyboard.press("Enter")
                     wait_features(lambda s:s['ptt']['microphone_open'])
                     page.evaluate("()=>window.dispatchEvent(new Event('blur'))")

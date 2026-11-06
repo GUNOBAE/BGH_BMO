@@ -33,7 +33,7 @@ def prepared_catalogue(directory):
     for index, row in enumerate(value['entries']):
         row['spoken_text'] = catalogue[row['clip_id']]['en']
         raw = files[row['file']]
-        if row['clip_id'] == 'C01':
+        if row['clip_id'].startswith('C') and row['clip_id'][1:].isdigit():
             # A synthetic sustained envelope makes actual R10 mouth calls
             # observable while this one idle player's cancellation is tested.
             from test_voice_pack_v10 import pcm
@@ -72,6 +72,67 @@ def child_source():
             from types import SimpleNamespace
             return SimpleNamespace(status='completed',incomplete_details=None,error=None,output_text=json.dumps(reply))
 ''')
+
+
+def missing_greeting_caption_check(profile='ci-synthetic', chromium=None, *, screenshot=None):
+    """Reproduce the Pi notice with actual missing cache and saved-voice IO."""
+    from playwright.sync_api import sync_playwright
+    face = media.desktop.FIXTURE if profile == 'ci-synthetic' else Path(SCREEN_PROFILES[profile]['default_path'])
+    source = replace_once(child_source(), "for clip in ('boot_01','idle_01'):", "for clip in ('idle_01',):")
+    source = replace_once(source, "if scenario=='greeting_missing':cache=GreetingCache(cache_path,GreetingSpec.from_config(config))",
+        "if scenario in ('greeting_missing','character'):cache=GreetingCache(cache_path,GreetingSpec.from_config(config))")
+    source = replace_once(source, 'def play(*,emit,cancel_check):', 'def play(*,emit,cancel_check,**settings):')
+    source = replace_once(source, 'return original(emit=observed,cancel_check=cancel_check)',
+        'return original(emit=observed,cancel_check=cancel_check,**settings)')
+    with tempfile.TemporaryDirectory(prefix='bmo-notice-caption-') as directory:
+        prepare = media.prepare
+        def prepare_fixture(root):prepare(root);prepared_catalogue(root)
+        with patch.object(media,'prepare',prepare_fixture), patch.object(media,'child_source',lambda:source), media.fixture_for(directory,profile,face) as fixture:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(executable_path=chromium,headless=True,
+                    env={'PATH':os.defpath,'HOME':directory,'LC_ALL':'C.UTF-8'},
+                    args=['--no-sandbox','--disable-gpu','--mute-audio','--disable-audio-output',
+                          '--disable-background-networking','--disable-component-update','--no-first-run'])
+                try:
+                    page = browser.new_page(viewport={'width':800,'height':480})
+                    page.set_default_timeout(10000)
+                    page.route('**/*',lambda route:route.continue_() if route.request.url.startswith(fixture.url) else route.abort())
+                    page.goto(fixture.url,wait_until='domcontentloaded')
+                    try:page.wait_for_function("()=>BMODesktop.state?.phase==='ready'&&BMODesktop.state.code==='greeting_missing'")
+                    except Exception as error:
+                        error.add_note(json.dumps(dict(startup=fixture.state(),audit=fixture.features().get('test_fixture'))))
+                        raise
+                    page.evaluate("()=>BMODesktop.control('voice_full_accept',true)")
+                    page.wait_for_function('()=>BMODesktop.features?.voice_pack?.full_user_accepted===true')
+                    page.evaluate("()=>BMODesktop.control('subtitles','ko')")
+                    (Path(directory)/'hold-next-player').touch()
+                    page.evaluate("()=>BMODesktop.control('voice_event','music_selected')")
+                    page.locator('#subtitles').wait_for(state='visible')
+                    evidence = page.evaluate("""()=>{
+                      const notice=document.querySelector('#notice'),subtitle=document.querySelector('#subtitles');
+                      const a=notice.getBoundingClientRect(),b=subtitle.getBoundingClientRect();
+                      return {notice:{x:a.x,y:a.y,width:a.width,height:a.height},
+                        subtitle:{x:b.x,y:b.y,width:b.width,height:b.height},
+                        overlap:Math.max(a.left,b.left)<Math.min(a.right,b.right)&&Math.max(a.top,b.top)<Math.min(a.bottom,b.bottom),
+                        noticeVisible:!notice.hidden,captionVisible:!subtitle.hidden,
+                        code:BMODesktop.state.code,clip:BMOIntegration.state.caption_asset.clip_id};
+                    }""")
+                    assert not evidence['noticeVisible'] and evidence['captionVisible'] and evidence['code']=='greeting_missing',evidence
+                    assert not evidence['overlap'],evidence
+                    assert page.locator('#face').bounding_box() == {'x':0,'y':0,'width':800,'height':480}
+                    if screenshot:page.screenshot(path=str(screenshot))
+                    page.evaluate("()=>BMODesktop.control('cancel')")
+                    page.locator('#subtitles').wait_for(state='hidden')
+                    assert page.locator('#notice').is_hidden()
+                    page.mouse.click(400,200)
+                    page.locator('#system-menu').click()
+                    assert 'greeting_missing' in page.locator('#greeting-readiness').inner_text()
+                    assert page.locator('#chime-readiness').is_visible()
+                    page.locator('#system-dialog .dialog-close').click()
+                    code,counts,error=fixture.finish()
+                    assert code==0 and counts['forbidden']==0,error
+                    return evidence
+                finally:browser.close()
 
 
 def run(profile='ci-synthetic', chromium='/usr/bin/chromium'):
@@ -236,7 +297,7 @@ def run(profile='ci-synthetic', chromium='/usr/bin/chromium'):
                     assert idle['caption_asset']['sha256'] == hashes['C01']
                     assert page.locator('#subtitles').inner_text() == context_catalog()['C01']['ko']
                     assert fixture.state()['character_life']['presence']['suppression_reason'] == 'playing'
-                    page.locator('#face').click(position={'x': 400, 'y': 200})
+                    page.locator('#face').focus()
                     page.keyboard.down('Enter');page.keyboard.up('Enter')
                     settled('BMODesktop.features.test_fixture.brain==='+str(baseline_idle['brain']+1)+
                         '&&!BMODesktop.features.conversation_busy&&BMODesktop.features.audio_owner===null')
@@ -263,7 +324,7 @@ def run(profile='ci-synthetic', chromium='/usr/bin/chromium'):
                         assert page.locator('#subtitles').inner_text() == catalogue[clip]['ko']
                         selected.append(clip)
                         if ending == 'cancel':
-                            page.locator('#face').click(position={'x': 400, 'y': 200})
+                            page.locator('#face').focus()
                             page.keyboard.press('Enter')
                         elif ending == 'off':
                             page.evaluate("()=>BMODesktop.control('subtitles','off')")
@@ -330,7 +391,10 @@ def run(profile='ci-synthetic', chromium='/usr/bin/chromium'):
                 finally:
                     browser.close()
     assert hashlib.sha256(face.read_bytes()).hexdigest() == original_face
-    return dict(status='PASS', checks=checks, not_run=['Pi touch and sound level', 'private clip listening', 'physical GP8'])
+    notice = missing_greeting_caption_check(profile, chromium)
+    checks.append('optional greeting_missing never covers or reserves the full face; local Korean captions clear on cancellation and separate greeting/chime state remains in readiness')
+    return dict(status='PASS', checks=checks, notice_caption_layout=notice,
+                not_run=['Pi touch and sound level', 'private clip listening', 'physical GP8'])
 
 
 if __name__ == '__main__':

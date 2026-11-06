@@ -192,7 +192,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
 
                 wait(lambda s:s['microphone_broker']['microphone_open'])
                 (root/'hold-provider').write_text('synthetic gate')
-                page.locator('#face').click(position={'x':400,'y':230});page.keyboard.press('Enter')
+                page.locator('#face').focus();page.keyboard.press('Enter')
                 wait(lambda s:s['ptt']['microphone_open'] and s['conversation_busy'])
                 (root/'new-question').write_text('question')
                 wait(lambda s:s['phase']=='thinking' and s['test_fixture']['brain']==2)

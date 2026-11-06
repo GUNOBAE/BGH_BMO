@@ -82,10 +82,12 @@ def parser():
                    help="explicit VAD comparison profile: baseline .9s, balanced .6s, quick .45s; no measured latency claim")
     p.add_argument("--ptt-vad-mode", choices=("rms", "webrtc"), default="rms",
                    help="explicit local speech classifier; rms preserves baseline, webrtc keeps silence .9s and raw PCM")
+    p.add_argument("--preferences-directory", type=Path, help="private saved volume, subtitles and presence preferences; default user config")
+    p.add_argument("--arm-usage-directory", type=Path, help="private saved arm preferences and completed first-test record; never stores current supervision")
     p.add_argument("--arms-supervised", action="store_true",
                    help="EXPLICIT live opt-in, only after physical GP7/full-swing acceptance")
     p.add_argument("--emotion-arms", action="store_true",
-                   help="opt-in emotional arm gestures; simulation only until supervised firmware works")
+                   help="opt-in emotional arm gestures for this supervised session; daily use follows saved arm preferences")
     p.add_argument("--arm-legacy-bridge", action="store_true",
                    help="separate B1 bridge derived from SHA-verified original GP7 firmware")
     p.add_argument("--arm-reviewed-code-sha", metavar="SHA256",
@@ -147,6 +149,9 @@ def public_plan(args):
         "arm_legacy_bridge": {"requested": args.arm_legacy_bridge,
                               "default_disabled": not args.arms_supervised,
                               "physical_verified": False},
+        "daily_arm_settings": {"source": "private_user_preferences", "loaded": False,
+                               "requires_recorded_first_test": True, "current_connection_checked_per_launch": True,
+                               "stores_current_supervision": False},
         "emotion_arms": {"requested": args.emotion_arms, "gesture_names_only": True,
                          "automatic_serial_or_firmware_changes": False},
         "camera": {"supervised_opt_in": args.camera_supervised,
@@ -200,6 +205,10 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
         p.error("--wake-model-manifest requires --wake-word")
     if args.simulate and args.wake_model_manifest is not None:
         p.error("real wake models are separate from synthetic desktop simulation")
+    if (args.preferences_directory is not None or args.arm_usage_directory is not None) and not args.character_life:
+        p.error("private daily settings require --character-life")
+    if args.arm_usage_directory is not None and not args.live:
+        p.error("--arm-usage-directory requires --live; simulation never reads commissioned physical arms")
     if args.install_desktop and (args.arms_supervised or args.emotion_arms
             or args.arm_legacy_bridge or args.arm_reviewed_code_sha is not None
             or args.arm_power_off_ready):
@@ -247,7 +256,8 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                     character_options["ptt_vad_mode"] = args.ptt_vad_mode
                 if args.wake_question_wait != 5.:
                     character_options["wake_question_wait"] = args.wake_question_wait
-                for key in ("voice_bank_directory", 'voice_pack_directory', "presence_mode", "wake_model_manifest"):
+                for key in ("voice_bank_directory", 'voice_pack_directory', "presence_mode", "wake_model_manifest",
+                            "preferences_directory", "arm_usage_directory"):
                     value = getattr(args, key)
                     if value is not None:
                         character_options[key] = value
@@ -338,11 +348,16 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                     voice.close()
                 print("Cached greeting audition finished. Approval remains a separate explicit step.")
             return 0
+        preferences = None
+        if args.character_life and (args.live or args.preferences_directory is not None):
+            from .daily_preferences import DailyPreferences
+            preferences = DailyPreferences(args.preferences_directory)
         app = DesktopRuntime(clock=clock, simulate=args.simulate, developer=args.developer,
                              startup_timeout=args.startup_timeout, greeting_timeout=args.greeting_timeout,
                              require_face_presented=True, character_life=args.character_life,
                              presence_mode=args.presence_mode or ("normal" if args.idle_voice else "off"),
-                             **({'silent_start': True} if args.silent_start else {}))
+                             **({'silent_start': True} if args.silent_start else {}),
+                             **({'preferences': preferences} if preferences is not None else {}))
         for number in (signal.SIGTERM, signal.SIGINT):
             try:
                 previous_handlers[number] = signal.signal(number, lambda *_: app._exit.set())
@@ -382,6 +397,19 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "emotion_arms": args.emotion_arms}
             if args.character_life:
                 settings["character_life"] = True
+            if preferences is not None:
+                settings["preferences"] = preferences
+            if args.character_life and args.live and not args.arms_supervised:
+                from .features.motion.daily_usage import DailyArmController
+                arm_usage = DailyArmController(args.arm_usage_directory, clock=clock,
+                    runtime_ready=lambda: bool(app is not None and app._ready
+                                               and not app.exiting and not app.failed))
+                settings["arm_usage"] = arm_usage
+                if arm_usage.motion is not None:
+                    settings["motion"] = arm_usage.motion
+                    settings["runtime"] = replace(settings["runtime"], arms_commissioned=True)
+                    settings["emotion_arms_requested"] = arm_usage.conversation_gestures
+                    settings["emotion_arms"] = arm_usage.enabled and arm_usage.conversation_gestures
             if args.no_feedback_voice:
                 settings['photo_feedback'] = False
             if args.one_turn_diagnostic is not None:

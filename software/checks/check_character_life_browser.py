@@ -71,7 +71,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert fixture.state()["face_presented"] and fixture.state()["progress_percent"] == 100
                     assert fixture.features()["test_fixture"]["brain"] == 0
                     checks.append("English checkpoint boot keeps background/main/iframe fixed; approved expression-only entrance precedes cache-only greeting, non-art fixture explicitly skips")
-                    page.locator("#face").click(position={"x": 400, "y": 230})
+                    page.locator("#face").focus()
                     page.keyboard.down("Enter"); page.keyboard.down("Enter"); page.keyboard.up("Enter")
                     wait(lambda s:s["ptt"]["microphone_open"])
                     first=wait(lambda s:not s["conversation_busy"] and s["ptt"]["reason_code"]=="transcribed")
@@ -87,7 +87,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     before_idle=fixture.features()["test_fixture"]
                     (Path(directory)/"presence-clock.txt").write_text("500")
                     page.wait_for_function("()=>BMOIntegration.state?.source==='cached_idle'&&BMOIntegration.state.playback==='started'")
-                    page.locator("#face").click(position={"x": 400, "y": 230}); page.keyboard.press("Enter")
+                    page.locator("#face").focus(); page.keyboard.press("Enter")
                     wait(lambda s:s["ptt"]["microphone_open"])
                     after_idle=wait(lambda s:not s["conversation_busy"] and s["test_fixture"]["brain"]==2)
                     assert after_idle["test_fixture"]["max_players"] == after_idle["test_fixture"]["max_mics"] == 1
@@ -118,7 +118,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert fixture.features()["emotion"] == "angry"
                     checks.append("repeat retains expression with no provider or gesture rerun")
                     page.wait_for_function("()=>BMODesktop.state?.phase==='ready'&&BMODesktop.features?.ptt?.enabled")
-                    page.locator("#face").click(position={"x": 400, "y": 230}); page.keyboard.press("Enter")
+                    page.locator("#face").focus(); page.keyboard.press("Enter")
                     listening = wait(lambda s:s["ptt"]["microphone_open"])
                     assert listening["emotion"] == "angry"
                     wait(lambda s:not s["conversation_busy"] and s["ptt"]["reason_code"] == "transcribed")
