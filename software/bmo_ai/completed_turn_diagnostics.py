@@ -34,36 +34,85 @@ def default_directory():
     return (Path(base) if base else Path.home() / ".local" / "state") / "bmo" / "turn-diagnostics"
 
 
-def source_revision():
-    """Read this checkout's revision once; no subprocess, env dump or network.
-
-    Unknown layouts (including .git indirection) stay unknown. A revision is
-    provenance, not a statement that the tree or the Pi receipt is clean.
-    """
-    git = Path(__file__).resolve().parents[2] / ".git"
+def _git_text(path, limit=4096):
+    """Bounded regular metadata only; a FIFO/symlink must never block startup."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     try:
-        if git.is_symlink() or not git.is_dir():
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("invalid git metadata")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            raw = source.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError("invalid git metadata")
+        return raw.decode("utf-8").strip()
+    finally:
+        os.close(fd)
+
+
+def _git_directory(base, value):
+    # Git's relative gitdir/commondir legitimately use '..'. Normalize those
+    # paths, then reject symlinks in every directory component before reading.
+    if not value or any(char in value for char in "\0\r\n"):
+        raise ValueError("invalid git directory")
+    path = Path(os.path.abspath(base / value))
+    for parent in (*reversed(path.parents), path):
+        if not stat.S_ISDIR(parent.lstat().st_mode):
+            raise ValueError("invalid git directory")
+    return path
+
+
+def source_revision():
+    """Read normal/worktree HEAD once without subprocess, env or network.
+
+    A linked worktree owns HEAD but its branch refs/packed-refs live in the
+    common Git directory. Only a validated 40-hex revision leaves this reader;
+    it is provenance, not a statement that the tree or Pi receipt is clean.
+    """
+    marker = Path(__file__).resolve().parents[2] / ".git"
+    try:
+        if marker.is_symlink():
             return None
-        head = (git / "HEAD").read_text().strip()
+        if marker.is_dir():
+            git = _git_directory(marker.parent, marker.name)
+        else:
+            pointer = _git_text(marker)
+            if not pointer.startswith("gitdir: "):
+                return None
+            git = _git_directory(marker.parent, pointer[8:])
+        head = _git_text(git / "HEAD")
         if _SHA.fullmatch(head):
             return head
         if not head.startswith("ref: refs/heads/"):
             return None
         ref = head[5:]
-        if ".." in Path(ref).parts or not re.fullmatch(r"refs/heads/[A-Za-z0-9_./-]{1,160}", ref):
+        if (any(part in ("", ".", "..") for part in ref.split("/"))
+                or not re.fullmatch(r"refs/heads/[A-Za-z0-9_./-]{1,160}", ref)):
             return None
-        path = git / ref
-        if path.is_file() and not path.is_symlink():
-            value = path.read_text().strip()
+        common = git
+        try:
+            pointer = _git_text(git / "commondir")
+        except FileNotFoundError:
+            pass
+        else:
+            common = _git_directory(git, pointer)
+            # A linked worktree admin directory must belong to this common
+            # repository. Arbitrary commondir redirection stays unverified.
+            if git.parent != common / "worktrees":
+                return None
+        path = common / ref
+        try:
+            _git_directory(common, str(Path(ref).parent))
+            value = _git_text(path)
+        except FileNotFoundError:
+            value = None
+        if value is not None:
             return value if _SHA.fullmatch(value) else None
-        packed = git / "packed-refs"
-        if packed.is_symlink() or packed.stat().st_size > MAX_BYTES:
-            return None
-        for line in packed.read_text().splitlines():
+        for line in _git_text(common / "packed-refs", MAX_BYTES).splitlines():
             fields = line.split()
             if len(fields) == 2 and fields[1] == ref and _SHA.fullmatch(fields[0]):
                 return fields[0]
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError):
         pass
     return None
 

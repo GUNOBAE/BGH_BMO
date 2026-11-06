@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from bmo_ai.completed_turn_diagnostics import CAPACITY, MAX_BYTES, CompletedTurnStore
+from bmo_ai.completed_turn_diagnostics import CAPACITY, MAX_BYTES, CompletedTurnStore, source_revision
 from bmo_ai.turn_diagnostics import TurnDiagnostics
 
 
@@ -189,6 +189,79 @@ class CompletedTurnDiagnosticTests(unittest.TestCase):
             self.assertEqual(row["timings"]["tts_to_first_byte_ms"]["status"], "UNMEASURED")
         self.assertNotIn("PRIVATE QUESTION", (self.directory / "completed-turns.json").read_text())
         self.assertEqual(len(client.requests), 2)
+
+
+class WorktreeRevisionTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory()))
+        self.checkout = self.root / 'candidate'; self.checkout.mkdir()
+        self.common = self.root / 'main' / '.git'
+        self.admin = self.common / 'worktrees' / 'candidate'; self.admin.mkdir(parents=True)
+        (self.common / 'HEAD').write_text('ref: refs/heads/main\n')
+        self.branch = 'refs/heads/feature/bmo-character-life-v1'
+        (self.admin / 'HEAD').write_text('ref: ' + self.branch + '\n')
+        (self.admin / 'commondir').write_text('../..\n')
+        self.marker = self.checkout / '.git'
+        self.marker.write_text('gitdir: ../main/.git/worktrees/candidate\n')
+        self.enterContext(patch('bmo_ai.completed_turn_diagnostics.__file__',
+            str(self.checkout / 'software/bmo_ai/completed_turn_diagnostics.py')))
+        self.enterContext(patch('subprocess.Popen', side_effect=AssertionError('No git subprocess')))
+        self.enterContext(patch('socket.socket.connect', side_effect=AssertionError('No network')))
+
+    def branch_file(self, value):
+        path = self.common / self.branch
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value + '\n')
+        return path
+
+    def test_relative_and_absolute_worktree_gitdir_use_its_head_and_common_loose_ref(self):
+        path = self.branch_file('b' * 40)
+        (self.common / 'refs/heads/main').write_text('a' * 40 + '\n')
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (self.marker, path, self.admin / 'HEAD')}
+        self.assertEqual(source_revision(), 'b' * 40)
+        self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before})
+        self.marker.write_text('gitdir: ' + str(self.admin) + '\n')
+        self.assertEqual(source_revision(), 'b' * 40)
+
+    def test_worktree_shared_packed_refs_and_detached_head(self):
+        (self.common / 'packed-refs').write_text('# pack-refs\n' + 'c' * 40 + ' ' + self.branch + '\n')
+        self.assertEqual(source_revision(), 'c' * 40)
+        (self.admin / 'HEAD').write_text('d' * 40 + '\n')
+        self.assertEqual(source_revision(), 'd' * 40)
+
+    def test_normal_directory_checkout_and_gitfile_without_commondir_still_work(self):
+        self.branch_file('e' * 40)
+        (self.admin / 'commondir').unlink()
+        (self.admin / 'HEAD').write_text('f' * 40 + '\n')
+        self.assertEqual(source_revision(), 'f' * 40)
+        self.marker.unlink(); self.marker.mkdir()
+        (self.marker / 'HEAD').write_text('a' * 40 + '\n')
+        self.assertEqual(source_revision(), 'a' * 40)
+
+    def test_symlinks_invalid_refs_redirections_and_oversized_metadata_stay_unknown(self):
+        original_head = (self.admin / 'HEAD').read_text()
+        self.branch_file('b' * 40)
+        for text in ('ref: refs/heads/../../private', 'ref: refs/heads//invalid', 'SECRET VALUE', 'a' * 4097):
+            with self.subTest(head=text[:40]):
+                (self.admin / 'HEAD').write_text(text)
+                self.assertIsNone(source_revision())
+        (self.admin / 'HEAD').write_text(original_head)
+        (self.admin / 'commondir').write_text('../../../../candidate')
+        self.assertIsNone(source_revision())
+        (self.admin / 'commondir').write_text('../..')
+        path = self.common / self.branch
+        path.unlink(); path.symlink_to(self.common / 'HEAD')
+        self.assertIsNone(source_revision())
+        path.unlink(); self.branch_file('b' * 40)
+        pointer = self.marker.read_bytes()
+        self.marker.unlink(); self.marker.symlink_to(self.admin / 'gitdir')
+        self.assertIsNone(source_revision())
+        self.marker.unlink(); self.marker.write_bytes(pointer)
+        linked = self.root / 'linked-admin'; linked.symlink_to(self.admin, target_is_directory=True)
+        self.marker.write_text('gitdir: ' + str(linked))
+        self.assertIsNone(source_revision())
+        self.marker.write_text('gitdir: ' + 'a' * 4097)
+        self.assertIsNone(source_revision())
 
 
 if __name__ == "__main__":

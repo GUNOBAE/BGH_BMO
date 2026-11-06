@@ -1,9 +1,12 @@
 """Actual CharacterPlan/player-start/Host/B1 path with synthetic IO only."""
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import Event
 import time
 import unittest
 from unittest.mock import patch
 
+from bmo_ai.completed_turn_diagnostics import CompletedTurnStore
 from bmo_ai.features.host import FeatureHost, FeatureSimulatedClient
 from bmo_ai.features.motion.legacy_host import LegacyArmLink, LegacyMotionFeature
 from bmo_ai.features.runtime import RuntimePolicy
@@ -14,6 +17,10 @@ from test_legacy_arm_host import FakePort, core
 
 class CharacterArmRuntimeTests(unittest.TestCase):
     def setUp(self):
+        self.directory = Path(self.enterContext(TemporaryDirectory()))
+        self.completed_stores = []
+        self.enterContext(patch('bmo_ai.completed_turn_diagnostics.default_directory',
+            side_effect=AssertionError('Synthetic turns must never use the user diagnostic store')))
         for name in ("subprocess.Popen", "socket.socket.connect", "socket.socket.connect_ex",
                      "bmo_ai.cloud.create_client", "bmo_ai.fish_tts.synthesize_wav",
                      "bmo_ai.features.motion.arm_serial_posix_v2.OwnedCdcDataPort.open"):
@@ -58,9 +65,14 @@ class CharacterArmRuntimeTests(unittest.TestCase):
 
         voice = IntegrationVoice(config, self.client, simulate=True, expressive=True,
                                   character_life=True, player=player, emit=lambda *_a, **_kw: None)
+        store = CompletedTurnStore(self.directory / str(len(self.completed_stores)))
+        self.addCleanup(store.close)
+        self.assertTrue(store.snapshot()['enabled'])
+        self.completed_stores.append(store)
         self.host = FeatureHost(config=config, client=self.client, voice=voice,
             runtime=RuntimePolicy(simulate=False, arms_supervised=True), motion=self.motion,
-            clock=clock, character_life=True, expressive_voice=True, emotion_arms=emotion_arms)
+            clock=clock, character_life=True, expressive_voice=True, emotion_arms=emotion_arms,
+            completed_turn_store=store)
 
     def pump(self, predicate):
         deadline = time.monotonic() + 4

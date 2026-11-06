@@ -4,6 +4,7 @@ These fixtures exercise the installed semantic/session path. They do not claim
 that a live model understood English/Korean or that any hardware was operated.
 Compressed container decode and actual browser keys are covered separately.
 """
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
@@ -12,6 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from bmo_ai import audio
+from bmo_ai.completed_turn_diagnostics import CompletedTurnStore
 from bmo_ai.features.camera import CameraFeature, DemoBackend, FixtureDetector, PhotoStore
 from bmo_ai.features.camera.models import FaceBox
 from bmo_ai.features.host import FeatureHost, HostControl
@@ -35,6 +37,8 @@ class FullBatchSemanticHostTests(unittest.TestCase):
     def setUp(self):
         self.hosts = []
         self.directory = Path(self.enterContext(TemporaryDirectory()))
+        self.enterContext(patch('bmo_ai.completed_turn_diagnostics.default_directory',
+            side_effect=AssertionError('Synthetic turns must never use the user diagnostic store')))
         for name in ('socket.socket.connect', 'subprocess.Popen', 'bmo_ai.cloud.create_client',
                      'bmo_ai.private_credentials.resolve_credentials', 'bmo_ai.fish_tts.synthesize_wav'):
             self.enterContext(patch(name, side_effect=AssertionError('actual IO forbidden')))
@@ -75,13 +79,16 @@ class FullBatchSemanticHostTests(unittest.TestCase):
             return CameraFeature(backend_factory=lambda: DemoBackend(clock=clock),
                 detector=FixtureDetector((FaceBox(.7, .2, .2, .3),)),
                 store=PhotoStore(photo_root), clock=clock, on_target=on_target)
+        completed_store = CompletedTurnStore(root / 'turn-diagnostics')
+        self.addCleanup(completed_store.close)
+        self.assertTrue(completed_store.snapshot()['enabled'])
         with patch('bmo_ai.features.camera.live.build_live_camera', side_effect=build):
             host = FeatureHost(config=config, client=provider, voice=voice, clock=clock,
                 runtime=RuntimePolicy(simulate=False, arms_supervised=arms,
                                       conversation_ptt_microphone=microphone), motion=motion,
                 camera_supervised=camera, photo_directory=root/'photos' if camera else None,
                 camera_video_supervised=video, video_directory=root/'videos' if video else None,
-                character_life=character_life, **host_options)
+                character_life=character_life, completed_turn_store=completed_store, **host_options)
         self.hosts.append(host)
         return host, provider, clock, played
 
@@ -102,6 +109,19 @@ class FullBatchSemanticHostTests(unittest.TestCase):
     @staticmethod
     def meaning(kind, name, target=None):
         return envelope(kind=kind, disposition='execute', intent={'name': name, 'target': target})
+
+    def test_fixture_completions_persist_only_in_separate_temporary_host_stores(self):
+        hosts = [self.make_host([envelope()])[0] for _ in range(2)]
+        for index, host in enumerate(hosts):
+            self.ask(host, 'A synthetic fixture question.')
+            state = host.snapshot()['completed_turns']
+            self.assertTrue(state['enabled'])
+            self.assertEqual(state['retained'], 1)
+            path = self.directory / str(index) / 'turn-diagnostics' / 'completed-turns.json'
+            records = json.loads(path.read_text())['records']
+            self.assertEqual([(row['turn'], row['terminal']) for row in records], [(1, 'ok')])
+            self.assertNotIn('synthetic fixture question', path.read_text())
+        self.assertEqual(len(list(self.directory.glob('*/turn-diagnostics/completed-turns.json'))), 2)
 
     def test_current_english_and_korean_arm_requests_reach_named_b1_once_repeat_moves_none(self):
         for text, target in [('Would you lift your left one for me?', 'raise_left_arm'),
