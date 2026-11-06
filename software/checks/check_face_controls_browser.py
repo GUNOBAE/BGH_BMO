@@ -284,14 +284,16 @@ def run(profile='ci-synthetic', chromium='/usr/bin/chromium'):
                     staged = Path(directory)/'presence-clock.stage'
                     staged.write_text('500')
                     os.replace(staged, Path(directory)/'presence-clock.txt')
-                    page.wait_for_function("""()=>{
+                    page.wait_for_function("""caption=>{
                       const p=BMOIntegration.state?.performance_plan;
                       const face=document.querySelector('#face').contentWindow.BMOFace.getState();
+                      const subtitle=document.querySelector('#subtitles');
                       return BMOIntegration.state?.source==='cached_idle'&&BMOIntegration.state.playback==='started'
                         &&p?.clip_id==='C01'&&face.selectedEmotion===p.face_emotion
                         &&BMODesktop.features.gaze.owner==='presence'
-                        &&face.look.x===.08&&face.look.y===-.04&&face.mouth!=='closed';
-                    }""")
+                        &&face.look.x===.08&&face.look.y===-.04&&face.mouth!=='closed'
+                        &&!subtitle.hidden&&subtitle.textContent===caption;
+                    }""", arg=context_catalog()['C01']['ko'])
                     idle = page.evaluate('()=>BMOIntegration.state')
                     assert idle['performance_plan']['sha256'] == hashes['C01']
                     assert idle['caption_asset']['sha256'] == hashes['C01']
