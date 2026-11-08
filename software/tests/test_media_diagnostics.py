@@ -53,7 +53,9 @@ class MediaDiagnosticsTests(unittest.TestCase):
         store.record("resume", "touch_resume", self.media())
         terminal = dict(catalog_id="space_potatoes", variant="video", position_seconds=14.5,
             duration_seconds=87.5, outcome="failed", request_id="web_fixture_1", mode_generation=4,
-            playback_generation=7, error_code="media_output_underrun", cleanup_error="cleanup_failed")
+            playback_generation=7, error_code="media_output_underrun", cleanup_error="cleanup_failed",
+            error_frame=116000, error_submitted_frame=116160, error_queued_frames=160,
+            error_rate=8000, error_at_monotonic=12.9)
         failed = store.record("failed", "media_backend", terminal,
                               dict(hidden=True, focused=False, heartbeat_age_seconds=3.25))
         self.assertEqual((pause["source"], pause["state"]), ("gp8_short", "paused"))
@@ -65,6 +67,7 @@ class MediaDiagnosticsTests(unittest.TestCase):
         self.assertEqual((failed["error_code"], failed["cleanup_error"]),
                          ("media_output_underrun", "cleanup_failed"))
         self.assertEqual(failed["lifecycle"]["heartbeat_age_seconds"], 3.25)
+        self.assertEqual((failed['error_frame'], failed['error_at_monotonic']), (116000, 12.9))
         self.assertEqual([row["sequence"] for row in store.snapshot()["events"]], [1, 2, 3, 4])
 
     def test_redaction_and_defensive_snapshots_retain_only_bounded_fields(self):

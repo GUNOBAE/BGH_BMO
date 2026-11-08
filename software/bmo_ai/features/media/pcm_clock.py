@@ -119,6 +119,8 @@ class SampleClockWavBackend:
         self._paused = False
         self._terminal = self._error = None
         self._cleanup_error = None
+        self._failure_evidence = {}
+        self._submitted_frame = self._queued_frames = 0
         self._ready = threading.Event()
         self._output_started = False
         self._retained_sink = None
@@ -130,6 +132,8 @@ class SampleClockWavBackend:
             raise FeatureError("media_busy")
         self._handle, self._frame, self._terminal, self._error = handle, 0, None, None
         self._cleanup_error = None
+        self._failure_evidence = {}
+        self._submitted_frame = self._queued_frames = 0
         self._paused = False
         try:
             self._launch()
@@ -179,6 +183,8 @@ class SampleClockWavBackend:
                         if type(accepted) is not int or not 0 <= accepted <= len(block) // (channels * 2):
                             raise FeatureError("media_output_failed")
                         submitted += accepted
+                        with self._guard:
+                            self._submitted_frame = base + submitted
                         block = block[accepted * channels * 2:]
                     if ended and not input_finished:
                         finish = getattr(sink, "finish_input", None)
@@ -188,6 +194,7 @@ class SampleClockWavBackend:
                     delay = sink.delay()
                     consumed = base + max(0, submitted - min(submitted, delay))
                     with self._guard:
+                        self._queued_frames = delay
                         previous, self._frame = self._frame, max(self._frame, consumed)
                         if consumed > base:
                             self._output_started = True
@@ -210,6 +217,7 @@ class SampleClockWavBackend:
             with self._guard:
                 self._error = error.code if isinstance(error, FeatureError) else "media_output_failed"
                 self._terminal = "failed"
+                self._capture_failure()
         finally:
             if sink is not None:
                 try:
@@ -219,6 +227,7 @@ class SampleClockWavBackend:
                         self._cleanup_error, self._terminal = "media_output_cleanup_failed", "failed"
                         if self._error is None:
                             self._error = self._cleanup_error
+                            self._capture_failure()
                         self._retained_sink = sink
             self._ready.set()
 
@@ -254,7 +263,21 @@ class SampleClockWavBackend:
         with self._guard:
             return dict(error_code=self._error, cleanup_error=self._cleanup_error,
                         terminal=self._terminal, output_started=self._output_started,
-                        position_seconds=self._frame/self._rate if self._rate else 0.)
+                        position_seconds=self._frame/self._rate if self._rate else 0.,
+                        **self._failure_evidence)
+
+    def _capture_failure(self):
+        # Called under _guard at the first failure, before cleanup resets the
+        # stream position. Values are output evidence, not acoustic timing.
+        if self._failure_evidence:
+            return
+        try:
+            stamp = self.clock()
+        except Exception:
+            stamp = None
+        self._failure_evidence = dict(error_frame=self._frame,
+            error_submitted_frame=self._submitted_frame, error_queued_frames=self._queued_frames,
+            error_rate=self._rate, error_at_monotonic=stamp)
 
     def pause(self):
         if self._handle is None:
@@ -282,6 +305,7 @@ class SampleClockWavBackend:
             self._frame = frames if at_end else min(frames - 1, round(seconds * self._rate))
             self._terminal, self._error = "ended" if at_end else None, None
             self._cleanup_error = None
+            self._failure_evidence = {}
             self._output_started = False
         if not self._paused and not at_end:
             self._launch()

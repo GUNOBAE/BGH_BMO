@@ -212,6 +212,10 @@ class MediaPcmSampleClockTests(unittest.TestCase):
                 self.assertEqual(terminal["cleanup_error"], "media_output_cleanup_failed")
                 self.assertEqual(terminal["position_seconds"], .01)
                 self.assertEqual(terminal["duration_seconds"], 1.)
+                self.assertEqual(terminal['error_frame'], 80)
+                self.assertEqual(terminal['error_rate'], 8000)
+                self.assertGreaterEqual(terminal['error_submitted_frame'], terminal['error_frame'])
+                self.assertGreaterEqual(terminal['error_at_monotonic'], 0)
                 self.assertEqual(terminal["catalog_id"], "space_potatoes")
                 self.assertFalse(terminal["resource_released"])
                 self.assertEqual(self.feature.poll(), ())  # no automatic cleanup/restart loop
@@ -219,6 +223,7 @@ class MediaPcmSampleClockTests(unittest.TestCase):
         self.assertTrue(self.feature.stop().completed)
         self.assertEqual(SilentPcmSink.active, 0)
         self.assertEqual(self.backend.diagnostics()["error_code"], "media_output_underrun")
+        self.assertEqual(self.backend.diagnostics()['error_frame'], 80)
 
     def test_stalled_output_and_natural_end_remain_distinct_after_cleanup(self):
         now = [0.]

@@ -278,13 +278,18 @@ class MediaFeature:
             position = None
         if type(position) not in (int, float) or not math.isfinite(position) or position < 0:
             position = None
-        return dict(catalog_id=self._active.id if self._active else None,
+        value = dict(catalog_id=self._active.id if self._active else None,
                     variant=self._variant, request_id=self._request,
                     mode_generation=self._generation, playback_generation=self._playback_generation,
                     position_seconds=position, duration_seconds=self._handle.duration if self._handle else None,
                     outcome='failed' if original or reason == 'media_failed' else 'ended' if reason == 'ended' else 'cancelled',
                     trigger=reason if valid_id(reason) else 'user', error_code=original,
                     cleanup_error=cleanup, resource_released=False)
+        for key in ('error_frame', 'error_submitted_frame', 'error_queued_frames', 'error_rate', 'error_at_monotonic'):
+            observed = output.get(key)
+            if type(observed) in (int, float) and math.isfinite(observed) and 0 <= observed <= 1e12:
+                value[key] = observed
+        return value
 
     def _record_terminal(self, value, released):
         # Observe again after cleanup, retaining the original output failure.

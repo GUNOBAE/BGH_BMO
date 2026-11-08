@@ -105,6 +105,12 @@ def _receipt(event, source, media, lifecycle, *, sequence, at, revision, run_id,
     for name in ("mode_generation", "playback_generation"):
         value = media.get(name)
         result[name] = value if type(value) is int and 0 <= value <= 1000000000 else None
+    for name, upper in (('error_frame', 691200000), ('error_submitted_frame', 691200000),
+                        ('error_queued_frames', 691200000), ('error_rate', 96000),
+                        ('error_at_monotonic', 1000000000000)):
+        value = media.get(name)
+        if _number(value, upper):
+            result[name] = value
     for name in ("hidden", "focused", "connected"):
         value = lifecycle.get(name)
         result["lifecycle"][name] = value if type(value) is bool else None
@@ -281,4 +287,3 @@ class MediaDiagnostics:
     def close(self):
         with self._lock:
             self._storage_ready = False
-

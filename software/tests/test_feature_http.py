@@ -25,6 +25,8 @@ class FakeHost:
         self.reset()
 
     def reset(self):
+        from bmo_ai.media_diagnostics import MediaDiagnostics
+        self.media_diagnostics = MediaDiagnostics()
         self.queued = []
         self.queue_threads = []
         self.beats = 0
@@ -72,6 +74,20 @@ class FakeHost:
 
 
 class FeatureHTTPTests(unittest.TestCase):
+    def test_media_diagnostic_get_is_passive_and_keeps_origin_protection(self):
+        self.host.media_diagnostics.record('pause', 'gp8_short', media={
+            'active_id':'fixture_song', 'variant':'face', 'state':'paused'})
+        for _ in range(4):
+            status, _, body = self.request('GET', '/api/diagnostics/media')
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['latest']['source'], 'gp8_short')
+        self.assertEqual(self.host.beats, 0)
+        self.assertEqual(self.host.queued, [])
+        status, _, _ = self.request('GET', '/api/diagnostics/media',
+            headers=[('Host', self.authority), ('Origin', 'https://example.invalid')])
+        self.assertEqual(status, 403)
+        self.assertEqual(self.host.beats, 0)
+
     @classmethod
     def setUpClass(cls):
         cls.bridge_patch = patch("bmo_ai.features.server.FaceServer", FakeFaceBridge)

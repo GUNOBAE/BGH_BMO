@@ -190,6 +190,10 @@ class FeatureServer:
                     elif path == "/api/features":
                         owner.host.heartbeat()
                         self._send(200, owner.host.snapshot())
+                    elif path == '/api/diagnostics/media':
+                        # Passive evidence must not keep a frozen/closed shell
+                        # alive or turn an observation into a device operation.
+                        self._send(200, owner.host.media_diagnostics.snapshot())
                     elif path == "/api/screen":
                         self._send(200, owner._bridge._screen_metadata, "application/json")
                     elif path == "/api/desktop" and owner.desktop is not None:

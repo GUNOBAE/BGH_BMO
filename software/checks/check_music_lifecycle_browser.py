@@ -26,6 +26,10 @@ def run(chromium=None):
         env = {'PATH': os.defpath, 'HOME': directory, 'LC_ALL': 'C.UTF-8'}
         if os.environ.get('DISPLAY'):
             env['DISPLAY'] = os.environ['DISPLAY']
+        # xvfb-run grants this test display via its temporary authority file.
+        # Keep only that GUI credential, never the BMO/provider environment.
+        if os.environ.get('XAUTHORITY'):
+            env['XAUTHORITY'] = os.environ['XAUTHORITY']
         profile = Path(directory)/'chromium-profile'
         profile.mkdir(mode=0o700)
         process = subprocess.Popen([chromium or pw.chromium.executable_path,
