@@ -256,14 +256,24 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 panel('system-menu')
                 assert page.locator('#provider-readiness').inner_text()
                 assert page.locator('#provider-recheck').is_disabled()
+                # Detailed protocol/physical evidence belongs in Settings;
+                # the everyday arm panel keeps short state and usable controls.
+                assert 'physical movement: UNVERIFIED' in page.locator('#arm-readiness').inner_text()
                 page.locator('#system-dialog .dialog-close').click()
                 panel('arms-menu')
-                assert page.locator('#arms-status').inner_text()
-                assert '위치' in page.locator('#arms-dialog').inner_text()
+                status=page.locator('#arms-status')
+                assert status.inner_text() and status.get_attribute('data-state') in (
+                    'off','setup_required','ready','stopped','connection_problem','connection_unverified')
+                assert set(page.locator('#arms-gestures button').evaluate_all(
+                    'buttons=>buttons.map(button=>button.dataset.gesture)'))=={
+                    'wave','raise_left_arm','raise_right_arm','both_up','both_down','celebrate','shrug'}
+                assert page.locator('#arms-prepare').is_visible()
+                assert page.locator('#arms-stop').is_visible() and not page.locator('#arms-stop').is_disabled()
+                assert page.locator('#arms-enabled').is_visible() and page.locator('#arms-conversation').is_visible()
                 page.locator('#arms-stop').click()
                 page.locator('#arms-result').wait_for(state='visible')
                 page.locator('#arms-dialog .dialog-close').click()
-                checks.append('actual arm menu exposes named-gesture/state boundary and independent stop without granting real motion')
+                checks.append('Settings keeps physical movement UNVERIFIED; arm menu separately exposes short state, seven gestures, prepare, stop and independent usage/automatic-gesture preferences without granting real motion')
 
                 before_provider=fixture.features()['test_fixture']
                 (Path(directory)/'inject-provider-failure').write_text('synthetic authentication boundary only')
