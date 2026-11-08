@@ -414,6 +414,11 @@ def main(argv=None, *, lock_path=None, host_factory=FeatureHost, browser_factory
                         "emotion_arms": args.emotion_arms}
             if args.character_life:
                 settings["character_life"] = True
+            if args.live and args.music_supervised:
+                from .media_diagnostics import MediaDiagnostics
+                from .completed_turn_diagnostics import source_revision
+                settings['media_diagnostics'] = MediaDiagnostics(clock=clock,
+                    runtime_revision=source_revision(), persist=True)
             if preferences is not None:
                 settings["preferences"] = preferences
             if args.character_life and args.live and not args.arms_supervised:

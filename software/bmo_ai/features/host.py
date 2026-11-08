@@ -75,6 +75,20 @@ class HostControl:
             valid = (type(self.value) is dict and set(self.value) == {'level', 'muted'}
                 and type(self.value['level']) in (int, float) and math.isfinite(self.value['level'])
                 and 0 <= self.value['level'] <= 1 and type(self.value['muted']) is bool)
+        elif self.action == 'media_command':
+            valid = (type(self.value) is dict and set(self.value) == {'action', 'source', 'generation', 'value'}
+                and self.value['action'] in ('pause','resume','seek','replay','stop')
+                and self.value['source'] in ('touch_pause','touch_resume','touch_seek','touch_replay',
+                    'touch_stop','touch_back','gp8_short','gp8_hold','escape','video_play_rejected','video_error')
+                and type(self.value['generation']) is int and self.value['generation'] >= 0
+                and (type(self.value['value']) in (int,float) and math.isfinite(self.value['value'])
+                     and 0 <= self.value['value'] <= 600 if self.value['action']=='seek' else self.value['value'] is None))
+        elif self.action == 'media_observation':
+            valid = (type(self.value) is dict and set(self.value) == {'event','generation','hidden','focused','error_code'}
+                and self.value['event'] in ('blur','focus','hidden','visible','pagehide','video_play_rejected','video_error')
+                and type(self.value['generation']) is int and self.value['generation'] >= 0
+                and type(self.value['hidden']) is bool and type(self.value['focused']) is bool
+                and self.value['error_code'] in (None,'aborted','network','decode','unsupported','play_rejected','unknown'))
         elif self.action == 'arm_usage':
             valid = (type(self.value) is dict and set(self.value) == {'enabled', 'conversation_gestures'}
                      and all(type(value) is bool for value in self.value.values()))
@@ -156,7 +170,7 @@ class FeatureHost(ProductVideoFlow):
                  playable_games=False, voice_pack_directory=None, request_cooldown=0,
                  session_request_limit=None, estimated_request_cost=None, estimated_session_cost_limit=None,
                  completed_turn_store=None, arm_supervision_requested=None, emotion_arms_requested=None,
-                 arm_usage=None, preferences=None,
+                 arm_usage=None, preferences=None, media_diagnostics=None,
                  native_supertux=False, native_gamepad_profile=None, native_game_feature=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
@@ -398,6 +412,14 @@ class FeatureHost(ProductVideoFlow):
         from ..turn_diagnostics import TurnDiagnostics
         from ..completed_turn_diagnostics import CompletedTurnStore, source_revision
         self._runtime_revision = source_revision()
+        self._run_id = None
+        from ..media_diagnostics import MediaDiagnostics
+        self.media_diagnostics = media_diagnostics or MediaDiagnostics(clock=clock, runtime_revision=self._runtime_revision)
+        self._media_lifecycle = dict(hidden=False, focused=True, connected=True)
+        self._media_command_source = 'host_control'
+        self._media_terminal_seen = None
+        self._media_browser_error = None
+        self._media_stop_source = None
         self._completed_turn_store = completed_turn_store
         if character_life and not self.runtime.simulate and self._completed_turn_store is None:
             self._completed_turn_store = CompletedTurnStore(runtime_revision=self._runtime_revision, vad_profile=ptt_vad_profile,
@@ -748,7 +770,41 @@ class FeatureHost(ProductVideoFlow):
         if native:
             self._native_return_grace_until = self.clock() + 3.
 
+    def bind_runtime_identity(self, run_id):
+        if type(run_id) is not str or len(run_id) != 32 or any(c not in '0123456789abcdef' for c in run_id):
+            return
+        self._run_id = run_id
+        self.media_diagnostics.bind_runtime(run_id)
+        bind = getattr(self.turn_diagnostics, 'bind_runtime', None)
+        if callable(bind):
+            bind(run_id=run_id, runtime_revision=self._runtime_revision)
+
+    def record_media_observation(self, event, source, *, media=None, error_code=None):
+        if event == 'heartbeat_expired':
+            self._media_lifecycle['connected'] = False
+            self._media_stop_source = source
+        if media is None and self.media.snapshot().get('active_id') is None:
+            return
+        lifecycle = dict(self._media_lifecycle)
+        if self._last_shell_seen is not None:
+            lifecycle['heartbeat_age_seconds'] = max(0., self.clock()-self._last_shell_seen)
+        return self.media_diagnostics.record(event, source,
+            media=self.media.snapshot() if media is None else media,
+            lifecycle=lifecycle, error_code=error_code)
+
+    def _record_media_terminal(self, terminal, *, source='media_backend'):
+        if type(terminal) is not dict:
+            return
+        marker = (terminal.get('request_id'), terminal.get('playback_generation'), terminal.get('outcome'))
+        if marker == self._media_terminal_seen:
+            return
+        self._media_terminal_seen = marker
+        outcome = terminal.get('outcome')
+        event = 'completed' if outcome == 'ended' else outcome if outcome in ('failed','completed','cancelled') else 'stop'
+        self.record_media_observation(event, source, media=terminal, error_code=terminal.get('error_code'))
+
     def _enter_music(self, context):
+        self._media_browser_error = self._media_stop_source = None
         self._music_start_held = False
         self._last_music_ptt_press = None
         self._music_lease = self.audio.acquire("music", stop=self._stop_music_audio)
@@ -756,6 +812,15 @@ class FeatureHost(ProductVideoFlow):
                                            mode_generation=self.modes.generation,
                                            variant=context.get("media_mode") or "face"))
         self._active_media_request = context["request_id"]
+        self.record_media_observation("start", self._media_command_source)
+
+    def _toggle_music(self, source):
+        action = 'pause' if self.media.snapshot()['state'] == 'playing' else 'resume'
+        result = getattr(self.media, action)()
+        self.record_media_observation(action, source, error_code=self._media_browser_error)
+        if action == 'resume' and result.status != 'unknown':
+            self._media_browser_error = None
+        return result
 
     def _music_input(self, key, pressed, now):
         if key == 'START':
@@ -766,7 +831,7 @@ class FeatureHost(ProductVideoFlow):
                 return True
             self._music_start_held = True
         if pressed and key in ('TALK', 'START'):
-            return self.media.pause() if self.media.snapshot()['state'] == 'playing' else self.media.resume()
+            return self._toggle_music('gp8_short')
         if pressed and key in ('ESC', 'B'):
             self.execute(HostIntent('stop_media'))
         return True
@@ -817,20 +882,29 @@ class FeatureHost(ProductVideoFlow):
                 error.code if isinstance(error, FeatureError) else 'media_start_failed', simulated=self.runtime.simulate))
 
     def _stop_music_audio(self):
-        result = self.media.stop("mode_change")
+        before = self.media.snapshot()
+        source = self._media_stop_source or (self._media_command_source if self._media_command_source != 'host_control' else 'mode_change')
+        self._media_stop_source = None
+        result = self.media.stop("media_failed" if self._media_browser_error else "mode_change",
+                                 error_code=self._media_browser_error)
+        if before.get('active_id') is not None:
+            self.record_media_observation('stop', source, media=before, error_code=self._media_browser_error)
+        terminal = self.media.snapshot().get('last_terminal')
+        self._record_media_terminal(terminal, source=source)
         if self.runtime.music_supervised:
-            self._finish_media_terminal(result.request_id, "mode_change", result.status != "unknown")
+            self._finish_media_terminal(result.request_id, "mode_change", result.status != "unknown", terminal=terminal)
         return result.status != "unknown"
 
-    def _finish_media_terminal(self, request, code, released):
+    def _finish_media_terminal(self, request, code, released, *, failed=False, terminal=None):
         previous = self._result_history.get(request)
         if previous is None or previous.status != "running" or previous.simulated:
             return
-        natural = code == "ended"
-        failed = code == "media_failed"
+        natural = code == "ended" or type(terminal) is dict and terminal.get('outcome') in ('ended', 'completed')
+        failed = failed or code == "media_failed" or type(terminal) is dict and terminal.get('outcome') == 'failed'
+        original_code = terminal.get('error_code') if type(terminal) is dict else None
         status = "unknown" if not released else "failed" if failed else "succeeded" if natural else "cancelled"
         self._finish_result(HostResult(request, status,
-            "cleanup_failed" if not released else "media_failed" if failed else "media_completed" if natural else "media_stopped",
+            original_code or ("cleanup_failed" if not released else code if failed else "media_completed" if natural else "media_stopped"),
             simulated=False, executed=previous.executed, completed=released and not failed,
             completion="unknown" if not released or failed else "playback_finished" if natural else "stopped"))
 
@@ -1400,6 +1474,7 @@ class FeatureHost(ProductVideoFlow):
                 self._transition("music", {"target": target, "request_id": request,
                     "media_mode": getattr(intent, "media_mode", None)}, force=True)
             elif name == "stop_media":
+                self._media_stop_source = 'voice_command' if request.startswith('spoken_') else self._media_command_source
                 if self.modes.mode == "music":
                     self._transition("conversation")
                 else:
@@ -1531,7 +1606,31 @@ class FeatureHost(ProductVideoFlow):
             return self._remember(HostResult(request, "rejected", "feature_closed"))
         try:
             action, value = control.action, control.value
-            if action == "question":
+            if action == 'media_observation':
+                if value['generation'] != self.media.snapshot().get('playback_generation'):
+                    raise FeatureError('stale_mode')
+                self._media_lifecycle.update(hidden=value['hidden'], focused=value['focused'])
+                if value['event'] == 'pagehide':
+                    self._media_lifecycle['connected'] = False
+                code = {'aborted':'video_aborted', 'network':'video_network_error', 'decode':'video_decode_error',
+                    'unsupported':'video_src_not_supported', 'play_rejected':'video_play_rejected',
+                    'unknown':'video_error'}.get(value['error_code'])
+                if code and self.modes.mode == 'music':
+                    self._media_browser_error = code
+                self.record_media_observation('lifecycle', value['event'], error_code=code)
+            elif action == 'media_command':
+                if self.modes.mode != 'music' or value['generation'] != self.media.snapshot().get('playback_generation'):
+                    raise FeatureError('stale_mode')
+                previous_source, self._media_command_source = self._media_command_source, value['source']
+                try:
+                    if value['action'] == 'stop':
+                        return self.execute(HostIntent('stop_media'), request_id=request,
+                                            expected_generation=self.modes.generation)
+                    result = self.control(HostControl(value['action'], value['value']), request)
+                    return result
+                finally:
+                    self._media_command_source = previous_source
+            elif action == "question":
                 if not self.start_question(value):
                     raise FeatureError("conversation_busy")
                 self._voice_control_request = request
@@ -1717,6 +1816,9 @@ class FeatureHost(ProductVideoFlow):
                 self._active_video_request = None
                 return self._remember(self._video_host_result(result, request=request))
             elif action == "cancel":
+                if self.modes.mode == 'music':
+                    self._media_stop_source = self._media_command_source
+                    self.record_media_observation('cancelled', self._media_command_source)
                 self.cancel_conversation()
                 if self.modes.mode == "music":
                     self._transition("conversation")
@@ -1818,12 +1920,16 @@ class FeatureHost(ProductVideoFlow):
                 if self.modes.mode != 'music':
                     raise FeatureError('media_inactive')
                 outcome = self.media.seek(value) if action == 'seek' else self.media.replay()
+                self.record_media_observation(action, self._media_command_source, error_code=self._media_browser_error)
                 return self._remember(HostResult(request, outcome.status, outcome.code,
                     outcome.simulated, outcome.executed, outcome.completed, outcome.completion))
             elif action in ("pause", "resume"):
                 if self.modes.mode != "music":
                     raise FeatureError("media_inactive")
                 outcome = getattr(self.media, action)()
+                self.record_media_observation(action, self._media_command_source, error_code=self._media_browser_error)
+                if action == 'resume' and outcome.status != 'unknown':
+                    self._media_browser_error = None
                 return self._remember(HostResult(request, outcome.status, outcome.code,
                     outcome.simulated, outcome.executed, outcome.completed, outcome.completion))
             elif action == "next":
@@ -2018,7 +2124,7 @@ class FeatureHost(ProductVideoFlow):
         if self._video_flow_enabled and self.modes.mode == 'video':
             return self._video_input('TALK', True, self.clock())
         if self.modes.mode == 'music':
-            result = self.media.pause() if self.media.snapshot()['state'] == 'playing' else self.media.resume()
+            result = self._toggle_music('gp8_short')
             return result.status not in ('failed', 'rejected', 'unknown')
         if self.modes.mode == 'photo':
             return self._return_from_photo()
@@ -2113,7 +2219,7 @@ class FeatureHost(ProductVideoFlow):
             if self._last_music_ptt_press is not None and 0 <= now-self._last_music_ptt_press < .25:
                 return True
             self._last_music_ptt_press = now
-            result = self.media.pause() if self.media.snapshot()['state'] == 'playing' else self.media.resume()
+            result = self._toggle_music('gp8_short')
             return result.status not in ('failed', 'rejected', 'unknown')
         if self.modes.mode == 'photo':
             return self._return_from_photo()
@@ -2279,6 +2385,7 @@ class FeatureHost(ProductVideoFlow):
         # Shell liveness is independent of whether the retained face iframe is
         # visible behind a game/photo/music foreground.
         self._last_shell_seen = self.clock()
+        self._media_lifecycle['connected'] = True
         self._native_return_grace_until = None
         self.session.browser_snapshot()
 
@@ -2635,7 +2742,10 @@ class FeatureHost(ProductVideoFlow):
             if (self.runtime.music_supervised and event.kind in ("media_ended", "media_failed")
                     and event.data.get("simulated") is False):
                 self._finish_media_terminal(event.request_id, event.code,
-                                            event.data.get("resource_released") is True)
+                                            event.data.get("resource_released") is True,
+                                            failed=event.kind == 'media_failed', terminal=event.data.get('terminal'))
+            if event.kind in ('media_ended','media_failed'):
+                self._record_media_terminal(event.data.get('terminal'))
             if (event.mode_generation == self.modes.generation and self.modes.mode == "music"
                     and event.request_id == self._active_media_request
                     and event.kind in ("media_ended", "media_failed")):
@@ -2714,6 +2824,9 @@ class FeatureHost(ProductVideoFlow):
         if (self._last_shell_seen is not None and self.clock() - self._last_shell_seen > 3.0
                 and not self.native_game_foreground
                 and (self._native_return_grace_until is None or self.clock() > self._native_return_grace_until)):
+            self._media_lifecycle['connected'] = False
+            self.record_media_observation('heartbeat_expired', 'shell_heartbeat_expired')
+            self._media_stop_source = 'shell_heartbeat_expired'
             self.stop()
             self._last_shell_seen = None
         self._tick_music_preparation()
@@ -2762,7 +2875,8 @@ class FeatureHost(ProductVideoFlow):
             recent = ([dict(value["result"]) for value in list(self._records.values())[-8:]]
                       + [dict(value) for value in self._safety_results.values()])[-8:]
         state = {"version": 1, "sequence": self._state_sequence, "simulation": self.runtime.simulate,
-            "runtime_provenance": dict(source_revision_at_start=self._runtime_revision,
+            "media_diagnostics": self.media_diagnostics.snapshot(),
+            "runtime_provenance": dict(source_revision_at_start=self._runtime_revision, run_id=self._run_id,
                 evidence='checkout_head_at_owner_start', worktree_verified=False, private_runner_receipt_verified=False),
             "capabilities": self.runtime.public(), "real_features_enabled": self.runtime.public()["real_features_enabled"],
             "mode": self.modes.mode, "mode_generation": self.modes.generation,
@@ -2898,6 +3012,8 @@ class FeatureHost(ProductVideoFlow):
     def close(self):
         if self._closed and not self._cleanup_errors:
             return
+        self._media_stop_source = 'app_close'
+        self.record_media_observation('stop', 'app_close')
         self._closed = True
         errors = []
         try:

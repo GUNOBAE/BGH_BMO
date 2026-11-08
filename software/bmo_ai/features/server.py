@@ -48,6 +48,7 @@ class FeatureServer:
                     .replace('aria-label="BMO 시작 준비"', 'aria-label="Getting BMO ready"'))
             self._resources["/"] = ("text/html; charset=utf-8", product_page.encode())
             for name, mime in (("desktop.js", "text/javascript; charset=utf-8"),
+                               ("desktop_poll.js", "text/javascript; charset=utf-8"),
                                ('playable.js', 'text/javascript; charset=utf-8'),
                                ("desktop.css", "text/css; charset=utf-8")):
                 self._resources["/" + name] = (mime, product.joinpath(name).read_bytes())

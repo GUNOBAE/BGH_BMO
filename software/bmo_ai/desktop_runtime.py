@@ -197,6 +197,9 @@ class DesktopRuntime:
         if self.host is not None or self._closed:
             raise FeatureError("desktop_host_exists")
         self.host, self.greeting = host, greeting
+        bind = getattr(host, 'bind_runtime_identity', None)
+        if callable(bind):
+            bind(self.run_id)
         self._advance_progress(65, "engine_ready")
         if self.clock() - self._began > self.startup_timeout:
             self.fail("host_startup_timeout")
@@ -891,6 +894,9 @@ class DesktopRuntime:
                 and (self._native_return_grace_until is None or self.clock() > self._native_return_grace_until)):
             self._cancel.set()
             if self.host is not None:
+                record = getattr(self.host, 'record_media_observation', None)
+                if callable(record):
+                    record('heartbeat_expired', 'browser_disconnected')
                 self.host.stop()
             self._disconnect_restore_code = (self._code if self._phase == "ready" else "greeting_cancelled")
             self.fail("browser_disconnected")

@@ -204,6 +204,7 @@ class MediaFeature:
         self._variant = "face"
         self._video_fd = None
         self._playback_generation = 0
+        self._last_terminal = None
         self._inspect_assets()
 
     def _inspect_assets(self):
@@ -252,7 +253,55 @@ class MediaFeature:
                     reason_code="user_media_missing" if not self._items else "ok",
                     capabilities=list(self.backend.capabilities) if self.backend else [],
                     simulated=bool(self.backend and self.backend.simulated),
-                    cue_kind=self._handle.asset.cue_kind if self._handle and self._handle.cues else "none")
+                    cue_kind=self._handle.asset.cue_kind if self._handle and self._handle.cues else "none",
+                    last_terminal=dict(self._last_terminal) if self._last_terminal else None)
+
+    def _output_evidence(self):
+        read = getattr(self.backend, 'diagnostics', None)
+        try:
+            value = read() if callable(read) else {}
+        except Exception:
+            value = {}
+        return value if type(value) is dict else {}
+
+    def _terminal_evidence(self, reason, error_code=None):
+        output = self._output_evidence() if self._handle is not None else {}
+        # A control can discover cleanup failure after the output already
+        # underrun/stalled. Keep the output failure, with cleanup separate.
+        original = output.get('error_code') or error_code
+        original = original if valid_id(original) else None
+        cleanup = output.get('cleanup_error')
+        cleanup = cleanup if valid_id(cleanup) else None
+        try:
+            position = self.backend.position() if self._handle is not None else None
+        except Exception:
+            position = None
+        if type(position) not in (int, float) or not math.isfinite(position) or position < 0:
+            position = None
+        return dict(catalog_id=self._active.id if self._active else None,
+                    variant=self._variant, request_id=self._request,
+                    mode_generation=self._generation, playback_generation=self._playback_generation,
+                    position_seconds=position, duration_seconds=self._handle.duration if self._handle else None,
+                    outcome='failed' if original or reason == 'media_failed' else 'ended' if reason == 'ended' else 'cancelled',
+                    trigger=reason if valid_id(reason) else 'user', error_code=original,
+                    cleanup_error=cleanup, resource_released=False)
+
+    def _record_terminal(self, value, released):
+        # Observe again after cleanup, retaining the original output failure.
+        output = self._output_evidence() if value['duration_seconds'] is not None else {}
+        primary = output.get('error_code')
+        cleanup = output.get('cleanup_error')
+        if value['error_code'] is None and valid_id(primary):
+            value['error_code'] = primary
+        if valid_id(cleanup):
+            value['cleanup_error'] = cleanup
+        if not released and value['cleanup_error'] is None:
+            value['cleanup_error'] = 'cleanup_failed'
+        if value['error_code'] or not released:
+            value['outcome'] = 'failed'
+        value['resource_released'] = released
+        self._last_terminal = dict(value)
+        return value
 
     def variants(self, catalog_id):
         item = next((item for item in self._items if item.id == catalog_id), None)
@@ -340,9 +389,11 @@ class MediaFeature:
             code = error.code if isinstance(error, FeatureError) else "media_start_failed"
             if isinstance(error, FeatureError) and self._handle is None:
                 self._asset_status[catalog_id] = ("ASSET_PENDING" if code == "asset_pending" else "UNVERIFIED", code)
+            terminal = self._terminal_evidence('start_failed', code)
             result = self._release()
+            self._record_terminal(terminal, result)
             self._events.append(FeatureEvent("media_failed", mode_generation, request_id,
-                code if result else "cleanup_failed", {"resource_released": result}))
+                code, {"resource_released": result, "terminal": dict(terminal)}))
             return HostResult(request_id, "failed" if result else "unknown", code if result else "cleanup_failed")
 
     def _release(self):
@@ -373,9 +424,10 @@ class MediaFeature:
             self._playback_generation += 1
             return HostResult(self._request, "simulated" if simulated else "succeeded", "ok", simulated,
                               not simulated, True, "simulated" if simulated else "operation_completed")
-        except Exception:
-            self.stop("media_failed")
-            return HostResult(self._request, "failed", "media_control_failed", simulated)
+        except Exception as error:
+            code = error.code if isinstance(error, FeatureError) else "media_control_failed"
+            result = self.stop("media_failed", error_code=code)
+            return HostResult(self._request, "failed" if result.completed else "unknown", code, simulated)
 
     def replay(self):
         result = self.seek(0.)
@@ -383,17 +435,23 @@ class MediaFeature:
             return self.resume()
         return result
 
-    def stop(self, reason="user"):
+    def stop(self, reason="user", *, error_code=None):
         simulated = bool(self.backend is None or self.backend.simulated)
         if self._handle is None:
             return HostResult(self._request, "simulated" if simulated else "succeeded", "already_stopped",
                               simulated, False, True, "simulated" if simulated else "stopped")
-        if not self._release():
+        code = reason if valid_id(reason) else "user"
+        terminal = self._terminal_evidence(code, error_code)
+        released = self._release()
+        self._record_terminal(terminal, released)
+        failed = terminal['outcome'] == 'failed'
+        event_code = terminal['error_code'] or ('cleanup_failed' if not released else code)
+        self._events.append(FeatureEvent("media_failed" if failed else "media_ended",
+            self._generation, self._request, event_code,
+            {"resource_released": released, "simulated": simulated, "terminal": dict(terminal)}))
+        if not released:
             return HostResult(self._request, "unknown", "cleanup_failed", simulated, not simulated)
-        code = reason if reason in {"user", "mode_change", "shutdown", "ended", "media_failed", "next_track"} else "user"
-        self._events.append(FeatureEvent("media_failed" if code == "media_failed" else "media_ended",
-            self._generation, self._request, code, {"resource_released": True, "simulated": simulated}))
-        return HostResult(self._request, "simulated" if simulated else "succeeded", code,
+        return HostResult(self._request, "simulated" if simulated else "succeeded", event_code,
                           simulated, False, True, "simulated" if simulated else "stopped")
 
     def pause(self):
@@ -415,9 +473,10 @@ class MediaFeature:
             self._state = "paused" if pause else "playing"
             return HostResult(self._request, "simulated" if simulated else "succeeded", "ok", simulated,
                               not simulated, True, "simulated" if simulated else "operation_completed")
-        except Exception:
-            self.stop("media_failed")
-            return HostResult(self._request, "failed", "media_control_failed", simulated)
+        except Exception as error:
+            code = error.code if isinstance(error, FeatureError) else "media_control_failed"
+            result = self.stop("media_failed", error_code=code)
+            return HostResult(self._request, "failed" if result.completed else "unknown", code, simulated)
 
     def next(self, *, request_id, mode_generation):
         current = next((n for n, item in enumerate(self._items) if self._active and item.id == self._active.id), -1)
@@ -440,13 +499,13 @@ class MediaFeature:
         return self.start(self._items[following].id, request_id=request_id, mode_generation=mode_generation)
 
     def poll(self):
-        if self._handle is not None:
+        if self._handle is not None and self._state != "cleanup_failed":
             try:
                 terminal = self.backend.poll()
                 if terminal is not None:
                     self.stop("media_failed" if terminal == "failed" else "ended")
-            except Exception:
-                self.stop("media_failed")
+            except Exception as error:
+                self.stop("media_failed", error_code=error.code if isinstance(error, FeatureError) else 'media_poll_failed')
         events = tuple(self._events)
         self._events.clear()
         return events

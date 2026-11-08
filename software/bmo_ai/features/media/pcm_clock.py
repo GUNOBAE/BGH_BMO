@@ -118,6 +118,7 @@ class SampleClockWavBackend:
         self._frame = self._rate = 0
         self._paused = False
         self._terminal = self._error = None
+        self._cleanup_error = None
         self._ready = threading.Event()
         self._output_started = False
         self._retained_sink = None
@@ -128,6 +129,7 @@ class SampleClockWavBackend:
         if self._handle is not None:
             raise FeatureError("media_busy")
         self._handle, self._frame, self._terminal, self._error = handle, 0, None, None
+        self._cleanup_error = None
         self._paused = False
         try:
             self._launch()
@@ -214,7 +216,9 @@ class SampleClockWavBackend:
                     sink.close()
                 except BaseException:
                     with self._guard:
-                        self._error, self._terminal = "media_output_cleanup_failed", "failed"
+                        self._cleanup_error, self._terminal = "media_output_cleanup_failed", "failed"
+                        if self._error is None:
+                            self._error = self._cleanup_error
                         self._retained_sink = sink
             self._ready.set()
 
@@ -245,6 +249,13 @@ class SampleClockWavBackend:
         with self._guard:
             return self._terminal
 
+    def diagnostics(self):
+        """Retain original finite output failure through stop/drop cleanup."""
+        with self._guard:
+            return dict(error_code=self._error, cleanup_error=self._cleanup_error,
+                        terminal=self._terminal, output_started=self._output_started,
+                        position_seconds=self._frame/self._rate if self._rate else 0.)
+
     def pause(self):
         if self._handle is None:
             raise FeatureError("media_inactive")
@@ -270,6 +281,7 @@ class SampleClockWavBackend:
             at_end = seconds == self._handle.duration
             self._frame = frames if at_end else min(frames - 1, round(seconds * self._rate))
             self._terminal, self._error = "ended" if at_end else None, None
+            self._cleanup_error = None
             self._output_started = False
         if not self._paused and not at_end:
             self._launch()
@@ -290,7 +302,8 @@ class SampleClockWavBackend:
         self._handle = None
         with self._guard:
             self._frame = self._rate = 0
-            self._terminal = self._error = None
+            # The next start/seek resets this evidence. Cleanup must not erase
+            # the failure before MediaFeature/Host records the terminal event.
             self._output_started = False
         self._paused = False
 

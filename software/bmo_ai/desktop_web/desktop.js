@@ -1,6 +1,7 @@
 /* Product wrapper only. The pinned R10 and Python audio owner stay unchanged. */
 (()=>{'use strict';
 const $=id=>document.getElementById(id),frame=$('face'),token=document.querySelector('meta[name="bmo-command-token"]').content;
+let pollWorker=null,pollOwner="main_fallback",pollSerial=0,renderSerial=Promise.resolve();
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null,presentationGeneration=0;
 let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0,pttFinishPending=false;
 let selectKey=null,selectTimer=null;const panelParents=new Map();
@@ -23,7 +24,7 @@ const previewSamples={received:[],decoded:[],displayed:[]};
 const inputEvidence={enter_presses:0,keyups:0,repeats_ignored:0,blocked_mode:0,request_sent:0,request_accepted:0,request_rejected:0,cancelled_blur:0,physical_identity:'UNVERIFIED'};
 function bump(name){inputEvidence[name]=Math.min(999999,inputEvidence[name]+1);}
 const messages={credentials_missing:'최초 키 설정이 필요해요. 실행 가이드를 확인해 주세요.',greeting_missing:'시작 인사 캐시가 아직 준비되지 않았어요.',greeting_unapproved:'시작 인사의 청취 승인이 필요해요.',greeting_corrupt:'시작 인사 캐시를 확인해 주세요.',face_ready_timeout:'얼굴 준비 시간이 초과됐어요.',host_startup_timeout:'대화 엔진 준비 시간이 초과됐어요.',greeting_timeout:'시작 인사 재생 정리를 기다리고 있어요.',browser_disconnected:'연결을 다시 확인하고 있어요.'};
-async function post(path,payload){const response=await fetch(path,{method:'POST',keepalive:payload.action==='cancel',headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce:crypto.randomUUID(),payload})});if(!response.ok)throw Error('요청을 완료하지 못했어요.');return response.json();}
+async function post(path,payload){const response=await fetch(path,{method:'POST',keepalive:['cancel','media_observation'].includes(payload.action),headers:{'Content-Type':'application/json','X-BMO-Token':token},body:JSON.stringify({version:1,nonce:crypto.randomUUID(),payload})});if(!response.ok)throw Error('요청을 완료하지 못했어요.');return response.json();}
 const desktop=(action,value=null)=>post('/api/desktop',{action,value});
 function hideCaption(){$('subtitles').textContent='';$('subtitles').hidden=true;}
 function clearCaption(){const current=window.BMOIntegration?.state;suppressedCaption=current?.utterance_id||null;hideCaption();}
@@ -530,6 +531,19 @@ function renderArmReceipt(result){
   result.simulated===true&&result.status==='simulated'?'소프트웨어에서 요청을 확인했어요. 실물 팔 동작은 확인하지 않았어요.':
   '팔 요청을 받았어요. 통신 응답을 확인하고 있어요.';
 }
+function mediaObservation(event,error_code=null){
+ if(closed)return Promise.resolve();
+ return control('media_observation',{event,generation:featureState?.media?.playback_generation||0,
+  hidden:document.hidden,focused:document.hasFocus(),error_code}).catch(()=>{});
+}
+function mediaCommand(action,source,value=null){
+ if(action==='resume'||action==='replay'){
+  mediaVideoFailure=null;mediaSyncRequired=true;
+  if($('notice').dataset.musicError){noticeUntil=0;noticeText='';clearTimeout(musicErrorTimer);delete $('notice').dataset.musicError;$('notice').hidden=true;}
+ }
+ return control('media_command',{action,source,generation:featureState?.media?.playback_generation||0,value});
+}
+function videoErrorCode(error){return ({1:'aborted',2:'network',3:'decode',4:'unsupported'})[error?.code]||'unknown';}
 function stopMediaVideo(){
  const player=$('music-video');mediaVideoKey=null;mediaVideoFailure=null;mediaPlayPending=null;player.pause();
  if(player.hasAttribute('src')){player.removeAttribute('src');player.load();}
@@ -543,13 +557,13 @@ function showMusicControls(){
  $('music-surface').dataset.controlsVisible='true';clearTimeout(mediaControlsTimer);
  mediaControlsTimer=setTimeout(hideMusicControls,2600);
 }
-function stopMusic(){
+function stopMusic(source='touch_stop'){
  if(mediaStopping)return Promise.resolve();
  mediaStopping=true;clearTimeout(mediaHoldTimer);clearTimeout(mediaControlsTimer);
  $('music-surface').dataset.controlsVisible='false';
  clearCaption();stopMediaVideo();
  for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
- return intent('stop_media').catch(()=>{mediaStopping=false;error('음악 종료를 확인해 주세요.');});
+ return mediaCommand('stop',source).catch(()=>{mediaStopping=false;error('음악 종료를 확인해 주세요.');});
 }
 function renderMusic(next){
  const media=next.media||{},active=next.mode==='music',live=next.capabilities?.music==='explicit_supervised';
@@ -603,7 +617,7 @@ function renderMusic(next){
   const changedSource=player.getAttribute('src')!==url;mediaVideoKey=identity;mediaVideoFailure=null;mediaSyncRequired=true;
   if(changedSource){player.pause();player.src=url;player.load();}
  }
- if(mediaVideoFailure===mediaVideoKey)return;
+ if(mediaVideoFailure===mediaVideoKey||document.hidden)return;
  if(player.readyState>=1&&(mediaSyncRequired||Math.abs(player.currentTime-position)>.12)){
   try{player.currentTime=Math.min(Math.max(0,position),Number.isFinite(player.duration)?Math.max(0,player.duration-.001):position);}catch(_){}mediaSyncRequired=false;
  }
@@ -611,7 +625,14 @@ function renderMusic(next){
   if(player.ended&&duration>0&&position>=duration-.2)return;
   if(player.paused&&mediaPlayPending?.key!==mediaVideoKey){
    const playbackKey=mediaVideoKey,attempt={key:playbackKey};mediaPlayPending=attempt;
-   player.play().catch(()=>{if(!closed&&mediaPlayPending===attempt&&playbackKey===mediaVideoKey&&mediaVideoFailure!==playbackKey){mediaVideoFailure=playbackKey;control('pause').catch(()=>{});error('음악 영상을 재생하지 못했어요. 음악을 멈추고 파일·codec 상태를 확인해 주세요.');}})
+   player.play().catch(failure=>{if(!closed&&mediaPlayPending===attempt&&playbackKey===mediaVideoKey&&mediaVideoFailure!==playbackKey){
+    const code=failure?.name==='AbortError'?'aborted':failure?.name==='NotSupportedError'?'unsupported':'play_rejected';
+    mediaObservation('video_play_rejected',code);
+    // A background rendering interruption does not own local PCM playback.
+    // Visibility restoration requests a single fresh decoder attempt.
+    if(document.hidden){mediaSyncRequired=true;return;}
+    mediaVideoFailure=playbackKey;mediaCommand('pause','video_play_rejected').catch(()=>{});
+    error('음악 영상을 재생하지 못했어요. 음악을 멈추고 파일·codec 상태를 확인해 주세요.');}})
     .finally(()=>{if(mediaPlayPending===attempt)mediaPlayPending=null;});
   }
  }else{
@@ -925,11 +946,53 @@ function videoPreviewDisplayed(){
    .catch(()=>error('영상 미리보기 준비를 확인하지 못했어요. Back으로 돌아가 주세요.'));
  }));
 }
-async function poll(){if(closed||document.hidden)return;const current=epoch;controller=new AbortController();const abort=setTimeout(()=>controller?.abort(),1200);try{
- const r=await fetch('/api/desktop',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error();const next=await r.json();if(current!==epoch||closed)return;
- lastSuccess=performance.now();render(next);await ready();await modes();
-}catch(_){if(performance.now()-lastSuccess>2500){clearCaption();$('splash').hidden=true;error('BMO 연결이 끊겼어요. 창을 닫고 수동으로 다시 실행해 주세요.');}}
-finally{clearTimeout(abort);controller=null;if(!closed&&current===epoch&&!document.hidden)timer=setTimeout(poll,100);}}
+function pollError(){if(performance.now()-lastSuccess>2500){clearCaption();$('splash').hidden=true;error('BMO 연결이 끊겼어요. 창을 닫고 수동으로 다시 실행해 주세요.');}}
+async function applyPoll(next){
+ if(closed)return;
+ lastSuccess=performance.now();
+ if(document.hidden){state=next;window.BMODesktop.state=next;return;}
+ render(next);await ready();await modes();
+}
+async function mainPoll(){
+ if(closed||controller)return;const current=epoch;
+ controller=new AbortController();const active=controller;const abort=setTimeout(()=>active.abort(),1200);
+ try{
+  const r=await fetch('/api/desktop',{cache:'no-store',signal:active.signal});if(!r.ok)throw Error();
+  const next=await r.json();if(current!==epoch||closed)return;await applyPoll(next);
+ }catch(_){pollError();}
+ finally{clearTimeout(abort);if(controller===active)controller=null;if(!closed&&current===epoch&&!pollWorker)timer=setTimeout(mainPoll,document.hidden?1000:100);}
+}
+function poll(){
+ if(closed)return;
+ if(pollWorker){pollWorker.postMessage({action:'poll'});return;}
+ mainPoll();
+}
+function stopPolling(){
+ clearTimeout(timer);controller?.abort();epoch++;
+ if(pollWorker){pollWorker.postMessage({action:'stop'});pollWorker.terminate();pollWorker=null;}
+}
+function startPolling(){
+ if(typeof Worker==='function')try{
+  const worker=new Worker('/desktop_poll.js');pollWorker=worker;pollOwner='dedicated_worker';
+  worker.onmessage=event=>{
+   if(closed||worker!==pollWorker)return;
+   if(event.data?.kind==='error'){pollError();return;}
+   if(event.data?.kind!=='snapshot')return;
+   worker.postMessage({action:'ack',serial:event.data.serial});
+   // A newer snapshot may supersede an unrendered one, never create parallel
+   // /features requests or two heartbeat owners.
+   const serial=++pollSerial;lastSuccess=performance.now();
+   renderSerial=renderSerial.catch(()=>{}).then(()=>{
+    if(serial===pollSerial&&!closed)return applyPoll(event.data.value);
+   });
+  };
+  worker.onerror=()=>{
+   if(worker!==pollWorker)return;worker.terminate();pollWorker=null;pollOwner='main_fallback';poll();
+  };
+  worker.postMessage({action:'visibility',hidden:document.hidden});return;
+ }catch(_){pollWorker=null;}
+ poll();
+}
 $('notice-menu').onclick=menu;$('resume').onclick=closeToFace;$('exit').onclick=()=>desktop('exit').catch(()=>{error('BMO가 종료된 상태예요. 창을 닫아 주세요.');window.close();});
 function ptt(){if(!pttEnabled){error('버튼 녹음은 사용자 검수용 마이크 opt-in이 필요해요.');return;}
  if(pttPending){control('ptt').catch(()=>error('버튼 입력을 확인해 주세요.'));return;}
@@ -1067,17 +1130,18 @@ $('master-volume').oninput=()=>{$('master-volume-value').textContent=Math.round(
 $('master-volume').onchange=setVolume;$('master-mute').onchange=setVolume;
 $('music-volume').oninput=()=>{$('music-volume-value').textContent=Math.round(Number($('music-volume').value)*100)+'%';};
 $('music-volume').onchange=()=>setVolume('music');$('music-mute').onchange=()=>setVolume('music');
-for(const [id,action] of [['music-pause','pause'],['music-resume','resume'],['music-next','next']])$(id).onclick=()=>control(action).catch(()=>error('음악 상태를 확인해 주세요.'));
-$('music-stop').onclick=stopMusic;
-$('music-toggle').onclick=()=>control(featureState?.media?.state==='playing'?'pause':'resume').catch(()=>error('음악 상태를 확인해 주세요.'));
-$('music-replay').onclick=()=>control('replay').catch(()=>error('음악을 다시 시작하지 못했어요.'));
-$('music-seek').onchange=()=>{const position=Number($('music-seek').value);if(!Number.isFinite(position))return;mediaSeekPending=true;control('seek',position).catch(()=>error('음악 재생 위치를 바꾸지 못했어요.')).finally(()=>{mediaSeekPending=false;});};
-$('music-back').onclick=stopMusic;
+for(const [id,action] of [['music-pause','pause'],['music-resume','resume']])$(id).onclick=()=>mediaCommand(action,'touch_'+action).catch(()=>error('음악 상태를 확인해 주세요.'));
+$('music-next').onclick=()=>control('next').catch(()=>error('음악 상태를 확인해 주세요.'));
+$('music-stop').onclick=()=>stopMusic('touch_stop');
+$('music-toggle').onclick=()=>{const action=featureState?.media?.state==='playing'?'pause':'resume';return mediaCommand(action,'touch_'+action).catch(()=>error('음악 상태를 확인해 주세요.'));};
+$('music-replay').onclick=()=>mediaCommand('replay','touch_replay').catch(()=>error('음악을 다시 시작하지 못했어요.'));
+$('music-seek').onchange=()=>{const position=Number($('music-seek').value);if(!Number.isFinite(position))return;mediaSeekPending=true;mediaCommand('seek','touch_seek',position).catch(()=>error('음악 재생 위치를 바꾸지 못했어요.')).finally(()=>{mediaSeekPending=false;});};
+$('music-back').onclick=()=>stopMusic('touch_back');
 for(const event of ['pointerdown','pointermove'])$('music-surface').addEventListener(event,showMusicControls,{passive:true});
 $('music-toolbar').addEventListener('focusin',showMusicControls);
 $('music-toolbar').addEventListener('focusout',()=>{clearTimeout(mediaControlsTimer);mediaControlsTimer=setTimeout(hideMusicControls,2600);});
 $('music-video-view').addEventListener('pointerdown',()=>{if($('music-toolbar').contains(document.activeElement))document.activeElement.blur();},{passive:true});
-$('music-video').addEventListener('error',()=>{if(!closed&&$('music-video').error!==null&&mediaVideoKey!==null&&mediaVideoFailure!==mediaVideoKey){mediaVideoFailure=mediaVideoKey;control('pause').catch(()=>{});error('음악 영상을 열지 못했어요. 파일은 보존했어요.');}});
+$('music-video').addEventListener('error',()=>{if(!closed&&$('music-video').error!==null&&mediaVideoKey!==null&&mediaVideoFailure!==mediaVideoKey){mediaVideoFailure=mediaVideoKey;mediaObservation('video_error',videoErrorCode($('music-video').error));mediaCommand('pause','video_error').catch(()=>{});error('음악 영상을 열지 못했어요. 파일은 보존했어요.');}});
 
 for(const id of ['game-back','foreground-back'])$(id).onclick=()=>intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
 const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',z:'A',b:'B',x:'B',' ':'A',Enter:'START',Shift:'SELECT',Escape:'ESC'};
@@ -1103,8 +1167,8 @@ function key(event,pressed){if(event.isComposing)return;
    const longHold=mediaHoldTriggered||performance.now()-mediaHoldStarted>=1500;
    mediaKeyHeld=false;mediaHoldTriggered=false;
    if(currentMode==='music'&&!document.querySelector('dialog[open]')){
-    if(longHold)stopMusic();
-    else if(!mediaStopping)control(featureState?.media?.state==='playing'?'pause':'resume').catch(()=>error('음악 상태를 확인해 주세요.'));
+    if(longHold)stopMusic('gp8_hold');
+    else if(!mediaStopping)mediaCommand(featureState?.media?.state==='playing'?'pause':'resume','gp8_short').catch(()=>error('음악 상태를 확인해 주세요.'));
    }
   }
   return;
@@ -1114,12 +1178,12 @@ function key(event,pressed){if(event.isComposing)return;
   mediaKeyHeld=true;mediaHoldTriggered=false;mediaHoldStarted=performance.now();showMusicControls();
   mediaHoldTimer=setTimeout(()=>{
    if(mediaKeyHeld&&currentMode==='music'&&!document.querySelector('dialog[open]')){
-    mediaHoldTriggered=true;stopMusic();
+    mediaHoldTriggered=true;stopMusic('gp8_hold');
    }
   },1500);
   return;
  }
- if(event.key==='Escape'&&currentMode==='music'&&!isTextInput(event.target)){event.preventDefault();event.stopPropagation();if(pressed)stopMusic();return;}
+ if(event.key==='Escape'&&currentMode==='music'&&!isTextInput(event.target)){event.preventDefault();event.stopPropagation();if(pressed)stopMusic('escape');return;}
  if(event.key==='Enter'&&videoKeyHeld){event.preventDefault();event.stopPropagation();if(!pressed)videoKeyHeld=false;return;}
  if(event.key==='Enter'&&currentMode==='video'&&!document.querySelector('dialog[open]')&&!isTextInput(event.target)){
   event.preventDefault();event.stopPropagation();if(!pressed||event.repeat)return;videoKeyHeld=true;
@@ -1154,9 +1218,11 @@ function blurPTT(event){const nativeAtEvent=nativeOwnsInput();setTimeout(()=>{
  // Focusing the iframe blurs its parent window. A later move back to a notice
  // button is still inside BMO, even if it happens before this callback runs.
  // Only loss of the whole document's focus cancels trusted input here.
- if(nativeAtEvent||nativeOwnsInput()||event.isTrusted&&document.hasFocus())return;clearSelectKey();photoReviewKeyHeld=false;videoKeyHeld=false;mediaKeyHeld=false;mediaHoldTriggered=false;clearTimeout(mediaHoldTimer);if(currentMode==='music'&&!mediaStopping)control('pause').catch(()=>{});bump('cancelled_blur');cancelPTT();window.BMOPlayableGames?.suspend('blur');
+ mediaObservation('blur');
+ if(nativeAtEvent||nativeOwnsInput()||event.isTrusted&&document.hasFocus())return;clearSelectKey();photoReviewKeyHeld=false;videoKeyHeld=false;mediaKeyHeld=false;mediaHoldTriggered=false;clearTimeout(mediaHoldTimer);bump('cancelled_blur');cancelPTT();window.BMOPlayableGames?.suspend('blur');
 },0);}
 window.addEventListener('blur',blurPTT);
+window.addEventListener('focus',()=>mediaObservation('focus'));
 let touchStart=null,inputDocument=null,hintObserver=null;
 function hideIntegratedFaceHint(doc){
  // The approved file remains byte-for-byte unchanged. Only its standalone
@@ -1249,7 +1315,7 @@ window.addEventListener('blur',event=>{
  },0);
 });
 window.addEventListener('gamepaddisconnected',()=>releasePad());
-window.addEventListener('pagehide',()=>{clearSelectKey();hintObserver?.disconnect();clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
-document.addEventListener('visibilitychange',()=>{clearCaption();epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){hideFaceVolume();stopPreview();$('video-review-player').pause();$('music-video').pause();if(currentMode==='music')control('pause').catch(()=>{});window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();if(!nativeOwnsInput())cancelPTT();}else{syncUiActivity();refreshAdapter();poll();}});
-window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence,previewEvidence};window.BMOPlayableGames?.configure({control,intent});poll();
+window.addEventListener('pagehide',()=>{mediaObservation('pagehide');stopPolling();clearSelectKey();hintObserver?.disconnect();clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
+document.addEventListener('visibilitychange',()=>{mediaObservation(document.hidden?'hidden':'visible');clearCaption();clearTimeout(timer);if(pollWorker)pollWorker.postMessage({action:'visibility',hidden:document.hidden});if(document.hidden){hideFaceVolume();stopPreview();$('video-review-player').pause();window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();if(!nativeOwnsInput())cancelPTT();}else{syncUiActivity();refreshAdapter();}poll();});
+window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence,previewEvidence};Object.defineProperty(window.BMODesktop,'pollEvidence',{get:()=>({owner:pollOwner,hidden:document.hidden,closed})});window.BMOPlayableGames?.configure({control,intent});startPolling();
 })();

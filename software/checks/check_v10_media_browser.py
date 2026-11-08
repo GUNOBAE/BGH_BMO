@@ -136,14 +136,21 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 transport_actions=[]
                 def observe_transport(request):
                     if request.method=='POST' and request.url.endswith('/api/control'):
-                        action=request.post_data_json.get('payload',{}).get('action')
+                        payload=request.post_data_json.get('payload',{})
+                        action=payload.get('action')
+                        if action=='media_command':action=payload.get('value',{}).get('action')
                         if action in ('pause','resume'):transport_actions.append(action)
                 page.on('request',observe_transport)
                 page.route('**/*',lambda route:route.continue_() if route.request.url.startswith(fixture.url) else route.abort())
                 page.add_init_script("""window.__browserAudioCalls=0;window.__musicPlays=0;
+                    const NativeWorker=window.Worker;
+                    window.Worker=class extends NativeWorker{constructor(...args){super(...args);window.__pollWorker=this;}};
                     const nativePlay=HTMLMediaElement.prototype.play;
                     HTMLMediaElement.prototype.play=function(){
                       if(this.tagName==='VIDEO'&&this.muted){window.__musicPlays++;
+                        if(this.id==='music-video'&&window.__injectMusicPlayRejection){
+                          window.__injectMusicPlayRejection=false;
+                          return Promise.reject(new DOMException('Synthetic decoder rejection','NotSupportedError'));}
                         if(this.id==='music-video'&&window.__injectLateMusicRejection){
                           window.__injectLateMusicRejection=false;window.__musicLateRejectStarted=true;
                           nativePlay.call(this).catch(()=>{});
@@ -281,6 +288,15 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert response.status==206 and response.headers['content-type']=='video/mp4' and len(response.body())==32
                 assert b'ftyp' in response.body()
                 checks.append('one stable song offers face/video; actual embedded-audio MP4 decodes through muted product video and verified Range route')
+                # The face iframe receives ordinary browser focus. This must
+                # release key state, not send an unrequested music pause.
+                before_focus=len(transport_actions)
+                page.locator('#face').focus()
+                page.wait_for_timeout(150)
+                assert fixture.features()['media']['state']=='playing'
+                assert len(transport_actions)==before_focus,transport_actions[before_focus:]
+                assert page.evaluate('()=>BMODesktop.pollEvidence.owner')=='dedicated_worker'
+                checks.append('ordinary iframe focus preserves music and uses one page-owned poll worker')
                 baseline=fixture.features()['test_fixture']
                 reveal()
                 page.locator('#music-volume').fill('0');page.locator('#music-volume').dispatch_event('change')
@@ -313,6 +329,18 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 reject_retired_play()
                 toggle_music('playing')
                 page.wait_for_function("()=>!document.querySelector('#music-video').paused")
+                # A real rejected play promise pauses the single PCM owner,
+                # retains a fixed browser error, and permits an explicit retry.
+                toggle_music('paused')
+                page.evaluate('()=>{window.__injectMusicPlayRejection=true;}')
+                page.locator('#music-toggle').click()
+                wait(lambda state:any(row['source']=='video_play_rejected' for row in state['media_diagnostics']['events']))
+                music_state('paused')
+                evidence=fixture.features()['media_diagnostics']['events']
+                assert any(row['source']=='video_play_rejected' and row['error_code']=='video_src_not_supported' for row in evidence),evidence
+                toggle_music('playing')
+                page.wait_for_function("()=>!document.querySelector('#music-video').paused")
+                checks.append('decoder rejection retains its cause, pauses exactly one owner, and explicit Play recovers without automatic retries')
                 # Deterministically expose the CI boundary: the server is
                 # paused while the browser still renders playing / Pause.
                 held=[]

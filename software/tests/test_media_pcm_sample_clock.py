@@ -196,6 +196,54 @@ class MediaPcmSampleClockTests(unittest.TestCase):
         self.assertEqual(SilentPcmSink.active, 0)
         self.assertIsNone(self.backend._retained_sink)
 
+    def test_underrun_keeps_original_error_position_and_separate_cleanup_failure(self):
+        sink = self.start()
+        sink.advance(80)
+        self.wait(lambda: self.backend.position() == .01)
+        with patch.object(sink, "close", side_effect=OSError("private cleanup detail")):
+            with patch.object(sink, "write", side_effect=FeatureError("media_output_underrun")):
+                self.wait(lambda: self.backend.poll() == "failed")
+                events = self.feature.poll()
+                failed = events[-1]
+                self.assertEqual((failed.kind, failed.code), ("media_failed", "media_output_underrun"))
+                terminal = failed.data["terminal"]
+                self.assertEqual(terminal["outcome"], "failed")
+                self.assertEqual(terminal["error_code"], "media_output_underrun")
+                self.assertEqual(terminal["cleanup_error"], "media_output_cleanup_failed")
+                self.assertEqual(terminal["position_seconds"], .01)
+                self.assertEqual(terminal["duration_seconds"], 1.)
+                self.assertEqual(terminal["catalog_id"], "space_potatoes")
+                self.assertFalse(terminal["resource_released"])
+                self.assertEqual(self.feature.poll(), ())  # no automatic cleanup/restart loop
+                self.assertEqual(SilentPcmSink.active, 1)
+        self.assertTrue(self.feature.stop().completed)
+        self.assertEqual(SilentPcmSink.active, 0)
+        self.assertEqual(self.backend.diagnostics()["error_code"], "media_output_underrun")
+
+    def test_stalled_output_and_natural_end_remain_distinct_after_cleanup(self):
+        now = [0.]
+        self.backend.clock = lambda: now[0]
+        self.start()
+        now[0] = 3.1
+        self.wait(lambda: self.backend.poll() == "failed")
+        failed = self.feature.poll()[-1]
+        self.assertEqual(failed.code, "media_output_stalled")
+        self.assertTrue(failed.data["resource_released"])
+        terminal = self.feature.snapshot()["last_terminal"]
+        self.assertEqual((terminal["outcome"], terminal["error_code"]), ("failed", "media_output_stalled"))
+        self.assertEqual(terminal["position_seconds"], 0.)
+        self.assertEqual(self.backend.diagnostics()["error_code"], "media_output_stalled")
+        # A new explicit request resets old evidence; no stale failure changes
+        # the next successful seek-to-end into a failed natural completion.
+        self.assertEqual(self.feature.start("space_potatoes", request_id="media:2", mode_generation=2).status, "running")
+        self.wait(lambda: SilentPcmSink.sinks[-1].submitted == 160)
+        self.feature.seek(1.)
+        ended = self.feature.poll()[-1]
+        self.assertEqual(ended.kind, "media_ended")
+        terminal = self.feature.snapshot()["last_terminal"]
+        self.assertEqual((terminal["outcome"], terminal["error_code"]), ("ended", None))
+        self.assertEqual(terminal["position_seconds"], 1.)
+
 
 if __name__ == "__main__":
     unittest.main()
