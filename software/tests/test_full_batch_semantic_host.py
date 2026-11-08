@@ -307,9 +307,10 @@ class FullBatchSemanticHostTests(unittest.TestCase):
                         if time.monotonic() >= deadline:
                             raise AssertionError('injected decorative player was not released')
                     cancel_check()
-                host, provider, _, _ = self.make_host([
-                    envelope(model_emotion='happy', delivery='warm', gesture='wave',
-                             speech='Hello there, friend!')], arms=True, player=player,
+                greeting = envelope(model_emotion='happy', delivery='warm', gesture='wave',
+                                    speech='Hello there, friend!')
+                greeting['character']['gesture_context'] = 'greeting'
+                host, provider, _, _ = self.make_host([greeting], arms=True, player=player,
                     emotion_arms=enabled)
                 try:
                     self.assertTrue(host.start_question('Hello BMO.'))

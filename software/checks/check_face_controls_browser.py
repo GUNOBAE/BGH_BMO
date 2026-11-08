@@ -125,6 +125,7 @@ def missing_greeting_caption_check(profile='ci-synthetic', chromium=None, *, scr
                     page.locator('#subtitles').wait_for(state='hidden')
                     assert page.locator('#notice').is_hidden()
                     page.mouse.click(400,200)
+                    page.locator('#settings-menu').click()
                     page.locator('#system-menu').click()
                     assert 'greeting_missing' in page.locator('#greeting-readiness').inner_text()
                     assert page.locator('#chime-readiness').is_visible()
@@ -259,6 +260,7 @@ def run(profile='ci-synthetic', chromium='/usr/bin/chromium'):
                     # Full contextual permission is independent of representative
                     # auditions and per-file listening approval.
                     page.keyboard.press('Escape')
+                    page.locator('#settings-menu').click()
                     page.locator('#voice-menu').click()
                     page.locator('#voice-full-consent').check()
                     assert not page.locator('#voice-full-enable').is_disabled()
@@ -348,6 +350,7 @@ def run(profile='ci-synthetic', chromium='/usr/bin/chromium'):
                     page.locator('#subtitles').wait_for(state='hidden')
                     checks.append('random M04/M05/M06 captions match selected ID and unique SHA at actual player-start; local Korean text clears on end/cancel/OFF/error and cached events make no GPT/TTS/history writes')
                     page.keyboard.press('Escape')
+                    page.locator('#settings-menu').click()
                     page.locator('#voice-menu').click()
                     page.locator('#voice-batch-event-name').select_option('music_selected')
                     page.locator('#voice-batch-event-disable').click()

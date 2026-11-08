@@ -178,3 +178,12 @@ GP7 수동 토글과 GP8 복귀를 감독하에 확인한다. software STOP은 �
 reviewed enabled SHA가 필요하다. 현재 enabled code/helper/boot 또는
 백업이 달라지면 조용히 덮지 않고 중단한다. backup은 복귀 뒤에도 남는다.
 `BMO_REAL_ROBOT`와 OS/서비스는 이 도구가 수정하지 않는다.
+
+## 2026-11-08 후속: 명시적인 중지 복귀 후보
+
+v1에는 재활성화 명령이 없다. 위 STOP/GP7/watchdog latch와 소스는 그대로
+보존한다. 현재 설치·REMOTE_ENABLED 값은 이 문서의 과거 기록으로 추정하지 않는다.
+사용자가 직접 누르는 Prepare arms의 별도 v2 후보, 정확한 두 파일 SHA,
+private 백업·명시적 적용/복귀·감독 재검수 절차는
+[회복 후보 README](../bmo_arm_legacy_bridge_v2/README_KR.md)를 따른다.
+앱 실행/ON/자동 몸짓만으로 STOP을 해제하지 않는다.

@@ -40,7 +40,7 @@ class CharacterArmRuntimeTests(unittest.TestCase):
         config = integration_config()
         self.client = FeatureSimulatedClient([dict(version=3, speech="Good morning, friend.",
             emotion="happy", gesture=gesture, intent=None, reaction="none",
-            character=dict(delivery_id="warm", intensity="low", gaze_id="none", source="dialogue"))])
+            character=dict(delivery_id="warm", intensity="low", gaze_id="none", source="dialogue", gesture_context="greeting"))])
         self.board = core.LegacyBridge(None, "fixtureBoard", lambda *_: None, lambda *_: None,
                                       lambda: 0, enabled=True, clock=clock)
         self.board.enabled = True  # Pure memory fixture, never a mounted device.

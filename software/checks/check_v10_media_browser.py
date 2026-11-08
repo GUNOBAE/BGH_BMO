@@ -161,7 +161,12 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     raise AssertionError('Product state did not settle: '+json.dumps({k:state.get(k) for k in
                         ('mode','media','voice_pack','last_result','requests','test_fixture')}))
                 def panel(button):
-                    page.evaluate('()=>BMODesktop.menu()');page.locator('#'+button).click()
+                    page.evaluate('()=>BMODesktop.menu()')
+                    if button in ('voice-menu','system-menu'):
+                        page.locator('#settings-menu').click()
+                    elif button=='video-menu':
+                        page.locator('#camera-menu').click()
+                    page.locator('#'+button).click()
                 def start(mode):
                     panel('music-menu');page.locator('[data-song-id=space_potatoes] [data-media-mode='+mode+']').click()
                     wait(lambda state:state['mode']=='music' and state['media']['variant']==mode)

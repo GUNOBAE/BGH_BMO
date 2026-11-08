@@ -307,6 +307,17 @@ class DailyArmController:
             raise ArmUsageError('arm_settings_write_failed') from None
         return self.snapshot()
 
+    def prepare(self):
+        """User-requested current-state check/recovery, never a preference side effect."""
+        if self.motion is None:
+            raise ArmUsageError('arm_first_test_required')
+        if not self.enabled:
+            raise ArmUsageError('arm_usage_off')
+        if not self._permission():
+            raise ArmUsageError('arm_runtime_not_ready')
+        self.motion.prepare()
+        return self.snapshot()
+
     def snapshot(self):
         state = self.motion.snapshot() if self.motion is not None else {}
         code = (self._fault or 'arm_first_test_required' if self.motion is None else
@@ -316,7 +327,17 @@ class DailyArmController:
                 'arm_transport_error' if state.get('operation') == 'fault' else
                 'arm_ready_position_unverified' if state.get('transport', {}).get('usable') else
                 'arm_connection_not_requested')
+        display_state = ('off' if not self.enabled else 'setup_required' if self.motion is None else
+                         'stopped' if state.get('stopped') else
+                         'connection_problem' if state.get('operation') in ('closed', 'fault') or (
+                             self.port.attempted and self.port.code != 'arm_connection_open') else
+                         'ready' if state.get('transport', {}).get('usable') else 'connection_unverified')
         return dict(enabled=self.enabled, conversation_gestures=self.conversation_gestures,
+            state=display_state, prepare_requires_explicit_user_action=True,
+            prepare_available=self.motion is not None and self.enabled and not state.get('closed')
+                and state.get('operation') not in ('active', 'queued')
+                and not (state.get('transport', {}).get('status') == 'UNKNOWN'),
+            prepare_code=state.get('prepare_code'),
             commissioned=self.motion is not None, requires_first_test=self.motion is None,
             code=code, commissioning_evidence='operator_recorded_historical' if self.motion is not None else None,
             current_connection_verified=state.get('transport', {}).get('usable') is True,

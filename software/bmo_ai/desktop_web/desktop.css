@@ -6,10 +6,21 @@ main{position:fixed;inset:0}#face{border:0;width:100%;height:100%;display:block}
 @media(max-width:500px){#splash h1{font-size:28px}#progress-track{width:82vw}}
 [hidden]{display:none!important}dialog{background:#12363b;color:#e0f5eb;border:1px solid #527b73;border-radius:12px;max-width:90vw;max-height:90vh;overflow:auto}dialog::backdrop{background:#061b21a0}
 button{font:inherit;padding:10px;margin:5px;border-radius:7px;border:1px solid #527b73;background:#20494e;color:inherit;cursor:pointer}button:disabled{opacity:.45}#notice{position:fixed;top:8px;left:12px;right:12px;padding:8px;border-radius:8px;background:#12363bef;z-index:4;font-size:14px}#diagnostic{font-size:13px}
-#menu{width:min(680px,94vw);max-width:94vw;max-height:94vh;padding:14px 16px 0}#menu h2{margin:0 0 8px;font-size:24px}
-#daily-actions,#menu-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:0 0 8px}
-#daily-actions button,#menu-actions button{margin:0;min-height:48px}#daily-actions button{min-height:58px;font-weight:700;background:#2d5b60;border:2px solid #86b8a8}
-#menu-footer{position:sticky;bottom:0;display:flex;justify-content:space-between;background:#12363b;padding:6px 0;margin-top:8px;border-top:1px solid #527b73}#menu-footer button{margin:0;min-height:48px}
+#menu{width:min(760px,96vw);max-width:96vw;max-height:96vh;padding:10px 14px}#menu h2{margin:0 0 8px;font-size:24px}
+#menu-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:0 0 10px}
+#menu-actions button{margin:0;min-height:70px;font-size:25px;font-weight:700;background:#2d5b60;border:2px solid #86b8a8}
+#presence-test{width:100%;margin:3px 0;min-height:48px;font-weight:700}
+#menu-volume{display:flex;align-items:center;justify-content:center;gap:10px;min-height:58px}
+#menu-volume button{min-width:56px;min-height:48px;margin:0;font-size:28px;padding:4px}
+#menu-volume #volume-controls{margin:0}#menu-volume input[type=checkbox]{width:24px;height:24px;vertical-align:middle}
+#menu-footer{display:flex;background:#12363b;padding:6px 0 0;margin-top:3px}#menu-footer button{margin:0;width:100%;min-height:54px;font-size:22px;background:#397265}
+.panel-navigation{position:sticky;top:-16px;z-index:1;display:flex;gap:10px;justify-content:space-between;background:#12363b;padding:7px 0;border-bottom:1px solid #527b73}
+.panel-navigation button{min-height:50px;margin:0}.panel-navigation .dialog-close,.panel-navigation #game-back{min-width:220px;background:#397265}
+.large-actions{display:flex;flex-wrap:wrap;gap:8px}.large-actions button{min-height:60px;min-width:145px}
+#conversation-dialog,#settings-dialog,#camera-dialog,#arms-dialog,#game-menu{width:min(720px,94vw)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:4px solid #ffdb72;outline-offset:2px;box-shadow:0 0 0 2px #09272e}
+#ptt-finish{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:4;min-width:185px;min-height:58px;font-size:24px;background:#397265;border:2px solid #b8ecdf;touch-action:manipulation}
+@media(max-width:540px){#menu-actions button{min-height:58px;font-size:21px}#menu-volume{gap:5px}#menu-volume #master-volume{width:90px}#menu-volume #volume-controls{font-size:0}#master-volume-value{font-size:16px}.panel-navigation .dialog-close{min-width:0}}
 #presence-rule,#wake-readiness{font-size:14px;line-height:1.4}#arm-preferences{display:flex;gap:22px;flex-wrap:wrap;margin:12px 0}#arm-preferences label{padding:8px 0}#arms-gestures button{min-height:52px;min-width:135px}
 #system-dialog pre{font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;max-width:650px}
 #foreground{position:fixed;inset:0;background:#12363b;z-index:2;padding:12px;text-align:center;display:grid;grid-template-rows:30px minmax(0,1fr) 58px;gap:6px}
@@ -68,3 +79,5 @@ body[data-music-screen="true"] #notice:not([data-music-error="true"]){display:no
 #face-volume-mute[aria-pressed="true"]{background:#365e61;border-color:#a7d3c9}
 #voice-full{border-bottom:1px solid #527b73;padding-bottom:12px;margin-bottom:12px}
 @media(max-width:430px){#face-volume{right:8px;left:8px;gap:5px;justify-content:center;padding:8px}#face-volume-value{min-width:64px}}
+
+[data-bmo-adjusting="true"]{outline:4px dashed #ffdb72!important;background:#397265!important}

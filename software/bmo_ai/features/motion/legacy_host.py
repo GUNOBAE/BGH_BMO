@@ -16,7 +16,7 @@ NAMED_GESTURES = frozenset(("wave", "celebrate", "shrug", "raise_left_arm",
 MODEL_ONLY = frozenset(("wave", "celebrate", "shrug"))
 RESPONSE_CODES = frozenset(("READY", "DISABLED", "STOPPED", "ALIVE", "HELD",
     "ACCEPTED", "REQUEST_CONFLICT", "INVALID", "STALE_BOOT", "INVALID_REQUEST_ID",
-    "STALE_REQUEST", "BUSY", "DENIED"))
+    "STALE_REQUEST", "BUSY", "DENIED", "RECOVERABLE", "FAULT_STOPPED", "PREPARED"))
 MAX_REQUEST_SEQUENCE = 99999999999999999999
 # B1 has no position/completion ACK. Keep heartbeats through the firmware's
 # 15-second hard gesture budget; the host finally HOLDs rather than abandoning
@@ -54,6 +54,14 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
     if hashlib.sha256(original).hexdigest() != "fdc65bebef17b78b945281549ddce80fb749e1a94262751d8d2f0146c394a01e":
         raise LegacyArmError("original_source_mismatch")
     template = (root / "code.py").read_bytes()
+    # The daily receipt pins exact enabled bytes. A separately reviewed v2
+    # receipt may select the recovery candidate; v1 bytes and receipts stay valid.
+    expected_digest = hashlib.sha256(template.replace(
+        b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)).hexdigest()
+    if expected_digest != reviewed_sha and root.name == "bmo_arm_legacy_bridge_v1":
+        candidate = root.with_name("bmo_arm_legacy_bridge_v2")
+        if candidate.is_dir():
+            return validate_legacy_install(candidate, reviewed_sha, mount=mount)
     if template.count(b"\nREMOTE_ENABLED = False\n") != 1:
         raise LegacyArmError("invalid_reviewed_template")
     expected = template.replace(b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)
@@ -88,9 +96,12 @@ class LegacyArmLink:
         self.stopped = False
         self.closed = False
         self.last_response_code = None
+        self.last_request_id = None
+        self.prepare_code = None
 
-    def _request(self, command, *, is_hello=False, before_write=None):
-        if self.closed or self.unknown or self.stopped:
+    def _request(self, command, *, is_hello=False, before_write=None, recovery=False):
+        known_stop = self.stopped and self.last_response_code == "STOPPED"
+        if self.closed or (self.unknown and not (recovery and known_stop)) or (self.stopped and not recovery):
             raise LegacyArmError("bridge_unavailable")
         try:
             sequence = self.sequence_clock()
@@ -104,6 +115,7 @@ class LegacyArmLink:
             self.unknown = True
             raise LegacyArmError("request_counter_exhausted")
         rid = "bmo_%d" % self.counter
+        self.last_request_id = rid
         data = ("B1 " + command.format(rid=rid, boot=self.boot) + "\n").encode("ascii")
         if len(data) > FRAME_MAX:
             raise LegacyArmError("frame_too_long")
@@ -129,6 +141,8 @@ class LegacyArmLink:
             if self.boot is not None and parts[3] != self.boot:
                 raise LegacyArmError("boot_changed")
             self.last_response_code = parts[4] if parts[4] in RESPONSE_CODES else "UNRECOGNIZED"
+            if parts[4] == "STOPPED":
+                self.stopped = True
             if is_hello:
                 self.boot = parts[3]
             return parts[4]
@@ -150,6 +164,48 @@ class LegacyArmLink:
                 self.stopped = True
             self.unknown = True
             raise LegacyArmError("firmware_not_ready_" + code.lower())
+        return code
+
+    def prepare(self):
+        """Only an explicit user action may call this. Never emits DO or PWM.
+
+        A new HELLO observes the current latch, then v2's expiring STATUS token
+        guards PREPARE against a later GP7/STOP edge. Unknown transport is not a
+        recovery permission. A v1 STOP remains latched until firmware is reviewed.
+        """
+        try:
+            permission = self.motor_permission()
+        except Exception:
+            permission = False
+        if permission is not True:
+            raise LegacyArmError(self.permission_code)
+        if self.closed or (self.unknown and not (
+                self.stopped and self.last_response_code == "STOPPED")):
+            raise LegacyArmError("arm_prepare_connection_unverified")
+        code = self._request("HELLO {rid}", is_hello=True, recovery=True)
+        if code == "READY":
+            self.stopped = self.unknown = False
+            self.prepare_code = "arm_ready_position_unverified"
+            return code
+        if code != "STOPPED":
+            self.prepare_code = "arm_prepare_board_unavailable"
+            raise LegacyArmError(self.prepare_code)
+        # A valid STOPPED ACK is a known stopped connection, not a timeout.
+        self.unknown = False
+        code = self._request("STATUS {rid} {boot}", recovery=True)
+        token = self.last_request_id
+        if code in ("STOPPED", "INVALID"):
+            self.prepare_code = "arm_prepare_firmware_required"
+            raise LegacyArmError(self.prepare_code)
+        if code != "RECOVERABLE":
+            self.prepare_code = "arm_prepare_fault_requires_review"
+            raise LegacyArmError(self.prepare_code)
+        code = self._request("PREPARE {rid} {boot} " + token, recovery=True)
+        if code != "PREPARED":
+            self.prepare_code = "arm_prepare_not_acknowledged"
+            raise LegacyArmError(self.prepare_code)
+        self.stopped = self.unknown = False
+        self.prepare_code = "arm_prepared_position_unverified"
         return code
 
     def gesture(self, name, *, before_write=None):
@@ -419,6 +475,21 @@ class LegacyMotionFeature:
             self.fault = "stop_unverified"
             self.last_error = error.code
 
+    def prepare(self):
+        if self.closed or self.pending is not None or self.active_until is not None or self._inflight_pending is not None:
+            raise FeatureError("arm_prepare_busy_or_closed")
+        try:
+            self.link.prepare()
+        except LegacyArmError as error:
+            self.last_error = error.code
+            raise FeatureError(error.code) from None
+        # Request and turn ledgers survive preparation. No obsolete gesture is
+        # resurrected and no new gesture is scheduled by this state transition.
+        self.stopped = False
+        self.fault = self.last_error = None
+        self.context = None
+        return self.snapshot()
+
     def close(self):
         if not self.closed:
             self.stop()
@@ -474,6 +545,8 @@ class LegacyMotionFeature:
                 "cancel_semantics": "hold_current_commanded_position",
                 "stop_semantics": "board_latch_not_cleared_by_host_restart_not_power_cut",
                 "position_verified": False, "physical_verified": False,
+                "prepare_code": self.link.prepare_code,
+                "prepare_requires_explicit_user_action": True,
                 "preflight": {"status": "BLOCKED" if closed or stopped or unknown else "CONFIGURED",
                               "scope": "software_adapter",
                               "code": reason if closed or stopped or unknown else "supervised_launcher_required"},

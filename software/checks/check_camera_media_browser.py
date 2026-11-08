@@ -56,10 +56,15 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                             value=fixture.features()
                             if predicate(value):return value
                             page.wait_for_timeout(25)
-                        raise AssertionError('Synthetic media state timeout: '+json.dumps({
-                            k:value.get(k) for k in ('mode','camera_video','last_result')}))
+                        raise AssertionError('Synthetic media state timeout: '+json.dumps(dict(
+                            {k:value.get(k) for k in ('mode','camera_video','last_result')},
+                            browser=page.evaluate("()=>({input:BMODesktop.inputEvidence,mode:BMODesktop.features?.mode,active:document.activeElement.id,dialogs:[...document.querySelectorAll('dialog[open]')].map(e=>e.id)})"))))
                     def panel(button,dialog):
                         page.evaluate('()=>BMODesktop.menu()')
+                        if button=='system-menu':
+                            page.locator('#settings-menu').click()
+                        elif button=='video-menu':
+                            page.locator('#camera-menu').click()
                         page.locator('#'+button).click()
                         page.locator('#'+dialog).wait_for(state='visible')
                     page.goto(fixture.url,wait_until='domcontentloaded')

@@ -225,7 +225,18 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, artifacts=None)
                     scored = wait_game(lambda v: v["score"] > 0 and v["drops"] == 1)
                     rotation = scored["piece"]["rotation"]
                     page.keyboard.press("ArrowUp")
-                    wait_game(lambda v: v["piece"]["rotation"] != rotation)
+                    rotated = wait_game(lambda v: v["piece"]["rotation"] != rotation)
+                    # The physical GP6 is Z: it remains the game's A/rotate
+                    # action even after the menu adds short/hold Z navigation.
+                    # Holding it beyond the menu threshold must not open/back
+                    # a panel or leak a selection on release.
+                    page.keyboard.down("z")
+                    wait_game(lambda v: v["piece"]["rotation"] != rotated["piece"]["rotation"])
+                    page.wait_for_timeout(1000)
+                    assert page.locator('dialog[open]').count() == 0
+                    assert fixture.features()['mode'] == 'game'
+                    page.keyboard.up("z")
+                    assert page.locator('dialog[open]').count() == 0
                     shot("blocks-scored")
                     page.keyboard.press("Enter")
                     paused = wait_game(lambda v: v["status"] == "paused" and not v["animation_running"])
@@ -245,7 +256,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, artifacts=None)
                     wait_game(lambda v: v["score"] > 0 and v["drops"] == 1)
                     page.evaluate("()=>{window.__padButtons=[];}")
                     back_to_face(keyboard=True)
-                    checks.append("real 800x480 blocks receives keyboard movement/rotation and keyboard/gamepad hard-drop score, pauses its RAF, restarts and returns to the original face")
+                    checks.append("real 800x480 blocks receives keyboard movement/rotation, held GP6/Z remains game input without a menu action, keyboard/gamepad hard-drop scores, RAF pauses/restarts and returns to the original face")
 
                     # A callback scheduled while the old face gains focus may
                     # arrive after the next game has its own connected pad.

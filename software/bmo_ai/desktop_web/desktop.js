@@ -2,7 +2,8 @@
 (()=>{'use strict';
 const $=id=>document.getElementById(id),frame=$('face'),token=document.querySelector('meta[name="bmo-command-token"]').content;
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null,presentationGeneration=0;
-let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0;
+let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0,pttFinishPending=false;
+let selectKey=null,selectTimer=null;const panelParents=new Map();
 let featureState=null,musicCatalogKey=null,gameCatalogKey=null,lastFeatureMode=null;
 let nativeLaunchPending=null,nativeInputActive=false,nativeInputEpoch=0;
 const nativeHeldKeys=new Set();
@@ -108,13 +109,48 @@ function showFaceVolume(){
  clearTimeout(faceVolumeTimer);faceVolumeTimer=setTimeout(hideFaceVolume,3000);syncUiActivity();
  renderVolume(featureState||{});
 }
-function menu(){hideFaceVolume();cancelPTT();window.BMOPlayableGames?.suspend('menu');for(const dialog of document.querySelectorAll('dialog[open]'))if(dialog!==$('menu'))dialog.close();if(!$('menu').open)$('menu').showModal();syncUiActivity();}
+function menu(){hideFaceVolume();cancelPTT();window.BMOPlayableGames?.suspend('menu');for(const dialog of document.querySelectorAll('dialog[open]'))if(dialog!==$('menu'))dialog.close();if(!$('menu').open){$('menu').showModal();$('conversation-menu').focus({preventScroll:true});}syncUiActivity();}
+function closeToFace(){for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();if(currentMode==='game_menu')intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));restoreFaceFocus();}
+function backPanel(){
+ const dialog=document.querySelector('dialog[open]');if(!dialog)return;
+ if(dialog.id==='menu'){closeToFace();return;}
+ const parent=panelParents.get(dialog.id)||'menu';
+ if(dialog.id==='game-menu')intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
+ if(parent==='menu')menu();else openPanel(parent,false);
+}
+function panelControls(dialog){return [...dialog.querySelectorAll('button,input,select,textarea,a[href]')].filter(el=>!el.disabled&&el.getClientRects().length&&getComputedStyle(el).visibility!=='hidden');}
+function moveMenuFocus(dialog,key){
+ const controls=panelControls(dialog),current=controls.includes(document.activeElement)?document.activeElement:null;
+ if(!controls.length)return;if(!current){controls[0].focus();return;}
+ const rect=current.getBoundingClientRect(),x=rect.x+rect.width/2,y=rect.y+rect.height/2,horizontal=['ArrowLeft','ArrowRight'].includes(key),sign=['ArrowRight','ArrowDown'].includes(key)?1:-1;
+ const candidates=controls.filter(el=>el!==current).map(el=>{const r=el.getBoundingClientRect(),dx=r.x+r.width/2-x,dy=r.y+r.height/2-y;return {el,forward:(horizontal?dx:dy)*sign,cross:Math.abs(horizontal?dy:dx)};}).filter(row=>row.forward>4).sort((a,b)=>(a.forward+a.cross*3)-(b.forward+b.cross*3));
+ if(candidates.length)candidates[0].el.focus({preventScroll:false});
+}
+function isMenuTextEditing(target){return !!(target?.isContentEditable||target?.closest?.('textarea,input:not([type=checkbox]):not([type=range]):not([type=button]):not([type=submit])'));}
+function activateMenuControl(target){if(!target)return;if(target.matches('select,input[type=range]')){target.dataset.bmoAdjusting=String(target.dataset.bmoAdjusting!=='true');return;}target.click();}
+function clearSelectKey(){clearTimeout(selectTimer);selectTimer=null;selectKey=null;}
+function menuKey(event,pressed){
+ const isSelect=event.code==='KeyZ'||event.key?.toLowerCase()==='z',dialog=document.querySelector('dialog[open]');
+ // Consume a held GP6 release even when its long press already closed a panel.
+ if(isSelect&&selectKey){event.preventDefault();event.stopPropagation();if(pressed)return true;
+  const held=selectKey;clearSelectKey();if(!held.long&&held.dialog===dialog){if(dialog){const target=panelControls(dialog).includes(document.activeElement)?document.activeElement:panelControls(dialog)[0];activateMenuControl(target);}else if(faceTapAllowed())menu();}return true;}
+ // Native game input never enters this menu navigation path.
+ if(currentMode==='game'||nativeOwnsInput())return false;
+ if(isSelect&&(dialog||faceTapAllowed())&&!isMenuTextEditing(event.target)){
+  event.preventDefault();event.stopPropagation();if(!pressed||event.repeat)return true;
+  selectKey={dialog,long:false};if(dialog)selectTimer=setTimeout(()=>{if(selectKey?.dialog===dialog&&dialog.open){selectKey.long=true;backPanel();}},900);return true;
+ }
+ if(dialog&&['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(event.key)&&!isMenuTextEditing(event.target)){
+  if(event.target?.dataset?.bmoAdjusting==='true')return false;
+  event.preventDefault();event.stopPropagation();if(pressed)moveMenuFocus(dialog,event.key);return true;
+ }return false;
+}
 function isTextInput(target){return !!(target?.isContentEditable||target?.closest?.('input,select,textarea'));}
 function restoreFaceFocus(){
  if(closed||!canTalk()||currentMode!=='conversation'||document.querySelector('dialog[open]')||isTextInput(document.activeElement))return;
  frame.focus({preventScroll:true});
 }
-for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('close',()=>{syncUiActivity();restoreFaceFocus();if(featureState)syncPreview(featureState);});
+for(const dialog of document.querySelectorAll('dialog'))dialog.addEventListener('close',()=>{for(const input of dialog.querySelectorAll('[data-bmo-adjusting]'))delete input.dataset.bmoAdjusting;syncUiActivity();restoreFaceFocus();if(featureState)syncPreview(featureState);});
 function refreshAdapter(){if(window.BMOIntegration?.closed){window.BMOIntegration=new window.BMOFaceAdapter(frame);}handshakeFrame=null;presentedRun=null;presentationGeneration++;}
 function canTalk(){return state?.phase==='ready'||state?.character_life?.enabled===true&&state?.phase==='greeting';}
 function presentFace(run){
@@ -211,12 +247,14 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
   &&['waiting_wake_end','question_listening'].includes(wakePhase);
  const wakeHint=wakeRetry?'Please pause, then ask again. Or press the button.':
   ({confirming:'One moment…',waiting_wake_end:'I heard you…',question_listening:'I’m listening. What’s up?'})[wakePhase]||'';
+ $('ptt-finish').hidden=next.mode!=='conversation'||!['listening','speech'].includes(capture)||!!document.querySelector('dialog[open]');
+ $('ptt-finish').disabled=pttFinishPending;
  $('ptt-state').hidden=!inputFailed&&!wakeHint&&!['calibrating','listening','speech','transcribing'].includes(capture);
  const failures={no_speech:'말소리를 감지하지 못했어요. 버튼을 누르고 다시 말해 주세요.',stt_empty:'말을 알아듣지 못했어요. 다시 말해 주세요.'};
  $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':failures[failure?.code]||(capture==='failed'&&failure?.stage!=='stt'?'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.':'대화를 완료하지 못했어요. 준비 상태에서 실패 단계를 확인해 주세요.')):
   wakeHint||({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
  if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){
-  if(!$('game-menu').open)$('game-menu').showModal();
+  const openingGameMenu=!$('game-menu').open;
   const key=JSON.stringify([next.games.catalog,next.games_readiness,next.game_setup_error]);
   if(key!==gameCatalogKey){gameCatalogKey=key;$('game-list').replaceChildren();
    if(!next.games.catalog.length){const readiness=next.games_readiness||{},code=readiness.code||next.game_setup_error||'game_catalog_empty';
@@ -230,6 +268,7 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
     b.onclick=()=>intent('launch_game',item.id).catch(()=>error('게임을 시작하지 못했어요.'));$('game-list').append(b);}
   }
   for(const button of $('game-list').querySelectorAll('button'))button.setAttribute('aria-current',String(button.dataset.gameId===next.games.selected_id));
+  if(openingGameMenu){$('game-menu').showModal();($('game-list').querySelector('button:not(:disabled)')||$('game-back')).focus({preventScroll:true});}
  }
  else if($('game-menu').open)$('game-menu').close();
  window.BMOPlayableGames?.sync(next);
@@ -455,11 +494,21 @@ function renderArms(next){
  const allowed=['mock','explicit_supervised','explicit_commissioned'].includes(next.capabilities?.arms);
  const ready=typeof arms.action_status?.request_allowed==='boolean'?arms.action_status.request_allowed:
   allowed&&usage.enabled!==false&&!usage.requires_first_test&&arms.preflight?.status!=='BLOCKED'&&motion.closed!==true&&motion.stopped!==true;
+ const armState=usage.state||(!allowed||usage.enabled===false?'off':usage.requires_first_test?'setup_required':motion.stopped?'stopped':motion.transport?.status==='NOT_CONNECTED'?'connection_unverified':ready?'ready':'connection_problem');
+ const prepareAvailable=usage.prepare_available===true||(next.capabilities?.arms==='explicit_supervised'&&motion.real_enabled===true&&motion.closed!==true&&motion.active!==true&&motion.prepare_requires_explicit_user_action===true);
+ const prepareCode=usage.prepare_code||motion.prepare_code;
+ $('arms-status').dataset.state=armState;
+ $('arms-prepare').disabled=!prepareAvailable;
+ $('arms-prepare').title=prepareCode==='arm_prepare_firmware_required'?'파이에서 검토된 복귀 프로토콜 설치가 필요해요.':'';
  $('arms-status').textContent=ready?'팔 요청을 보낼 수 있어요. 실제 움직임은 직접 확인해 주세요.':
   (labels[reason]||'팔을 사용할 준비가 아직 안 됐어요. 준비 상태를 확인해 주세요.')+
   (reason==='arm_runtime_off'?' 아래에서 팔 사용을 켜 주세요.':'');
+ const stateTitle={off:'꺼짐',setup_required:'첫 설정 필요',ready:'사용 가능',stopped:'중지됨',connection_problem:'연결 문제',connection_unverified:'연결 확인 필요'}[armState];
+ if(stateTitle)$('arms-status').textContent=stateTitle+' · '+$('arms-status').textContent;
+ if(prepareCode==='arm_prepare_firmware_required')$('arms-status').textContent+=' 파이에서 검토된 복귀 프로토콜 설치가 필요해요.';
+ else if(armState==='stopped'&&prepareAvailable)$('arms-status').textContent+=' 현재 상태를 확인하려면 팔 다시 준비를 눌러 주세요. 준비만으로 움직이지 않아요.';
  if(!armPreferencePending){$('arms-enabled').checked=usage.enabled===true;$('arms-conversation').checked=usage.conversation_gestures===true;}
- $('arms-enabled').disabled=armPreferencePending;$('arms-conversation').disabled=armPreferencePending;
+ $('arms-enabled').disabled=armPreferencePending||typeof usage.enabled!=='boolean';$('arms-conversation').disabled=armPreferencePending||typeof usage.conversation_gestures!=='boolean';
  const key=JSON.stringify([names,ready]);
  if(key!==armCatalogKey){
   armCatalogKey=key;$('arms-gestures').replaceChildren();
@@ -476,6 +525,7 @@ function renderArmReceipt(result){
  $('arms-result').textContent=failed?'팔 요청을 완료하지 못했어요. 현재 연결·중지 상태를 준비 상태에서 확인해 주세요.':
   result.status==='cancelled'?'팔 요청이 취소됐어요. 실제 움직임과 중지 상태는 직접 확인해 주세요.':
   result.code==='arm_stop_requested'?'팔 중지를 요청했어요. 실제 움직임과 전원은 직접 확인해 주세요.':
+  ['arm_prepared','arm_prepared_position_unverified','arm_ready_position_unverified'].includes(result.code)?'팔 준비 응답을 확인했어요. 동작은 별도로 요청해 주세요.':
   result.code==='ack_position_unverified'?'팔 통신 응답을 확인했어요. 실제 움직임은 직접 확인해 주세요.':
   result.simulated===true&&result.status==='simulated'?'소프트웨어에서 요청을 확인했어요. 실물 팔 동작은 확인하지 않았어요.':
   '팔 요청을 받았어요. 통신 응답을 확인하고 있어요.';
@@ -880,13 +930,14 @@ async function poll(){if(closed||document.hidden)return;const current=epoch;cont
  lastSuccess=performance.now();render(next);await ready();await modes();
 }catch(_){if(performance.now()-lastSuccess>2500){clearCaption();$('splash').hidden=true;error('BMO 연결이 끊겼어요. 창을 닫고 수동으로 다시 실행해 주세요.');}}
 finally{clearTimeout(abort);controller=null;if(!closed&&current===epoch&&!document.hidden)timer=setTimeout(poll,100);}}
-$('notice-menu').onclick=menu;$('resume').onclick=()=>$('menu').close();$('exit').onclick=()=>desktop('exit').catch(()=>{error('BMO가 종료된 상태예요. 창을 닫아 주세요.');window.close();});
+$('notice-menu').onclick=menu;$('resume').onclick=closeToFace;$('exit').onclick=()=>desktop('exit').catch(()=>{error('BMO가 종료된 상태예요. 창을 닫아 주세요.');window.close();});
 function ptt(){if(!pttEnabled){error('버튼 녹음은 사용자 검수용 마이크 opt-in이 필요해요.');return;}
  if(pttPending){control('ptt').catch(()=>error('버튼 입력을 확인해 주세요.'));return;}
  pttPending=true;pttRequest=null;const current=++pttEpoch;
  bump('request_sent');control('ptt').then(result=>{bump('request_accepted');if(current===pttEpoch&&pttPending)pttRequest=result.request_id;}).catch(()=>{bump('request_rejected');if(current===pttEpoch){pttPending=false;error('버튼 녹음을 시작하지 못했어요.');}});}
 function cancelPTT(){window.BMOIntegration?.cancelEntrance('input_cancelled');enterDown=false;if(pttPending){pttEpoch++;pttPending=false;pttRequest=null;control('cancel').catch(()=>{});}}
-$('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));$('menu').close();};
+$('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually requested question.').catch(()=>error('대화를 시작하지 못했어요.'));closeToFace();};
+$('ptt-finish').onclick=()=>{if(pttFinishPending)return;pttFinishPending=true;$('ptt-finish').disabled=true;control('ptt_finish').catch(()=>error('녹음 마침 상태를 확인해 주세요.')).finally(()=>{pttFinishPending=false;});};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
 $('presence-mode').onchange=()=>desktop('presence_mode',$('presence-mode').value).catch(()=>error('대기 음성 설정을 확인해 주세요.'));
 $('presence-test').onclick=async()=>{
@@ -907,9 +958,15 @@ $('system-dialog').addEventListener('close',()=>{$('turn-diagnostics').textConte
 $('wake-off').onclick=()=>desktop('wake_off').catch(()=>error('호출어 종료 상태를 확인해 주세요.'));
 $('wake-on').onclick=()=>{if($('wake-on').disabled)return;control('wake',true).catch(()=>error('현재 실행에 준비한 호출어 모델을 확인해 주세요. GP8은 계속 사용할 수 있어요.'));};
 $('games').onclick=()=>{intent('open_game_menu').catch(()=>error('게임 목록을 열지 못했어요.'));$('menu').close();};$('greeting-retry').onclick=()=>desktop('retry_greeting').catch(()=>error('인사 캐시를 확인해 주세요.'));
-function openPanel(id){hideFaceVolume();cancelPTT();window.BMOPlayableGames?.suspend('menu');$('menu').close();$(id).showModal();syncUiActivity();if(featureState)renderFeatures(featureState);}
-for(const [id,panel] of [['camera-menu','camera-dialog'],['video-menu','video-dialog'],['arms-menu','arms-dialog'],['voice-menu','voice-dialog'],['music-menu','music-dialog'],['system-menu','system-dialog']])$(id).onclick=()=>openPanel(panel);
-for(const button of document.querySelectorAll('.dialog-close'))button.onclick=()=>button.closest('dialog').close();
+function openPanel(id,remember=true){hideFaceVolume();cancelPTT();window.BMOPlayableGames?.suspend('menu');const current=document.querySelector('dialog[open]');if(remember)panelParents.set(id,current?.id||'menu');for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();$(id).showModal();syncUiActivity();if(featureState)renderFeatures(featureState);}
+for(const dialog of document.querySelectorAll('dialog:not(#menu)')){
+ const footer=document.createElement('div');footer.className='panel-navigation';
+ const back=document.createElement('button');back.className='panel-back';back.textContent='뒤로';back.onclick=backPanel;
+ const face=dialog.querySelector('.dialog-close')||dialog.querySelector('#game-back');
+ if(face){footer.append(back,face);dialog.prepend(footer);}
+}
+for(const [id,panel] of [['conversation-menu','conversation-dialog'],['settings-menu','settings-dialog'],['camera-menu','camera-dialog'],['video-menu','video-dialog'],['arms-menu','arms-dialog'],['voice-menu','voice-dialog'],['music-menu','music-dialog'],['system-menu','system-dialog']])$(id).onclick=()=>openPanel(panel);
+for(const button of document.querySelectorAll('.dialog-close'))button.onclick=closeToFace;
 $('video-consent').onchange=()=>{if(featureState)renderFeatures(featureState);};
 $('video-start').onclick=()=>{
  if($('video-start').disabled||videoActionPending)return;
@@ -939,6 +996,7 @@ for(const [id,action] of [['photo-take-anyway','take_anyway'],['photo-refocus','
 $('camera-preview').onclick=()=>control('preview',featureState?.camera?.preview!==true).catch(()=>error('미리보기를 준비하지 못했어요.'));
 $('camera-track').onclick=()=>intent(featureState?.camera?.tracking===true||featureState?.camera?.tracker?.enabled===true?'stop_face_tracking':'start_face_tracking').catch(()=>error('시선 추적을 준비하지 못했어요.'));
 $('camera-off').onclick=()=>control('camera_off').catch(()=>error('카메라 종료를 확인해 주세요.'));
+$('arms-prepare').onclick=()=>{if($('arms-prepare').disabled)return;$('arms-prepare').disabled=true;control('arm_prepare').then(result=>{armRequest=result.request_id;renderArmReceipt(result);}).catch(()=>error('팔 준비 상태를 확인해 주세요.'));};
 $('arms-stop').onclick=()=>intent('stop_arms').then(result=>{armRequest=result.request_id;renderArmReceipt(result);}).catch(()=>error('팔 중지 상태를 확인해 주세요.'));
 for(const id of ['arms-enabled','arms-conversation'])$(id).onchange=()=>{
  if(armPreferencePending)return;armPreferencePending=true;
@@ -1004,6 +1062,7 @@ $('face-volume-mute').onclick=()=>{
  const current=volumePending||featureState?.volume;if(!current)return;
  showFaceVolume();submitVolume({level:current.level,muted:!current.muted});
 };
+for(const [id,step] of [['menu-volume-down',-5],['menu-volume-up',5]])$(id).onclick=()=>{const current=volumePending||featureState?.volume;if(current)submitVolume({level:Math.max(0,Math.min(100,Math.round(current.level*100)+step))/100,muted:current.muted});};
 $('master-volume').oninput=()=>{$('master-volume-value').textContent=Math.round(Number($('master-volume').value)*100)+'%';};
 $('master-volume').onchange=setVolume;$('master-mute').onchange=setVolume;
 $('music-volume').oninput=()=>{$('music-volume-value').textContent=Math.round(Number($('music-volume').value)*100)+'%';};
@@ -1023,6 +1082,7 @@ $('music-video').addEventListener('error',()=>{if(!closed&&$('music-video').erro
 for(const id of ['game-back','foreground-back'])$(id).onclick=()=>intent('return_to_face').catch(()=>error('복귀 상태를 확인해 주세요.'));
 const keys={ArrowUp:'UP',ArrowDown:'DOWN',ArrowLeft:'LEFT',ArrowRight:'RIGHT',a:'A',z:'A',b:'B',x:'B',' ':'A',Enter:'START',Shift:'SELECT',Escape:'ESC'};
 function key(event,pressed){if(event.isComposing)return;
+ if(menuKey(event,pressed))return;
  const nativeKey=event.code||event.key;
  if(nativeOwnsInput()&&keys[event.key]){
   event.preventDefault();event.stopPropagation();
@@ -1094,13 +1154,33 @@ function blurPTT(event){const nativeAtEvent=nativeOwnsInput();setTimeout(()=>{
  // Focusing the iframe blurs its parent window. A later move back to a notice
  // button is still inside BMO, even if it happens before this callback runs.
  // Only loss of the whole document's focus cancels trusted input here.
- if(nativeAtEvent||nativeOwnsInput()||event.isTrusted&&document.hasFocus())return;photoReviewKeyHeld=false;videoKeyHeld=false;mediaKeyHeld=false;mediaHoldTriggered=false;clearTimeout(mediaHoldTimer);if(currentMode==='music'&&!mediaStopping)control('pause').catch(()=>{});bump('cancelled_blur');cancelPTT();window.BMOPlayableGames?.suspend('blur');
+ if(nativeAtEvent||nativeOwnsInput()||event.isTrusted&&document.hasFocus())return;clearSelectKey();photoReviewKeyHeld=false;videoKeyHeld=false;mediaKeyHeld=false;mediaHoldTriggered=false;clearTimeout(mediaHoldTimer);if(currentMode==='music'&&!mediaStopping)control('pause').catch(()=>{});bump('cancelled_blur');cancelPTT();window.BMOPlayableGames?.suspend('blur');
 },0);}
 window.addEventListener('blur',blurPTT);
-let touchStart=null,inputDocument=null;
+let touchStart=null,inputDocument=null,hintObserver=null;
+function hideIntegratedFaceHint(doc){
+ // The approved file remains byte-for-byte unchanged. Only its standalone
+ // launcher hint is hidden when it is embedded inside the product wrapper.
+ const hint=/^(?:화면\s*돌아가기|Back\s+to\s+(?:screen|face))\s*[·∙•|]\s*Esc(?:ape)?$/i;
+ for(const element of doc.querySelectorAll('body *')){
+  if(element.namespaceURI!=='http://www.w3.org/1999/xhtml'||!['DIV','P','SPAN','SMALL','BUTTON','ASIDE'].includes(element.tagName))continue;
+  const text=element.textContent.trim().replace(/\s+/g,' ');
+  if(text.length>=80||!hint.test(text))continue;
+  const descendants=[...element.querySelectorAll('*')];
+  // Artwork often contributes no textContent. A face wrapper can therefore
+  // have the same text as its tiny hint: never hide that wrapper. Match only
+  // the smallest text container, with ordinary nonempty inline formatting.
+  if(descendants.some(child=>hint.test(child.textContent.trim().replace(/\s+/g,' '))))continue;
+  if(descendants.some(child=>child.namespaceURI!=='http://www.w3.org/1999/xhtml'
+      ||!['SPAN','KBD','EM','STRONG','B','I','SMALL'].includes(child.tagName)
+      ||!child.textContent.trim()))continue;
+  element.dataset.bmoIntegrationHint='hidden';element.style.setProperty('display','none','important');element.setAttribute('aria-hidden','true');
+ }
+}
+
 function faceTapAllowed(){return canTalk()&&!nativeOwnsInput()&&currentMode==='conversation'&&!document.querySelector('dialog[open]')&&$('face-volume').hidden;}
 function clearFaceTouch(){clearTimeout(touchStart?.timer);touchStart=null;}
-function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||doc===inputDocument)return;inputDocument=doc;doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',blurPTT);
+function bindFrameInputs(){try{const doc=frame.contentDocument;if(!doc||!doc.body||doc===inputDocument)return;inputDocument=doc;hintObserver?.disconnect();hideIntegratedFaceHint(doc);hintObserver=new MutationObserver(()=>hideIntegratedFaceHint(doc));hintObserver.observe(doc.body,{childList:true,subtree:true,characterData:true});doc.addEventListener('keydown',event=>key(event,true),true);doc.addEventListener('keyup',event=>key(event,false),true);doc.defaultView.addEventListener('blur',blurPTT);
  doc.addEventListener('pointerdown',event=>{
   clearFaceTouch();if(!faceTapAllowed()||event.isPrimary===false||event.button!==0)return;
   touchStart={id:event.pointerId,x:event.clientX,y:event.clientY,at:performance.now(),held:false};
@@ -1169,7 +1249,7 @@ window.addEventListener('blur',event=>{
  },0);
 });
 window.addEventListener('gamepaddisconnected',()=>releasePad());
-window.addEventListener('pagehide',()=>{clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
+window.addEventListener('pagehide',()=>{clearSelectKey();hintObserver?.disconnect();clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
 document.addEventListener('visibilitychange',()=>{clearCaption();epoch++;clearTimeout(timer);controller?.abort();if(document.hidden){hideFaceVolume();stopPreview();$('video-review-player').pause();$('music-video').pause();if(currentMode==='music')control('pause').catch(()=>{});window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();if(!nativeOwnsInput())cancelPTT();}else{syncUiActivity();refreshAdapter();poll();}});
 window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence,previewEvidence};window.BMOPlayableGames?.configure({control,intent});poll();
 })();

@@ -88,6 +88,7 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     assert not page.locator("#notice").is_visible()
                     page.locator("#face").click(position={"x":400,"y":230})
                     page.wait_for_function("()=>document.querySelector('#menu').open")
+                    page.locator("#settings-menu").click()
                     page.locator("#system-menu").click()
                     page.wait_for_function("()=>document.querySelector('#system-dialog').open")
                     page.locator("#greeting-retry").focus()
@@ -141,7 +142,7 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page.locator("#face").focus();press_enter();finish_turn(4)
                     checks.append("same-origin face iframe native Enter down/up still reaches the single PTT owner")
 
-                    page.locator('#face').click(position={'x':400,'y':230});page.locator('#talk').focus();press_enter()
+                    page.locator('#face').click(position={'x':400,'y':230});page.locator('#conversation-menu').click();page.locator('#talk').focus();press_enter()
                     page.wait_for_function("()=>!document.querySelector('#menu').open&&document.activeElement.id==='face'")
                     finish_turn(5)
                     checks.append("native menu Talk Enter starts exactly one PTT; menu-close face focus restoration does not cancel that capture")
@@ -244,7 +245,9 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                             if predicate(value):return value
                             page.wait_for_timeout(25)
                         raise AssertionError('PTT fixture did not reach expected phase: '+json.dumps({
-                            'busy':value.get('conversation_busy'),'ptt':value.get('ptt')}))
+                            'busy':value.get('conversation_busy'),'ptt':value.get('ptt'),
+                            'last_result':value.get('last_result'),'requests':value.get('requests',[])[-3:],
+                            'browser':page.evaluate("()=>({input:BMODesktop.inputEvidence,mode:BMODesktop.features?.mode,desktop:BMODesktop.state?.phase,active:document.activeElement.id,dialogs:[...document.querySelectorAll('dialog[open]')].map(e=>e.id)})")}))
                     page.route("**/*", lambda r: r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
                     page.add_init_script("""window.__audioCalls=0;HTMLMediaElement.prototype.play=function(){
                         window.__audioCalls++;throw Error('Browser audio forbidden')};""")
@@ -283,6 +286,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                     page.wait_for_function("()=>BMODesktop.features?.turn_diagnostics?.terminal==='ok'")
                     assert not page.locator("#system-dialog").is_visible()
                     page.evaluate("()=>BMODesktop.menu()")
+                    page.locator("#settings-menu").click()
                     page.locator("#system-menu").click()
                     page.wait_for_function("()=>document.querySelector('#system-dialog').open")
                     diagnostic = json.loads(page.locator("#turn-diagnostics").inner_text())
@@ -325,7 +329,10 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                     assert game_evidence["blocked_mode"] >= 1
                     assert game_evidence["request_sent"] == game_evidence["request_accepted"] == 1
                     page.evaluate("()=>BMODesktop.intent('return_to_face')")
-                    page.wait_for_function("()=>!document.querySelector('#game-menu').open")
+                    # Enter can start the selected game and close its menu
+                    # before return_to_face reaches the owner. Observe the
+                    # rendered conversation transition, not just closed DOM.
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'&&!document.querySelector('dialog[open]')")
                     checks.append("game menu Enter stays game input and never starts PTT; face return preserves expression")
                     checks.append("game Enter increments only the blocked-mode input evidence and preserves the single admitted PTT request")
 

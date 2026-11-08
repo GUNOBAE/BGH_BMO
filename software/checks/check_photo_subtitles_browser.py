@@ -246,9 +246,10 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     wait(lambda s:s['test_fixture']['brain']==previous+1)
                 def subtitle_menu(mode):
                     page.evaluate('()=>BMODesktop.menu()')
+                    page.locator('#settings-menu').click()
                     page.locator('#subtitle-mode').select_option(mode)
                     wait(lambda s:s['subtitles']['mode']==mode)
-                    page.locator('#resume').click()
+                    page.locator('#settings-dialog .dialog-close').click()
                 def advance_photo_countdown():
                     start=float((root/'photo-clock').read_text())
                     for elapsed in (1,2,3,4,5.1):
@@ -289,7 +290,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert box['y']>=390 and box['height']<=68 and box['x']>=0 and box['x']+box['width']<=800
                 finish();page.locator('#subtitles').wait_for(state='hidden')
                 assert page.locator('#turn-diagnostics').text_content()==''
-                page.evaluate('()=>BMODesktop.menu()');page.locator('#system-menu').click()
+                page.evaluate('()=>BMODesktop.menu()');page.locator('#settings-menu').click();page.locator('#system-menu').click()
                 page.wait_for_function("()=>document.querySelector('#system-dialog').open&&document.querySelector('#turn-diagnostics').textContent.includes('expression_trace')")
                 diagnostic=json.loads(page.locator('#turn-diagnostics').inner_text())
                 assert diagnostic['enabled'] and isinstance(diagnostic['events'],list)
@@ -313,6 +314,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.wait_for_function("()=>BMOIntegration.state?.playback==='started'&&document.querySelector('#subtitles').textContent==='Numbers can be little friends.'")
                 caption_utterance=page.evaluate('()=>BMOIntegration.state.utterance_id')
                 page.evaluate('()=>BMODesktop.menu()')
+                page.locator('#settings-menu').click()
                 page.locator('#subtitle-mode').select_option('off')
                 assert not page.locator('#subtitles').is_visible()
                 page.wait_for_function("()=>BMODesktop.features?.subtitles.mode==='off'&&BMOIntegration.state.caption.mode==='off'")
@@ -324,7 +326,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 page.locator('#subtitle-mode').select_option('en')
                 page.wait_for_function("()=>BMOIntegration.state?.playback==='started'&&document.querySelector('#subtitles').textContent==='Numbers can be little friends.'")
                 (root/'slow-player').unlink()
-                finish();page.locator('#resume').click()
+                finish();page.locator('#settings-dialog .dialog-close').click()
                 checks.append('native subtitle off/en/ko menu changes apply after server mode acknowledgement to the same playing utterance; off clears immediately and on restores available caption without a new answer')
 
                 question('Please, get angry.')

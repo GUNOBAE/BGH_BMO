@@ -111,7 +111,7 @@ class HostControl:
             valid = (type(self.value) is dict and set(self.value) == {"consent"}
                      and type(self.value["consent"]) is bool)
         else:
-            valid = (self.action in ("cancel", "reset", "repeat", "pause", "resume", "next", "stop", "ptt", "ptt_cancel", "video_stop", "camera_off", "provider_recheck", "replay")
+            valid = (self.action in ("cancel", "reset", "repeat", "pause", "resume", "next", "stop", "ptt", "ptt_cancel", "ptt_finish", "arm_prepare", "video_stop", "camera_off", "provider_recheck", "replay")
                      and self.value is None)
         if not valid:
             raise FeatureError("invalid_control")
@@ -357,6 +357,9 @@ class FeatureHost(ProductVideoFlow):
         self._public = {}
         self._state_sequence = 0
         self._turn_generations, self._proposals = {}, {}
+        from .motion.conversation_policy import ConversationGesturePolicy
+        self._automatic_gestures = ConversationGesturePolicy()
+        self._greeting_eligible = False
         from .compound import CompoundActions
         self.compound = CompoundActions(self)
         self._voice_lease = self._game_lease = self._music_lease = None
@@ -1545,6 +1548,16 @@ class FeatureHost(ProductVideoFlow):
                                                      simulated=self.runtime.simulate))
                 return self._remember(HostResult(request, "accepted", "ptt_input_accepted",
                                                  simulated=self.runtime.simulate))
+            elif action == "ptt_finish":
+                # A stale touch can only finish the current capture, never start
+                # another turn or cancel an answer which has already begun.
+                with self._records_lock:
+                    input_turn = self._records.get(request, {}).get('input_turn', self.session.worker.turn)
+                finished = bool(input_turn == self.session.worker.turn and self._ptt_turn_active
+                                and self.microphone is not None and self.microphone.finish())
+                return self._remember(HostResult(request, "accepted",
+                    "capture_finish_requested" if finished else "capture_not_listening",
+                    simulated=self.runtime.simulate))
             elif action == "ptt_cancel":
                 if self._ptt_turn_active:
                     self.cancel_conversation()
@@ -1562,6 +1575,29 @@ class FeatureHost(ProductVideoFlow):
                 return self._remember(HostResult(request, 'simulated' if self.runtime.simulate else 'succeeded',
                     'volume_applied', simulated=self.runtime.simulate, executed=not self.runtime.simulate,
                     completed=True, completion='output_setting_applied'))
+            elif action == 'arm_prepare':
+                # A replayed preparation is never a new permission to clear a
+                # later STOP. Reserve the explicit user request before any IO.
+                entry = self.journal.begin(request, {'control': 'arm_prepare'})
+                if entry['duplicate']:
+                    return self._result_history.get(request) or self._remember(
+                        HostResult(request, 'rejected', 'arm_prepare_duplicate'))
+                with self._records_lock:
+                    received = self._records.get(request, {}).get('received_at', self.clock())
+                if not 0 <= self.clock() - received <= .5:
+                    raise FeatureError('arm_prepare_stale')
+                from .motion.daily_usage import ArmUsageError
+                try:
+                    if self.arm_usage is not None and self.runtime.arms_commissioned:
+                        self.arm_usage.prepare()
+                    elif self.runtime.arms_supervised and callable(getattr(self.motion, 'prepare', None)):
+                        self.motion.prepare()
+                    else:
+                        raise FeatureError('arm_usage_unavailable')
+                except ArmUsageError as error:
+                    raise FeatureError(error.code) from None
+                return self._remember(HostResult(request, 'succeeded', 'arm_prepared',
+                    simulated=self.runtime.simulate, completed=True, completion='protocol_ready_position_unverified'))
             elif action == 'arm_usage':
                 if self.arm_usage is None:
                     raise FeatureError('arm_usage_unavailable')
@@ -1930,6 +1966,7 @@ class FeatureHost(ProductVideoFlow):
             return False
         self.request_budget.admit()
         self._transition("conversation")
+        self._greeting_eligible = self._automatic_gestures.greeting_eligible(self.clock())
         self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
             "real_features_enabled": self.runtime.public()["real_features_enabled"],
             "games": [{"id": item.id, "readiness": item.readiness} for item in self.games.catalog()],
@@ -1942,6 +1979,8 @@ class FeatureHost(ProductVideoFlow):
                 detector_available=self.camera.snapshot().get('tracking_available', False), identity_recognition=False),
             'volume': self.volume.snapshot(),
             'arm_actions': sorted(NAMED_GESTURES),
+            'automatic_gestures': dict(self._automatic_gestures.snapshot(self.clock()),
+                greeting_eligible=self._greeting_eligible),
             'arm_status': self._arm_action_status(),
             "arm": ("mock_ack_position_unverified" if self.runtime.simulate
                     else "explicit_current_request_position_unverified" if self.runtime.arms_enabled
@@ -1970,6 +2009,7 @@ class FeatureHost(ProductVideoFlow):
             self.audio.release(self._voice_lease)
             self._voice_lease = self._ptt_lease = None
             return False
+        self._automatic_gestures.last_conversation = self.clock()
         self._arm_turn_state = dict(turn_id=turn_id, stage='idle', gesture_id='none',
                                    player_start_seen=False, player_start_fresh=False)
         return True
@@ -2400,12 +2440,20 @@ class FeatureHost(ProductVideoFlow):
                 if not self.character_life and self.clock() - at <= .5:
                     self.gaze.offer("reaction", .12, -.04, generation=generation,
                                     expires_at=at + .65)
-                self._arm_turn_state.update(stage='player_started' if fresh else 'stale',
+                automatic_reason = 'eligible'
+                if self.character_life:
+                    automatic_reason = self._automatic_gestures.reason(
+                        proposal.get('character_plan'), now=at, turn=turn,
+                        greeting_eligible=self._greeting_eligible,
+                        has_action=proposal['intent'] is not None or bool(proposal.get('action_plan')))
+                self._arm_turn_state.update(automatic_reason=automatic_reason,
+                    stage='player_started' if fresh else 'stale',
                     player_start_seen=True, player_start_fresh=fresh,
                     gesture_id=proposal['gesture'], playback_emotion=self.session.snapshot()['emotion'])
                 if ((self.runtime.simulate or self.runtime.arms_enabled)
                         and (self.arm_usage is None or self.arm_usage.enabled and self.arm_usage.conversation_gestures)
                         and (self._emotion_arms or self.runtime.simulate and not self.character_life)
+                        and automatic_reason == "eligible"
                         and proposal["gesture"] != "none" and self.clock() - at <= .5
                         and self.session.snapshot()["playback"] == "started"):
                     request = "gesture_" + uuid5(self._namespace, turn).hex
@@ -2423,6 +2471,8 @@ class FeatureHost(ProductVideoFlow):
                             # polling or leave a permanent accepted receipt.
                             result = HostResult(request, "failed", "motion_admission_failed",
                                                 simulated=self.runtime.simulate)
+                        if self.character_life and result.status in ('accepted', 'running', 'simulated', 'succeeded'):
+                            self._automatic_gestures.started(turn, at)
                         self._arm_turn_state.update(stage='submitted', result_status=result.status,
                                                    result_code=result.code)
                         if result.status not in ("accepted", "running"):
@@ -2692,6 +2742,7 @@ class FeatureHost(ProductVideoFlow):
             supported_gestures=sorted(NAMED_GESTURES),
             usage=self.arm_usage.snapshot() if self.arm_usage is not None else None,
             action_status=self._arm_action_status(),
+            automatic_policy=self._automatic_gestures.snapshot(self.clock()),
             blocked_reasons=list(motion.get('blocked_reasons', [])) +
                 ([getattr(self, '_arm_setup_error', None) or 'arm_runtime_off']
                  if not self.runtime.simulate and not self.runtime.arms_enabled else []))

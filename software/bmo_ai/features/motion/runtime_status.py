@@ -90,6 +90,9 @@ def conversation_arm_status(*, simulate, supervised_requested,
         reasons.append("awaiting_player_start")
     elif not fresh or stage == "stale":
         reasons.append("stale_playback_start")
+    automatic_reason = _code(state.get("automatic_reason"))
+    if automatic_reason and automatic_reason != "eligible" and automatic_reason not in reasons:
+        reasons.append(automatic_reason)
     result_code = _code(state.get("result_code"))
     if result_status in ("rejected", "failed", "cancelled", "unknown") and result_code:
         if result_code not in reasons:
@@ -106,6 +109,7 @@ def conversation_arm_status(*, simulate, supervised_requested,
                           playback_emotion=state.get("playback_emotion") if type(state.get("playback_emotion")) is str and state["playback_emotion"] in _EMOTIONS else None,
                           player_start_seen=started, player_start_fresh=started and fresh,
                           result_status=result_status, result_code=result_code,
+                          automatic_reason=automatic_reason,
                           blocked_reasons=reasons,
                           eligible_at_player_start=not reasons),
         stop_semantics=STOP_SEMANTICS)

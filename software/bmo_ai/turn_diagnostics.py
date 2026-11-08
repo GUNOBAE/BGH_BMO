@@ -77,6 +77,8 @@ _SPANS = {
     "llm_ms": ("llm_started", "llm_completed"),
     "tts_to_first_byte_ms": ("tts_started", "tts_first_byte"),
     "tts_to_download_ms": ("tts_started", "tts_downloaded"),
+    "first_byte_to_player_ms": ("tts_first_byte", "player_started"),
+    "playback_download_overlap_ms": ("player_started", "tts_downloaded"),
     "download_to_audio_ready_ms": ("tts_downloaded", "audio_ready"),
     "audio_ready_to_player_ms": ("audio_ready", "player_started"),
     "last_voiced_to_player_start_ms": ("last_voiced_frame", "player_started"),

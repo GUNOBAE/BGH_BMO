@@ -11,19 +11,26 @@ from .acting_request import requested_acting
 
 
 DELIVERIES = ("calm", "warm", "excited", "curious", "proud", "playfully_annoyed",
-              "soft_sad", "tearful", "theatrical_crying", "theatrical_angry", "empathetic")
+              "soft_sad", "tearful", "theatrical_crying", "theatrical_angry", "empathetic",
+              "playful", "gentle_correction")
 INTENSITIES = ("low", "medium", "high")
 GAZES = ("none", "attentive", "curious", "soft_down", "celebratory")
 SOURCES = ("dialogue", "acting", "boot", "idle")
 REACTION_IDS = ("none", "chuckle", "gasp", "playful_puff", "sob",
                 "hmm", "ooh", "aha", "tada", "oops")
 GESTURE_IDS = ("none", "wave", "celebrate", "shrug")
+GESTURE_CONTEXTS = ("none", "greeting", "achievement", "playful", "hesitation")
+GESTURE_REASONS = ("not_requested", "eligible", "sensitive_context", "action_request",
+                   "acting", "context_mismatch", "emotion_mismatch", "vocal_flourish")
+REACTION_REASONS = ("not_requested", "eligible", "sensitive_context", "action_request",
+                    "acting_required", "emotion_mismatch", "success_event_only")
 _CONGRUENT = {
     "calm": ("neutral",), "warm": ("happy",), "excited": ("happy",),
     "curious": ("neutral", "surprised"), "proud": ("happy",),
     "playfully_annoyed": ("angry",), "soft_sad": ("sad",),
     "tearful": ("crying",), "theatrical_crying": ("crying",),
     "theatrical_angry": ("angry",), "empathetic": ("neutral", "sad"),
+    "playful": ("neutral", "happy"), "gentle_correction": ("neutral",),
 }
 _DEFAULT = {"neutral": "calm", "happy": "warm", "sad": "soft_sad",
             "surprised": "curious", "angry": "playfully_annoyed", "crying": "tearful"}
@@ -33,7 +40,7 @@ _DEFAULT = {"neutral": "calm", "happy": "warm", "sad": "soft_sad",
 # https://docs.fish.audio/developer-guide/core-features/emotions
 # https://docs.fish.audio/features/text-to-speech/drama-3
 VOICE_DIRECTIONS = {
-    "calm": "[calm, clear conversational delivery] ",
+    "calm": "[calm, clear conversational delivery, natural phrasing and gentle emphasis, not flat] ",
     "warm": "[warm, gently happy, small smile] ",
     "excited": "[delighted, brief restrained excitement, no shouting] ",
     "curious": "[curious, attentive, gentle wonder] ",
@@ -44,6 +51,8 @@ VOICE_DIRECTIONS = {
     "theatrical_crying": "[sobbing, voice catching, controlled theatrical tears, no prolonged wailing] ",
     "theatrical_angry": "[angry, playful theatrical protest, clearly acted, never threatening or shouting] ",
     "empathetic": "[empathetic, calm, attentive, no comic reaction] ",
+    "playful": "[lightly playful, a small smile and gentle rhythmic contrast, no forced laugh] ",
+    "gentle_correction": "[gentle, matter-of-fact correction, a brief thoughtful pause, never scolding] ",
 }
 IDENTITY_DIRECTION = "[Keep the same familiar Aaron character voice and clear conversational pronunciation.] "
 
@@ -79,11 +88,13 @@ class CharacterPlan:
     source: str = "dialogue"
     explicit_acting: bool = False
     sensitive_context: bool = False
+    gesture_context: str = "none"
 
     def __post_init__(self):
         if (self.face_emotion not in FACE_EMOTIONS or self.delivery_id not in DELIVERIES
                 or self.intensity not in INTENSITIES or self.reaction_id not in REACTION_IDS
                 or self.gaze_id not in GAZES or self.gesture_id not in GESTURE_IDS
+                or self.gesture_context not in GESTURE_CONTEXTS
                 or self.source not in SOURCES or type(self.explicit_acting) is not bool
                 or type(self.sensitive_context) is not bool
                 or self.face_emotion not in _CONGRUENT[self.delivery_id]):
@@ -94,7 +105,8 @@ class CharacterPlan:
 
     @classmethod
     def from_public(cls, value):
-        if type(value) is not dict or set(value) != set(cls.__dataclass_fields__):
+        if type(value) is not dict or set(value) not in (
+                set(cls.__dataclass_fields__), set(cls.__dataclass_fields__) - {"gesture_context"}):
             raise ExpressionFormatError()
         try:
             return cls(**value)
@@ -125,6 +137,8 @@ class CharacterDirector:
         delivery = value.get("delivery_id", _DEFAULT[emotion])
         gaze = value.get("gaze_id", "none")
         gaze = gaze if gaze in GAZES else "none"
+        gesture_context = value.get("gesture_context", "none")
+        gesture_context = gesture_context if gesture_context in GESTURE_CONTEXTS else "none"
         if sensitive:
             emotion = "sad" if emotion != "neutral" else "neutral"
             return CharacterPlan(emotion, "empathetic", "low", source="dialogue",
@@ -158,11 +172,60 @@ class CharacterDirector:
             reaction = "none"
         if emotion in ("sad", "crying", "angry") or has_intent:
             gesture = "none"
-        # A short vocal reaction and a body flourish are alternatives. Keep gaze
-        # understated as well; native listening/tracking priority is owned by Host.
+        # Context comes from the existing semantic reply, not an extra classifier
+        # or a happy-face-to-arm rule. Legacy replies with no context keep their
+        # speech and expression but cannot grant an automatic body flourish.
+        allowed_context = {"wave": ("greeting",), "celebrate": ("achievement",),
+                           "shrug": ("playful", "hesitation")}
+        if (gesture != "none" and (gesture_context not in allowed_context[gesture]
+                or gesture == "celebrate" and emotion != "happy")):
+            gesture = "none"
+        # A quiet Hmm/Aha may accompany one restrained shrug/celebration. A
+        # laugh, gasp or acted puff already supplies the flourish on its own.
+        # Tracking and physical rate/STOP ownership remain the Host's decision.
         if reaction != "none":
-            gesture, gaze = "none", "attentive"
+            if reaction not in ("hmm", "aha"):
+                gesture = "none"
+            gaze = "attentive"
         if has_intent:
             reaction, gaze = "none", "none"
         return CharacterPlan(emotion, delivery, intensity, reaction, gaze, gesture,
-                             source, explicit_acting=bool(acting))
+                             source, explicit_acting=bool(acting), gesture_context=gesture_context)
+
+
+def performance_resolution(plan, *, reaction, gesture, has_intent=False):
+    """Bounded model-to-local diagnostics without transcripts or provider text."""
+    if reaction == "none":
+        reaction_reason = "not_requested"
+    elif plan.reaction_id != "none":
+        reaction_reason = "eligible"
+    elif plan.sensitive_context:
+        reaction_reason = "sensitive_context"
+    elif has_intent:
+        reaction_reason = "action_request"
+    elif reaction == "tada":
+        reaction_reason = "success_event_only"
+    elif reaction in ("sob", "playful_puff") and not plan.explicit_acting:
+        reaction_reason = "acting_required"
+    else:
+        reaction_reason = "emotion_mismatch"
+    if gesture == "none":
+        gesture_reason = "not_requested"
+    elif plan.gesture_id != "none":
+        gesture_reason = "eligible"
+    elif plan.sensitive_context:
+        gesture_reason = "sensitive_context"
+    elif has_intent:
+        gesture_reason = "action_request"
+    elif plan.explicit_acting:
+        gesture_reason = "acting"
+    elif plan.face_emotion in ("sad", "crying", "angry"):
+        gesture_reason = "emotion_mismatch"
+    elif plan.reaction_id not in ("none", "hmm", "aha"):
+        gesture_reason = "vocal_flourish"
+    else:
+        gesture_reason = "context_mismatch"
+    return dict(model_reaction=reaction, resolved_reaction=plan.reaction_id,
+                reaction_reason=reaction_reason, model_gesture=gesture,
+                resolved_gesture=plan.gesture_id, gesture_context=plan.gesture_context,
+                gesture_reason=gesture_reason)

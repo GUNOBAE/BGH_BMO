@@ -535,6 +535,7 @@ def run(profile="ci-synthetic", face=None, chromium="/usr/bin/chromium"):
 
                     page.keyboard.press("Escape")
                     assert page.locator("#menu").is_visible()
+                    page.locator("#conversation-menu").click()
                     page.locator("#talk").click()
                     page.wait_for_function("()=>BMOIntegration.state?.phase==='speaking'&&document.querySelector('#face').contentWindow.BMOFace.getState().selectedEmotion==='crying'")
                     page.wait_for_function("()=>BMOIntegration.state?.playback==='ended'")
@@ -576,6 +577,7 @@ def run(profile="ci-synthetic", face=None, chromium="/usr/bin/chromium"):
                     assert page.locator("#menu").is_visible(), page.evaluate("""()=>({keys:__exitKeys,
                         focused:document.activeElement.tagName,gameMenu:document.querySelector('#game-menu').open,
                         mode:BMODesktop.state.phase})""")
+                    page.locator("#settings-menu").click()
                     page.locator("#exit").click()
                     code, counts, error = fixture.finish(request_exit=False)
                     assert code == 0, error

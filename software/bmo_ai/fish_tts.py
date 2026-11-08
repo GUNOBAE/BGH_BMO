@@ -11,6 +11,8 @@ import math
 import os
 import re
 import struct
+import socket
+from threading import Event, Thread
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
@@ -33,6 +35,49 @@ class _NoFreeRedirect(HTTPRedirectHandler):
 # The Fish WAV transport may use placeholder sizes instead of actual bytes.
 FISH_RIFF_PLACEHOLDER = 4294967076
 FISH_DATA_PLACEHOLDER = 4294967040
+
+
+class _ResponseCancellation:
+    """Interrupt only this opened HTTP response's socket on cancellation.
+
+    urllib exposes the already-owned socket through HTTPResponse.fp/raw. We
+    never close an unrelated descriptor, retry, or leave a downloader running
+    after returning. Initial DNS/connect/header wait retains the configured
+    urllib timeout; after response acquisition cancellation interrupts a read.
+    """
+    def __init__(self,response,check):
+        self.check,self.done,self.error=check,Event(),None
+        self.thread=None
+        handle=getattr(response,'fp',None)
+        raw=getattr(handle,'raw',None)
+        owned=getattr(raw,'_sock',None)
+        if check is not None and isinstance(owned,socket.socket):
+            self.socket=owned
+            self.thread=Thread(target=self._watch,name='bmo-fish-cancel',daemon=True)
+            self.thread.start()
+
+    def _watch(self):
+        while not self.done.wait(.02):
+            try:
+                self.check()
+            except BaseException as error:
+                self.error=error
+                try:
+                    self.socket.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                return
+
+    def checked(self):
+        if self.error is not None:
+            raise self.error
+        if self.check is not None:
+            self.check()
+
+    def close(self):
+        self.done.set()
+        if self.thread is not None:
+            self.thread.join(timeout=.1)
 
 
 def _normalize_fish_wav(path):
@@ -93,6 +138,7 @@ def synthesize_wav(
     on_timing=None,
     clock=time.monotonic,
     free_only=False,
+    on_chunk=None,
 ):
     """Call Fish once and return a validated temporary WAV path.
 
@@ -143,32 +189,49 @@ def synthesize_wav(
         try:
             opener = build_opener(_NoFreeRedirect()).open if free_only else urlopen
             with opener(request, timeout=timeout) as response:
+                cancellation = _ResponseCancellation(response,cancel_check if on_chunk is not None else None)
                 try:
                     out = path.open("wb")
                 except OSError:
+                    cancellation.close()
                     raise audio.AudioSynthesisError("Cannot save synthesized audio. Check storage.", "audio_storage_failed") from None
-                with out:
-                    count = 0
-                    while True:
-                        if time.monotonic() >= deadline:
-                            raise audio.AudioSynthesisError("Fish speech download timed out.", "audio_download_timeout")
-                        # The first body-byte observation must not wait for a
-                        # 64KiB read to fill. Later reads retain the bounded WAV
-                        # download path; this is not an acoustic TTFA measure.
-                        chunk = response.read(1 if count == 0 else 65536)
-                        if time.monotonic() >= deadline:
-                            raise audio.AudioSynthesisError("Fish speech download timed out.", "audio_download_timeout")
-                        if not chunk:
-                            break
-                        if not isinstance(chunk, bytes) or count + len(chunk) > audio.MAX_AUDIO_BYTES:
-                            raise audio.AudioSynthesisError("Fish speech download is invalid or too large.", "speech_download_too_large")
-                        if count == 0:
-                            observed("audio_first_byte")
-                        try:
-                            out.write(chunk)
-                        except OSError:
-                            raise audio.AudioSynthesisError("Cannot save synthesized audio. Check storage.", "audio_storage_failed") from None
-                        count += len(chunk)
+                try:
+                    with out:
+                        count = 0
+                        while True:
+                            cancellation.checked()
+                            if cancel_check is not None:
+                                cancel_check()
+                            if time.monotonic() >= deadline:
+                                raise audio.AudioSynthesisError("Fish speech download timed out.", "audio_download_timeout")
+                            # Available-byte reads permit validated PCM playback
+                            # without waiting for a complete 64 KiB buffer.
+                            reader = getattr(response, 'read1', response.read) if on_chunk is not None else response.read
+                            try:
+                                chunk = reader(1 if count == 0 else 4096 if on_chunk is not None else 65536)
+                            except OSError:
+                                cancellation.checked()
+                                raise
+                            cancellation.checked()
+                            if cancel_check is not None:
+                                cancel_check()
+                            if time.monotonic() >= deadline:
+                                raise audio.AudioSynthesisError("Fish speech download timed out.", "audio_download_timeout")
+                            if not chunk:
+                                break
+                            if not isinstance(chunk, bytes) or count + len(chunk) > audio.MAX_AUDIO_BYTES:
+                                raise audio.AudioSynthesisError("Fish speech download is invalid or too large.", "speech_download_too_large")
+                            if count == 0:
+                                observed("audio_first_byte")
+                            try:
+                                out.write(chunk)
+                            except OSError:
+                                raise audio.AudioSynthesisError("Cannot save synthesized audio. Check storage.", "audio_storage_failed") from None
+                            count += len(chunk)
+                            if on_chunk is not None:
+                                on_chunk(chunk)
+                finally:
+                    cancellation.close()
                 observed("audio_downloaded")
         except HTTPError as error:
             raise _error_for_http_status(error.code) from None

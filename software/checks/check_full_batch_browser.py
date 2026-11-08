@@ -178,7 +178,12 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     raise AssertionError('Product state did not settle: '+json.dumps({key:state.get(key) for key in
                         ('mode','phase','video_phase','video','camera_video','camera','gaze','last_result','requests','test_fixture')}))
                 def panel(button):
-                    page.evaluate('()=>BMODesktop.menu()');page.locator('#'+button).click()
+                    page.evaluate('()=>BMODesktop.menu()')
+                    if button in ('voice-menu','system-menu'):
+                        page.locator('#settings-menu').click()
+                    elif button=='video-menu':
+                        page.locator('#camera-menu').click()
+                    page.locator('#'+button).click()
                 def finish_voice():
                     return wait(lambda state:not state['conversation_busy'] and state['audio_owner'] is None)
                 def question(text):
@@ -236,6 +241,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
 
                 wake_before=fixture.features()['test_fixture']
                 page.evaluate('()=>BMODesktop.menu()')
+                page.locator('#settings-menu').click()
                 assert page.locator('#wake-on').is_disabled()
                 assert '다시 실행' in page.locator('#wake-readiness').inner_text()
                 receipt=page.evaluate('()=>BMODesktop.control("wake",true)')
@@ -244,7 +250,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 assert not rejected['wake_word']['armed'] and not rejected['wake_word']['requested']
                 wake_after=rejected['test_fixture']
                 assert (wake_before['mic_sources'],wake_before['stt'],wake_before['brain'],wake_before['synthesis'])==(wake_after['mic_sources'],wake_after['stt'],wake_after['brain'],wake_after['synthesis'])
-                page.locator('#resume').click()
+                page.locator('#settings-dialog .dialog-close').click()
                 checks.append('unconfigured wake ON is disabled; forced owner command cannot open mic, download a model or call STT/GPT/TTS')
 
                 panel('system-menu')

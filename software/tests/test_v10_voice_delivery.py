@@ -117,6 +117,40 @@ class V10VoiceDeliveryTests(unittest.TestCase):
         self.assertEqual(voice._cache['expression']['reaction'], 'none')
         self.assertIsNone(voice._expressive_policy._last_character_reaction)
 
+    def test_semantic_correction_reaches_verified_v10_clip_and_one_player_start(self):
+        pack = self.pack(('REACTION_LINE_OOPS_MY_MISTAKE',))
+        voice, events, deliveries = self.voice(pack)
+        plan = CharacterDirector().resolve('neutral', 'oops',
+            metadata={'delivery_id': 'gentle_correction'})
+        voice.expression_metadata = dict(emotion='neutral', emotion_validation='validated',
+            character_plan=plan.public(), caption_payload={'en': 'The number is fourteen.',
+                                                         'ko': '숫자는 14야.'})
+        voice.speak('The number is fourteen.')
+        started = [fields for kind, fields in events if kind == 'started']
+        self.assertEqual(len(started), 1)
+        self.assertEqual(started[0]['cached_reaction_id'], 'REACTION_LINE_OOPS_MY_MISTAKE')
+        self.assertEqual((started[0]['proposed_reaction'], started[0]['reaction_policy_reason'],
+                          started[0]['reaction']), ('oops', 'eligible', 'oops'))
+        self.assertIn('Oops. That was my mistake.', started[0]['caption_payload']['en'])
+        self.assertEqual(len(deliveries), 1)
+        self.assertNotIn('Oops', deliveries[0][1].text)  # Cache supplies it once.
+        voice.repeat()
+        self.assertEqual(len(deliveries), 1)
+
+    def test_cache_event_off_is_distinct_from_model_and_local_policy_eligibility(self):
+        pack = self.pack(('RX06',))
+        pack.enable_event('reaction_hmm', enabled=False)
+        voice, events, deliveries = self.voice(pack)
+        voice.expression_metadata = self.metadata('hmm')
+        voice.speak('A tiny discovery.')
+        started = next(fields for kind, fields in events if kind == 'started')
+        self.assertEqual((started['proposed_reaction'], started['reaction_policy_reason']),
+                         ('hmm', 'eligible'))
+        self.assertEqual(started['reaction'], 'none')
+        self.assertFalse(started['cached_reaction'])
+        self.assertIsNone(started['cached_reaction_id'])
+        self.assertEqual(len(deliveries), 1)
+
     def test_cancel_after_reaction_load_discards_private_snapshot_before_synthesis(self):
         pack = self.pack(('RX06',));voice, events, deliveries = self.voice(pack)
         voice.expression_metadata = self.metadata('hmm');cancelled = Event();paths = []

@@ -4,6 +4,7 @@ The existing ConversationWorker owns turn admission, queue pressure, cooperative
 cancellation and late results. This adapter never creates hardware at import.
 """
 from collections import deque
+import math
 import json
 from threading import Event, Lock, Thread
 from types import SimpleNamespace
@@ -17,7 +18,7 @@ from .captions import caption_pair, clean_caption, MODES as CAPTION_MODES
 from .cloud import CloudError
 from .expression_contract import ExpressionClient
 from .hardware import FaceState
-from .integration_face import wav_cues
+from .integration_face import wav_cues, MOUTHS
 from .integration_profile import policy_brain
 from .integration_voice import IntegrationVoice
 
@@ -474,6 +475,13 @@ class IntegrationSession:
                             expressive_voice_enabled=bool(getattr(self.voice, 'expressive', False)),
                             tts_requested_emotion=None,
                             tts_mechanism=None, tts_override_soft=None, tts_backend=None)
+                        from .character_director import (REACTION_IDS, GESTURE_IDS, GESTURE_CONTEXTS,
+                            REACTION_REASONS, GESTURE_REASONS)
+                        for key, allowed in (('model_reaction', REACTION_IDS), ('resolved_reaction', REACTION_IDS),
+                                ('reaction_reason', REACTION_REASONS), ('model_gesture', GESTURE_IDS),
+                                ('resolved_gesture', GESTURE_IDS), ('gesture_context', GESTURE_CONTEXTS),
+                                ('gesture_reason', GESTURE_REASONS)):
+                            trace[key] = resolution.get(key) if resolution.get(key) in allowed else None
                         self._data["expression_trace"] = trace
                 interpretation = getattr(reply, 'request_interpretation', None)
                 if (not reply.degraded and type(interpretation) is dict
@@ -534,6 +542,21 @@ class IntegrationSession:
                 if kind == "prepared":
                     self._data.update(playback="prepared", phase="thinking", cues=cues,
                                       source=fields.get("source"), position=0.0)
+                elif kind == "progress":
+                    # Streaming audio extends the same utterance envelope. Never
+                    # reset its clock, captions, expression or arm-start event.
+                    incoming = fields.get('cues')
+                    if self._data['playback'] != 'started' or type(incoming) is not list or len(incoming) > 10000:
+                        return
+                    if any(type(cue) is not dict or set(cue) != {'time', 'mouth'}
+                           or type(cue['time']) not in (int, float) or not math.isfinite(cue['time'])
+                           or cue['time'] < 0 or cue['mouth'] not in MOUTHS
+                           for cue in incoming):
+                        return
+                    if any(a['time'] > b['time'] for a, b in zip(incoming, incoming[1:])):
+                        return
+                    self._data['cues'] = [dict(cue) for cue in incoming]
+                    return
                 elif kind == "started":
                     self._started = self.clock()
                     if self._pending_subtitle_mode is not None:
@@ -547,6 +570,17 @@ class IntegrationSession:
                                       source=fields.get("source", self._data["source"]))
                     trace = self._data.get('expression_trace')
                     if type(trace) is dict:
+                        from .character_director import REACTION_IDS
+                        from .expressive_voice import REACTION_POLICY_REASONS
+                        from .voice_pack import EVENT_CANDIDATES
+                        reaction_clips = {clip for event, clips in EVENT_CANDIDATES.items()
+                                          if event.startswith('reaction_') for clip in clips}
+                        reaction_clips.update(('reaction_01', 'reaction_02', 'reaction_03', 'reaction_04'))
+                        trace.update(proposed_reaction=fields.get('proposed_reaction') if fields.get('proposed_reaction') in REACTION_IDS else None,
+                            reaction_policy_reason=fields.get('reaction_policy_reason') if fields.get('reaction_policy_reason') in REACTION_POLICY_REASONS else None,
+                            played_reaction=fields.get('played_reaction', fields.get('reaction')) if fields.get('played_reaction', fields.get('reaction')) in REACTION_IDS else None,
+                            cached_reaction=fields.get('cached_reaction') is True,
+                            cached_reaction_id=fields.get('cached_reaction_id') if type(fields.get('cached_reaction_id')) is str and fields['cached_reaction_id'] in reaction_clips else None)
                         mechanisms = {'plain_fallback','fish_s2_allowlist_v1','fish_character_drama3_v1','fish_character_s2_v1'}
                         trace.update(tts_requested_emotion=fields.get('tts_requested_emotion') if fields.get('tts_requested_emotion') in EMOTIONS else None,
                             tts_mechanism=fields.get('tts_mechanism') if fields.get('tts_mechanism') in mechanisms else None,

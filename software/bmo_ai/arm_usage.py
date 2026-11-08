@@ -33,7 +33,7 @@ def main(argv=None):
         report = DailyArmController(store=store).snapshot()
         report.update(status='FIRST_TEST_RECORDED' if args.record_first_test else 'READ_ONLY',
             transport_opened=False, motion_requested=False, firmware_changed=False,
-            next_action='Restart BMO Candidate, open Move arms, and choose Use arms.' if args.record_first_test
+            next_action='Restart BMO Candidate, open Arms, choose Use arms, then explicitly Prepare arms.' if args.record_first_test
                         else 'Record the completed supervised first test before daily arm use.')
         print(json.dumps(report, sort_keys=True))
         return 0

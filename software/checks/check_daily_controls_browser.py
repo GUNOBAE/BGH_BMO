@@ -27,6 +27,8 @@ def run(chromium=None):
         "    from bmo_ai.features.motion.daily_usage import DailyArmController\n"
         "    settings['arm_usage']=DailyArmController(root/'arm-usage',runtime_ready=lambda:True)\n"
         '    host=FeatureHost(**settings,client=client);hosts.append(host)')
+    source=replace_once(source, "elif scenario in ('ptt','release','character'):time.sleep(.01)",
+        "elif scenario in ('ptt','release','character'):time.sleep(.04 if (root/'slow-touch-capture').exists() else .01)")
     checks = []
     hashes = {}
     with tempfile.TemporaryDirectory(prefix='bmo-daily-browser-') as directory:
@@ -66,6 +68,62 @@ def run(chromium=None):
                     settled("BMODesktop.state.character_life.presence.mode==='off'")
                     assert page.locator('#notice').is_hidden()
                     assert page.locator('#face').bounding_box() == dict(x=0,y=0,width=800,height=480)
+                    # The standalone R10 launcher hint may be inserted after
+                    # iframe load. Hide only that exact integration hint, not
+                    # approved expression elements or arbitrary Esc text.
+                    page.frame_locator('#face').locator('body').evaluate("""body=>{
+                      const wrapper=document.createElement('div');wrapper.id='face-art-wrapper';
+                      wrapper.innerHTML='<svg id="kept-svg" width="12" height="12"><circle cx="6" cy="6" r="5"/></svg><canvas id="kept-canvas" width="12" height="12"></canvas><div id="kept-css-art" style="width:12px;height:12px;background:blue"></div><div id="hint-wrapper"><div id="standalone-return-hint">화면 돌아가기 <span>· Esc</span></div></div>';
+                      body.append(wrapper);
+                      const fallback=document.createElement('canvas');fallback.id='kept-fallback-canvas';
+                      fallback.width=12;fallback.height=12;fallback.textContent='화면 돌아가기 · Esc';body.append(fallback);
+                      const mixed=document.createElement('div');mixed.id='mixed-art-and-hint';
+                      mixed.innerHTML='<canvas width="12" height="12"></canvas>화면 돌아가기 · Esc';body.append(mixed);
+                      const keep=document.createElement('p');keep.id='unrelated-hint';
+                      keep.textContent='Esc remains available in settings';body.append(keep);
+                    }""")
+                    page.frame_locator('#face').locator('#standalone-return-hint').wait_for(state='hidden')
+                    assert page.frame_locator('#face').locator('#unrelated-hint').is_visible()
+                    for kept in ('face-art-wrapper','kept-svg','kept-canvas','kept-css-art','mixed-art-and-hint','kept-fallback-canvas'):
+                        assert page.frame_locator('#face').locator('#'+kept).is_visible(),kept
+                    assert page.frame_locator('#face').locator('#hint-wrapper').evaluate("e=>getComputedStyle(e).display!=='none'")
+                    # All six categories and shared controls fit the actual
+                    # product viewport. GP6 is Z; no imaginary X/back button.
+                    page.locator('#face').focus()
+                    page.keyboard.press('z')
+                    page.locator('#menu').wait_for(state='visible')
+                    categories=page.locator('#menu-actions button')
+                    assert categories.count()==6
+                    for item in [categories.nth(i) for i in range(6)]+[page.locator('#presence-test'),page.locator('#resume')]:
+                        box=item.bounding_box()
+                        assert box and 0<=box['x'] and 0<=box['y'] and box['x']+box['width']<=800 and box['y']+box['height']<=480,box
+                    assert page.locator('#conversation-menu').evaluate('e=>e===document.activeElement')
+                    page.keyboard.press('ArrowRight')
+                    assert page.locator('#music-menu').evaluate('e=>e===document.activeElement')
+                    page.keyboard.press('ArrowDown')
+                    assert page.locator('#arms-menu').evaluate('e=>e===document.activeElement')
+                    assert page.locator('#arms-menu').evaluate('e=>getComputedStyle(e).outlineWidth')=='4px'
+                    page.keyboard.press('z')
+                    page.locator('#arms-dialog').wait_for(state='visible')
+                    page.keyboard.down('z')
+                    page.locator('#menu').wait_for(state='visible')
+                    page.keyboard.up('z')
+                    assert page.locator('#arms-dialog').is_hidden() and page.locator('#menu').is_visible()
+                    page.keyboard.down('z')
+                    page.locator('#menu').wait_for(state='hidden')
+                    page.keyboard.up('z')
+                    assert page.locator('#menu').is_hidden()
+                    page.keyboard.press('z')
+                    page.locator('#master-mute').focus();page.keyboard.press('z')
+                    settled('BMODesktop.features.volume.muted===true')
+                    page.keyboard.press('z')
+                    settled('BMODesktop.features.volume.muted===false')
+                    page.locator('#settings-menu').click()
+                    page.locator('#subtitle-mode').focus();page.keyboard.press('z')
+                    page.keyboard.press('ArrowDown');page.keyboard.press('z')
+                    settled("BMODesktop.features.subtitles.mode==='en'")
+                    page.locator('#settings-dialog .dialog-close').click()
+                    checks.append('800x480 six touch categories fit with volume, manual idle and face return; actual arrows/GP6 Z select and long Back consume release; exact iframe launcher hint is hidden without changing source artwork')
                     # A drag and a cancelled touch must not become menu clicks.
                     page.mouse.move(320,200);page.mouse.down();page.mouse.move(390,200,steps=4);page.mouse.up()
                     assert page.locator('#menu').is_hidden()
@@ -91,6 +149,24 @@ def run(chromium=None):
                     settled('BMODesktop.features.test_fixture.brain==='+str(before['brain']+1)+'&&!BMODesktop.features.conversation_busy')
                     assert page.locator('#menu').is_hidden()
                     checks.append('800x480 full face single tap opens prominent daily controls; drag/cancel do not; all seven arm actions and Stop remain present while disabled; Back followed by Enter reaches PTT')
+                    # Touch completion goes to the idempotent recorder-finish
+                    # action, not generic GP8 (which could start/cancel a turn
+                    # after a slow state snapshot).
+                    before=fixture.features()['test_fixture']
+                    (Path(directory)/'slow-touch-capture').touch()
+                    (Path(directory)/'hold-next-player').touch()
+                    page.locator('#face').focus();page.keyboard.press('Enter')
+                    settled("BMODesktop.features.ptt.state==='speech'&&!document.querySelector('#ptt-finish').hidden")
+                    page.locator('#ptt-finish').click()
+                    settled("BMODesktop.features.phase==='speaking'&&BMODesktop.features.test_fixture.brain==="+str(before['brain']+1))
+                    assert page.locator('#ptt-finish').is_hidden()
+                    stale=page.evaluate("()=>BMODesktop.control('ptt_finish')")
+                    settled("BMODesktop.features.requests.some(r=>r.request_id==='"+stale['request_id']+"'&&r.code==='capture_not_listening')")
+                    assert fixture.features()['conversation_busy'] and fixture.features()['test_fixture']['mic_sources']==before['mic_sources']+1
+                    page.evaluate("()=>BMODesktop.control('cancel')")
+                    settled('!BMODesktop.features.conversation_busy&&BMODesktop.features.audio_owner===null')
+                    (Path(directory)/'slow-touch-capture').unlink()
+                    checks.append('actual Done speaking touch ends only the active capture; button hides while thinking/speaking, late finish does not start another microphone or cancel the owned answer')
                     page.evaluate("()=>BMODesktop.control('voice_full_accept',true)")
                     settled('BMODesktop.features.voice_pack.full_user_accepted===true')
                     page.evaluate("()=>BMODesktop.control('subtitles','ko')")

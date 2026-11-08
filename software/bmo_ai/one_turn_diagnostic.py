@@ -37,6 +37,13 @@ _ENUMS = frozenset((
     'fish_character_s2_v1', 'fish_character_drama3_v1', 'calm', 'warm', 'excited',
     'curious', 'proud', 'playfully_annoyed', 'soft_sad', 'tearful',
     'theatrical_crying', 'theatrical_angry', 'empathetic', 'manual_override',
+    'playful', 'gentle_correction', 'chuckle', 'gasp', 'playful_puff', 'sob',
+    'hmm', 'ooh', 'aha', 'tada', 'oops', 'wave', 'celebrate', 'shrug',
+    'greeting', 'achievement', 'hesitation', 'not_requested', 'eligible',
+    'sensitive_context', 'action_request', 'acting_required', 'emotion_mismatch',
+    'success_event_only', 'context_mismatch', 'vocal_flourish', 'invalid_plan',
+    'unsupported_model', 'already_in_speech', 'correction_required',
+    'reaction_cooldown', 'reaction_repeat',
 ))
 _ENUM_FIELDS = frozenset((
     'requested_emotion', 'model_emotion', 'resolved_emotion', 'emitted_emotion',
@@ -45,10 +52,14 @@ _ENUM_FIELDS = frozenset((
     'input_kind', 'tts_delivery', 'tts_mechanism', 'tts_backend',
     'tts_requested_emotion', 'voice_delivery', 'voice_style', 'delivery_id',
     'stt_status', 'stt_result', 'reason',
+    'model_reaction', 'resolved_reaction', 'reaction_reason', 'model_gesture',
+    'resolved_gesture', 'gesture_context', 'gesture_reason', 'proposed_reaction',
+    'reaction_policy_reason', 'played_reaction',
 ))
 _BOOL_FIELDS = frozenset((
     'replayed', 'character_life', 'character_life_enabled', 'tts_override_soft',
     'override_soft', 'metadata_degraded', 'manual_override',
+    'cached_reaction',
 ))
 _INT_FIELDS = frozenset(('turn', 'speech_chars', 'stt_chars', 'schema_version', 'generation'))
 

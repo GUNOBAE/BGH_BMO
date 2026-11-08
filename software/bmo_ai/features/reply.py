@@ -10,7 +10,8 @@ from ..expression_contract import (ExpressionFormatError, decode_expression,
 from .contracts import GESTURES, INTENTS, valid_id
 from ..expressive_voice import REACTIONS
 from ..character_director import (CharacterDirector, CharacterPlan, DELIVERIES,
-                                  INTENSITIES, GAZES, latest_user_text)
+                                  INTENSITIES, GAZES, GESTURE_CONTEXTS,
+                                  latest_user_text, performance_resolution)
 from ..acting_request import requested_acting
 from .motion.gesture_rules_v2 import EXPLICIT_ACTIONS as ARM_INTENT_ACTIONS
 from .camera.request import current_photo_request
@@ -146,23 +147,39 @@ The host may suppress any reaction. One response, no extra classification call.
 
 CHARACTER_INSTRUCTIONS = """Trusted feature-host contract version 3. Return exactly
 version, speech, emotion, gesture, intent, reaction and character. Character is
-delivery_id, intensity, gaze_id and source. Keep the approved short spoken English
+delivery_id, intensity, gaze_id, source and gesture_context. Keep the approved short spoken English
 default and explicit language requests. Speech is clean dialogue, never bracket
 tags, markup or directions. This is one reply, not an emotion classification call.
 Emotion is BMO's appropriate expression, not a diagnosis of the user's feelings.
-Use neutral/calm for facts, proportional happy/warm or proud for good news,
-sad/empathetic for real distress, surprised/curious for genuine wonder. Tearful
+Use natural calm phrasing for facts, happy/warm or proud for good news,
+neutral or happy/playful for light play, neutral/gentle_correction for your own
+correction, sad/empathetic for real distress, and curious delivery with neutral
+or surprised face for wonder. These delivery choices work without a laugh.
+Do not flatten every answer into neutral/calm just because intensity is low. Tearful
 or crying is valid for a moving fictional scene or a harmless acting request;
 playfully annoyed/angry is valid for gentle cartoon protest or requested acting.
 Do not replace an explicit request to act crying with only sad or worry, or a
 request to playfully act angry with worried/sad. Such acting uses source acting,
 theatrical_crying/theatrical_angry, and an appropriate crying/angry face. Real
 grief/pain calls for calm empathy and no comic sob, cheer, laugh or arm flourish.
-Default intensity low; medium for an expressive beat, high only when clearly
-requested and still controlled. Default reaction, gaze and gesture none. A short
-answer can use only face and eyes. Do not pile laughter, an interjection, gaze
-and arms onto every reply. Choose at most one vocal reaction or gesture flourish;
-the host may suppress it. Do not prepend Woo-hoo or Hehe as ordinary speech filler.
+Use low intensity for small natural expression, medium for an expressive beat,
+and high only when clearly requested and controlled. Choose a reaction only
+when it adds a fitting beat: hmm for uncertainty, ooh for curiosity, aha for an
+idea, oops for your own correction, or chuckle for light play. None remains right
+for many replies. Do not repeat the previous answer's opening expression or add
+a fixed prefix. Never spell out laughter. Keep serious empathy free of comic
+reactions. A quiet hmm/aha may share one appropriate body gesture; a laugh,
+gasp, puff or longer spoken reaction supplies the flourish by itself. Use face
+and phrasing without adding extra eye movement. The host may suppress decoration.
+Automatic gesture is wave with gesture_context greeting only at the start of
+conversation or a greeting after a long silence, celebrate/achievement only for
+a clear accomplished achievement, shrug/playful or shrug/hesitation only for
+light play or hesitation. Ordinary facts, device/settings commands and serious
+worries have gesture none and gesture_context none. Happy alone never grants
+arm movement. Respect trusted automatic_gestures.greeting_eligible. Automatic
+arms have at most one gesture per answer, at least45 seconds between starts and
+at most two in a rolling five minutes; never move merely to fill that allowance.
+Explicit current named arm requests use intent and are separate from decoration.
 source is dialogue or acting in dialogue replies; boot/idle are host-owned work.
 Use only catalog IDs supplied in trusted capability data, never paths, URLs,
 shell, angles, PWM or arbitrary TTS tags. Preserve explicit arm_gesture intents
@@ -272,7 +289,8 @@ When the user asks BMO to choose a song, use play_random/null and kind media;
 when a specific song was selected use play_song with its supplied catalog ID.
 Both music intents may use media_mode face/video. Never invent a song.
 Small contextual reactions may use chuckle, hmm, ooh, aha or oops sparingly at
-low intensity. Use none for serious worries; avoid adding a reaction when speech
+low intensity. A local ooh clip is a longer spoken line, so prefer a short hmm
+or aha where a brief beat is enough. Use none for serious worries; avoid adding a reaction when speech
 already contains a laugh/interjection. Never read laughter spelling or directions.
 Tada must not invent a completed device action. Host success cues own that event.
 """
@@ -366,8 +384,9 @@ def feature_text_format(*, expressive=False, character_life=False, turn_token=No
             "properties": {"delivery_id": {"type": "string", "enum": list(DELIVERIES)},
                            "intensity": {"type": "string", "enum": list(INTENSITIES)},
                            "gaze_id": {"type": "string", "enum": list(GAZES)},
-                           "source": {"type": "string", "enum": ["dialogue", "acting"]}},
-            "required": ["delivery_id", "intensity", "gaze_id", "source"]}
+                           "source": {"type": "string", "enum": ["dialogue", "acting"]},
+                           "gesture_context": {"type": "string", "enum": list(GESTURE_CONTEXTS)}},
+            "required": ["delivery_id", "intensity", "gaze_id", "source", "gesture_context"]}
         schema["required"].append("character")
         captions = {"type": "object", "additionalProperties": False,
             "properties": {"en": {"type": "string"}, "ko": {"type": "string"}},
@@ -461,11 +480,13 @@ def decode_feature_reply(raw):
         if version in (3, 4, 5):
             metadata = value["character"]
             metadata_bad = (type(metadata) is not dict
-                or set(metadata) != {"delivery_id", "intensity", "gaze_id", "source"}
+                or set(metadata) not in ({"delivery_id", "intensity", "gaze_id", "source"},
+                    {"delivery_id", "intensity", "gaze_id", "source", "gesture_context"})
                 or metadata.get("delivery_id") not in DELIVERIES
                 or metadata.get("intensity") not in INTENSITIES
                 or metadata.get("gaze_id") not in GAZES
-                or metadata.get("source") not in ("dialogue", "acting"))
+                or metadata.get("source") not in ("dialogue", "acting")
+                or metadata.get("gesture_context", "none") not in GESTURE_CONTEXTS)
             if metadata_bad:
                 metadata = None
         reason = "invalid_character" if metadata_bad else "invalid_emotion" if expression.degraded else "none"
@@ -582,6 +603,12 @@ class FeatureResponses:
                 if kind == "refusal":
                     raise ExpressionFormatError()
         reply = decode_feature_reply(getattr(response, "output_text", None))
+        # Failed/negated control interpretations cannot fall back into an arm
+        # flourish after their intent is removed. This flag only suppresses
+        # decoration; it never authorizes a device or repairs a rejected plan.
+        control_context = (reply.intent is not None or bool(reply.action_plan)
+            or type(reply.request_interpretation) is dict
+            and reply.request_interpretation.get('kind') not in (None, 'none', 'acting'))
         if photo_requested and not reply.degraded and reply.version not in (4, 5):
             # The user's direct command authorizes the existing single photo
             # path. Model omission or an unrelated action cannot replace it.
@@ -592,8 +619,10 @@ class FeatureResponses:
         if self.character_life:
             # Decode has already validated this bounded envelope. Retain only
             # its enum, never raw text or provider payload, for local diagnosis.
-            model_emotion = json.loads(response.output_text).get("emotion")
+            model_payload = json.loads(response.output_text)
+            model_emotion = model_payload.get("emotion")
             model_emotion = model_emotion if type(model_emotion) is str and model_emotion in FACE_EMOTIONS else None
+            model_reaction, model_gesture = model_payload.get("reaction", "none"), model_payload["gesture"]
             message = latest_user_text(request)
             semantic_acting = None
             semantic_clarification = False
@@ -650,7 +679,7 @@ class FeatureResponses:
                     reply = replace(reply, degradation_reason=validation)
             requested = None if semantic_clarification else semantic_acting or requested_acting(message)
             plan = self.director.resolve(reply.emotion, reply.reaction, reply.gesture,
-                metadata=reply.character_metadata, message=message, has_intent=reply.intent is not None or bool(reply.action_plan),
+                metadata=reply.character_metadata, message=message, has_intent=control_context,
                 acting_request="none" if semantic_clarification else semantic_acting)
             if reply.degraded and requested is not None and reply.version in (4, 5):
                 # An independently validated current acting request supplies all
@@ -668,7 +697,9 @@ class FeatureResponses:
                 degradation_reason=reply.degradation_reason,
                 request_validation=reply.request_validation,
                 request_kind=reply.request_interpretation.get("kind") if reply.request_interpretation else "none",
-                semantic_emotion=semantic_acting)
+                semantic_emotion=semantic_acting,
+                **performance_resolution(plan, reaction=model_reaction, gesture=model_gesture,
+                    has_intent=control_context))
         reply = self._arm_preparation(reply)
         self.last_reply = reply
         return SimpleNamespace(status="completed", incomplete_details=None, error=None, output_text=reply.speech)

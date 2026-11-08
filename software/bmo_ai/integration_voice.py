@@ -69,7 +69,8 @@ class IntegrationVoice:
     def __init__(self, config, client, *, emit, cancel_check=None, simulate=False,
                  fish_synthesizer=None, piper_synthesizer=None, player=None,
                  fish_api_key=None, expressive=False, character_life=False,
-                 on_timing=None, timing_clock=time.monotonic, volume=None):
+                 on_timing=None, timing_clock=time.monotonic, volume=None,
+                 stream_factory=None):
         self.config = config
         self.client = client
         self.emit = emit
@@ -79,6 +80,7 @@ class IntegrationVoice:
         self._fish_synthesizer = fish_synthesizer
         self._piper_synthesizer = piper_synthesizer
         self._player = player
+        self._stream_factory = stream_factory
         self._fish_api_key = fish_api_key
         self._closed = Event()
         self._idle = Event()
@@ -265,7 +267,8 @@ class IntegrationVoice:
         finally:
             audio._discard(Path(path), suppress=True)
 
-    def _synthesize(self, text, check, *, force_piper=False, notice=False, delivery=None):
+    def _synthesize(self, text, check, *, force_piper=False, notice=False, delivery=None,
+                    on_chunk=None):
         check()
         if self.simulate:
             return synthetic_wav(), "synthetic", notice
@@ -289,17 +292,18 @@ class IntegrationVoice:
         credentials = {} if self._fish_api_key is None else {"api_key": self._fish_api_key}
         timing = ({"on_timing": self.on_timing, "clock": self.timing_clock}
                   if self.on_timing is not None and self._fish_synthesizer is None else {})
+        streaming = {} if on_chunk is None else {'on_chunk': on_chunk}
         try:
             result = Path(synthesize(spoken, model=self.config.fish_model,
                                    reference_id=self.config.fish_voice_id,
                                    timeout=self.config.timeout, cancel_check=check,
-                                   **credentials, **timing))
+                                   **credentials, **timing, **streaming))
             self.reset_provider_error()
             return result, "fish", notice
         except audio.AudioSynthesisError as error:
             self._provider_failure(error.code)
             check()
-            if not self.config.offline_voice:
+            if not self.config.offline_voice or on_chunk is not None:
                 raise
             english = local_piper.is_english_text(text)
             fallback = text if english else OFFLINE_KOREAN_UNSUPPORTED_EN
@@ -483,6 +487,75 @@ class IntegrationVoice:
         finally:
             self.emit, self.cancel_check = previous_emit, previous_check
 
+    def _delivery_expression(self, metadata, delivery, source, *, notice=False,
+                             cached_reaction=False, reaction_clip=None):
+        expression = self._expression(notice=notice, metadata=metadata)
+        if delivery is not None:
+            expression.update(
+                voice_emotion=delivery.emotion if source == "fish" else "neutral",
+                reaction=delivery.reaction if source == "fish" else "none",
+                voice_style=delivery.mechanism if source == "fish" else source,
+                tts_mechanism=delivery.mechanism, tts_override_soft=delivery.override_soft,
+                tts_backend=source, tts_requested_emotion=delivery.emotion,
+                proposed_reaction=getattr(delivery,'proposed_reaction','none'),
+                played_reaction=(getattr(delivery,'proposed_reaction',delivery.reaction)
+                    if cached_reaction else delivery.reaction) if source == 'fish' else 'none',
+                reaction_policy_reason=getattr(delivery,'reaction_reason','none'))
+        if self.character_life:
+            expression.update(cached_reaction=cached_reaction,
+                              cached_reaction_id=reaction_clip if cached_reaction else None)
+        return expression
+
+    def _stream_speech(self, text, check, emit, expression, delivery, on_playback_start):
+        """Verified PCM prefix → same player clock; cache only after full success.
+
+        Cached reaction composition, explicit Piper and injected legacy players
+        retain their existing complete-WAV path. Music and cached events never
+        enter this transport. No retry after an audible incomplete response.
+        """
+        from .streaming_voice import StreamingPCMPlayer
+        raw = output = None
+        def prepared(cues):
+            check()
+            self._timing('fish','audio_ready')
+            emit('prepared',source='fish',cues=cues,streaming=True,**expression)
+        def started():
+            check()
+            self._timing('playback','playback_started')
+            if on_playback_start is not None:
+                on_playback_start()
+            check()
+            emit('started',source='fish',streaming=True,**expression)
+        def progress(cues):
+            check()
+            emit('progress',source='fish',cues=cues)
+        stream = (self._stream_factory or StreamingPCMPlayer)(
+            device=self.config.speaker_device, level=self.volume.snapshot()['effective_level'],
+            check=check,prepare=prepared,started=started,progress=progress,env=_player_environment())
+        succeeded = False
+        try:
+            raw, source, notice = self._synthesize(text,stream._check,delivery=delivery,on_chunk=stream.feed)
+            check()
+            # Validation and cache preparation happen while the same output
+            # drains; they do not gate first speech or apply gain twice.
+            output = attenuated_copy(raw,self.config.fish_gain)
+            info = audio._wav_info(output)
+            cues = tuple(dict(cue) for cue in wav_cues(output))
+            stream.finish()
+            check()
+            emit('ended',source='fish')
+            succeeded = True
+            return output,info,cues
+        except audio.AudioPlaybackError as error:
+            self._provider_failure(error.code,source='alsa')
+            raise
+        finally:
+            stream.close()
+            if raw is not None:
+                audio._discard(raw,suppress=True)
+            if not succeeded and output is not None:
+                audio._discard(output,suppress=True)
+
     def speak(self, text, *, on_playback_start=None, _force_piper=False, _notice=False, _event_only=False,
               _candidate=None):
         if not isinstance(text, str):
@@ -503,6 +576,7 @@ class IntegrationVoice:
         playback_baked_gain = self.config.fish_gain
         cached_reaction = False
         delivery = None
+        streamed = False
         metadata = dict(self.expression_metadata) if type(self.expression_metadata) is dict else {}
         source = "synthetic" if self.simulate else "piper" if _force_piper else "fish"
         try:
@@ -544,12 +618,22 @@ class IntegrationVoice:
                     spoken_bmo_name(text, self.config.fish_name_mode), metadata, delivery, check)
             if event_asset is None:
                 settings = {} if delivery is None else {"delivery": delivery}
-                raw, source, notice = self._synthesize(text, check, force_piper=_force_piper,
-                                                      notice=_notice, **settings)
+                streamed = (not self.simulate and not _force_piper and not _notice
+                    and not self.config.offline_voice and reaction_asset is None
+                    and (self._fish_synthesizer is None and self._player is None
+                         or self._stream_factory is not None))
+                if streamed:
+                    source, notice = 'fish', False
+                    expression = self._delivery_expression(metadata,delivery,source)
+                    output,info,cues = self._stream_speech(text,check,emit,expression,delivery,on_playback_start)
+                else:
+                    raw, source, notice = self._synthesize(text, check, force_piper=_force_piper,
+                                                          notice=_notice, **settings)
                 # A synchronous provider may finish after cancellation. Discard
                 # late results before any prepared/start event or player spawn.
                 check()
-                output = attenuated_copy(raw, self.config.fish_gain)
+                if not streamed:
+                    output = attenuated_copy(raw, self.config.fish_gain)
             if reaction_asset is not None:
                 joined = (self._compose_reaction(reaction_asset, output, check)
                           if source in ("fish", "synthetic") and not notice else None)
@@ -565,25 +649,17 @@ class IntegrationVoice:
                             candidate_id=reaction_asset.candidate_id,sha256=reaction_asset.sha256)
                 else:
                     delivery = replace(delivery, reaction="none")
-            expression = self._expression(notice=notice, metadata=metadata)
-            if delivery is not None:
-                expression.update(
-                    voice_emotion=delivery.emotion if source == "fish" else "neutral",
-                    reaction=delivery.reaction if source == "fish" else "none",
-                    voice_style=delivery.mechanism if source == "fish" else source,
-                    tts_mechanism=delivery.mechanism, tts_override_soft=delivery.override_soft,
-                    tts_backend=source, tts_requested_emotion=delivery.emotion)
-            if self.character_life:
-                expression.update(cached_reaction=cached_reaction,
-                                  cached_reaction_id=reaction_clip if cached_reaction else None)
-            info = audio._wav_info(output)
-            cues = event_asset.cues if event_asset is not None else tuple(dict(cue) for cue in wav_cues(output))
+            expression = self._delivery_expression(metadata,delivery,source,notice=notice,
+                cached_reaction=cached_reaction,reaction_clip=reaction_clip)
+            if not streamed:
+                info = audio._wav_info(output)
+                cues = event_asset.cues if event_asset is not None else tuple(dict(cue) for cue in wav_cues(output))
             if event_asset is not None:
                 expression.update(cache_source_model=event_asset.source_model,
                                   voice_pack_candidate=event_asset.candidate_id,
                                   voice_pack_sha256=event_asset.sha256,
                                   voice_pack_review_only=_candidate is not None)
-            if source == "fish":
+            if source == "fish" and not streamed:
                 self._timing("fish", "audio_ready")
             def owned_started():
                 if on_playback_start is not None:
@@ -601,8 +677,9 @@ class IntegrationVoice:
                     from .voice_bank import VoiceBankError
                     try:self.event_pack.mark_played(reaction_asset.candidate_id, reaction_asset.sha256)
                     except (VoiceBankError, OSError):pass
-            self._play(output, source, info, cues, check, emit, owned_started, expression,
-                       baked_gain=playback_baked_gain)
+            if not streamed:
+                self._play(output, source, info, cues, check, emit, owned_started, expression,
+                           baked_gain=playback_baked_gain)
             check()
             if delivery is not None and source == "fish":
                 self._expressive_policy.completed(delivery)

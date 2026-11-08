@@ -12,6 +12,9 @@ from .character_director import CharacterPlan, VOICE_DIRECTIONS, IDENTITY_DIRECT
 
 
 REACTIONS = ("none", "chuckle", "gasp", "playful_puff", "sob", "hmm", "ooh", "aha", "tada", "oops")
+REACTION_POLICY_REASONS = ("not_requested", "eligible", "invalid_plan", "unvalidated",
+    "unsupported_model", "sensitive_context", "already_in_speech", "success_event_only",
+    "correction_required", "reaction_cooldown", "reaction_repeat")
 SUPPORTED_MODELS = frozenset(("s2.1-pro-free", "s2.1-pro"))
 EMOTION_CUES = {
     "neutral": "", "happy": "[happy] ", "sad": "[sad] ",
@@ -47,6 +50,8 @@ class VoiceDelivery:
     mechanism: str
     override_soft: bool = False
     explicit_acting: bool = False
+    proposed_reaction: str = "none"
+    reaction_reason: str = "not_requested"
 
 
 class ExpressivePolicy:
@@ -88,19 +93,32 @@ class ExpressivePolicy:
         try:
             plan = CharacterPlan.from_public(metadata["character_plan"])
         except (ValueError, TypeError):
-            return VoiceDelivery(spoken, "neutral", "none", "plain_fallback")
+            return VoiceDelivery(spoken, "neutral", "none", "plain_fallback", reaction_reason="invalid_plan")
         if (model not in (*SUPPORTED_MODELS, "drama-3")
                 or metadata.get("emotion_validation") != "validated"
                 or metadata.get("emotion") != plan.face_emotion):
-            return VoiceDelivery(spoken, "neutral", "none", "plain_fallback")
+            return VoiceDelivery(spoken, "neutral", "none", "plain_fallback",
+                proposed_reaction=plan.reaction_id, reaction_reason=("unsupported_model"
+                    if model not in (*SUPPORTED_MODELS, "drama-3") else "unvalidated"))
         reaction = plan.reaction_id
-        if (plan.sensitive_context or already_reactive(spoken) or reaction == 'tada'
-                or reaction == 'oops' and not re.search(
+        reason = "not_requested" if reaction == "none" else "eligible"
+        if reaction != "none":
+            if plan.sensitive_context:
+                reason = "sensitive_context"
+            elif already_reactive(spoken):
+                reason = "already_in_speech"
+            elif reaction == "tada":
+                reason = "success_event_only"
+            elif (reaction == "oops" and plan.delivery_id != "gentle_correction"
+                  and not re.search(
                     r"(?i)\b(?:my mistake|i was wrong|i meant|sorry|correction|let me correct)\b|(?:잘못|정정|미안)", spoken)):
-            reaction = 'none'
-        if not plan.explicit_acting and (
-                self._successful - self._last_character_at < 3
-                or reaction == self._last_character_reaction and self._successful - self._last_character_at < 6):
+                reason = "correction_required"
+            elif not plan.explicit_acting and self._successful - self._last_character_at < 3:
+                reason = "reaction_cooldown"
+            elif (not plan.explicit_acting and reaction == self._last_character_reaction
+                    and self._successful - self._last_character_at < 6):
+                reason = "reaction_repeat"
+        if reason not in ("not_requested", "eligible"):
             reaction = "none"
         cues = {"none": "", "chuckle": "[chuckling] ", "gasp": "[gasping] ",
                 "playful_puff": "[sighing, brief playful puff] ", "sob": "[sobbing, one short breath] ",
@@ -111,7 +129,8 @@ class ExpressivePolicy:
         text = IDENTITY_DIRECTION + VOICE_DIRECTIONS[plan.delivery_id] + cues[reaction] + spoken
         return VoiceDelivery(text, plan.face_emotion, reaction,
             "fish_character_drama3_v1" if model == "drama-3" else "fish_character_s2_v1",
-            override_soft=True, explicit_acting=plan.explicit_acting)
+            override_soft=True, explicit_acting=plan.explicit_acting,
+            proposed_reaction=plan.reaction_id, reaction_reason=reason)
 
     def completed(self, delivery):
         if delivery.mechanism.startswith("fish_character_"):
