@@ -228,22 +228,46 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     request.continue_()
                 page.route('**/*',route)
                 page.add_init_script("window.__audioCalls=0;HTMLMediaElement.prototype.play=function(){window.__audioCalls++;throw Error('Browser audio forbidden')}")
+                pending_question=[None]
+                def observe_question(state):
+                    pending=pending_question[0]
+                    if pending is None or pending['terminal_sequence'] is not None:return
+                    receipt=next((item for item in [state['last_result'],*state['requests']] if item
+                        if item['request_id']==pending['request_id']),None)
+                    if receipt and receipt['status'] not in ('accepted','running'):
+                        assert receipt['code'] in ('voice_completed','voice_cancelled'),receipt
+                        pending['terminal_sequence']=state['sequence']
+                def finished(state):
+                    pending=pending_question[0]
+                    return (not state['conversation_busy'] and state['audio_owner'] is None
+                        and (pending is None or pending['terminal_sequence'] is not None
+                            and state['sequence']>=pending['terminal_sequence']))
                 def wait(predicate):
                     deadline=time.monotonic()+8
                     while time.monotonic()<deadline:
                         state=fixture.features()
+                        observe_question(state)
                         if predicate(state):return state
                         page.wait_for_timeout(20)
                     raise AssertionError('Photo/caption state did not settle: '+json.dumps({
                         k:state.get(k) for k in ('mode','phase','photo_phase','photo_countdown','photo','last_result','test_fixture')}))
                 def finish():
-                    state=wait(lambda s:not s['conversation_busy'] and s['audio_owner'] is None)
-                    page.wait_for_function("()=>BMODesktop.features?.conversation_busy===false&&BMODesktop.features.audio_owner===null")
+                    state=wait(finished)
+                    # The fixture's provider counts are live, but Host and DOM
+                    # snapshots are published later. Old idle is not completion
+                    # of this request. Require its terminal receipt plus owned
+                    # cleanup, then a rendered snapshot at least that fresh.
+                    page.wait_for_function("sequence=>BMODesktop.features?.sequence>=sequence&&BMODesktop.features.conversation_busy===false&&BMODesktop.features.audio_owner===null",arg=state['sequence'])
+                    pending_question[0]=None
                     return state
                 def question(text):
                     previous=fixture.features()['test_fixture']['brain']
-                    page.evaluate('text=>BMODesktop.control("question",text)',text)
-                    wait(lambda s:s['test_fixture']['brain']==previous+1)
+                    receipt=page.evaluate('text=>BMODesktop.control("question",text)',text)
+                    assert receipt['status']=='accepted',receipt
+                    pending_question[0]=dict(request_id=receipt['request_id'],terminal_sequence=None)
+                    wait(lambda s:s['test_fixture']['brain']==previous+1 and any(
+                        item['request_id']==receipt['request_id'] and item['status']!='accepted'
+                        for item in s['requests']))
                 def subtitle_menu(mode):
                     page.evaluate('()=>BMODesktop.menu()')
                     page.locator('#settings-menu').click()
@@ -272,9 +296,18 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 checks.append('default subtitles off; startup does not expose a dialogue caption')
 
                 subtitle_menu('en')
+                previous_idle=fixture.features()
+                assert not previous_idle['conversation_busy'] and previous_idle['audio_owner'] is None
                 hold=root/'hold-player';hold.write_text('synthetic player-start gate')
                 question('Get angry.')
                 wait(lambda s:s['test_fixture']['prepared_holds']>0)
+                # Deterministically expose the failed CI predicate: current
+                # provider count over a previous idle publication. The real
+                # request is still held before player-start and must not finish.
+                stale=previous_idle|{'test_fixture':fixture.features()['test_fixture']}
+                assert stale['test_fixture']['brain']==previous_idle['test_fixture']['brain']+1
+                assert not stale['conversation_busy'] and stale['audio_owner'] is None
+                assert not finished(stale)
                 assert not page.locator('#subtitles').is_visible()
                 assert page.evaluate("()=>document.querySelector('#face').contentWindow.BMOFace.getState().selectedEmotion")=='neutral'
                 hold.unlink()
@@ -289,6 +322,7 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                 box=page.locator('#subtitles').bounding_box()
                 assert box['y']>=390 and box['height']<=68 and box['x']>=0 and box['x']+box['width']<=800
                 finish();page.locator('#subtitles').wait_for(state='hidden')
+                checks.append('current provider count over an older idle snapshot cannot complete a question; exact request terminal receipt, audio release and fresh rendered state gate the next request')
                 assert page.locator('#turn-diagnostics').text_content()==''
                 page.evaluate('()=>BMODesktop.menu()');page.locator('#settings-menu').click();page.locator('#system-menu').click()
                 page.wait_for_function("()=>document.querySelector('#system-dialog').open&&document.querySelector('#turn-diagnostics').textContent.includes('expression_trace')")
