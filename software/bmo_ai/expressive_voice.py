@@ -120,7 +120,7 @@ class ExpressivePolicy:
                 reason = "reaction_repeat"
         if reason not in ("not_requested", "eligible"):
             reaction = "none"
-        cues = {"none": "", "chuckle": "[chuckling] ", "gasp": "[gasping] ",
+        cues = {"none": "", "chuckle": "[chuckling] ", "gasp": "[gasping] [one brief breath, then begin the spoken line immediately] ",
                 "playful_puff": "[sighing, brief playful puff] ", "sob": "[sobbing, one short breath] ",
                 "hmm": "", "ooh": "", "aha": "", "tada": "", "oops": ""}
         # The default Soft instruction used to precede and conflict with acted

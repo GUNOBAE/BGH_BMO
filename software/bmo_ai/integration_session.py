@@ -21,8 +21,20 @@ from .hardware import FaceState
 from .integration_face import wav_cues, MOUTHS
 from .integration_profile import policy_brain
 from .integration_voice import IntegrationVoice
+from .turn_diagnostics import CODES, PLAYBACK_PATHS, ANSWER_ONSET_EVIDENCE
 
 EMOTIONS = frozenset({"neutral", "happy", "angry", "sad", "crying", "surprised"})
+_PLAYBACK_TRACE_FIELDS = {
+    'playback_path': PLAYBACK_PATHS,
+    'answer_onset_evidence': ANSWER_ONSET_EVIDENCE,
+    'reaction_cache_status': frozenset({'none', 'selected_stream', 'selected_full_wav',
+        'format_omitted', 'unavailable_or_off', 'too_long_inline', 'too_long_omitted'}),
+}
+
+
+def _playback_trace(fields):
+    return {name: fields[name] for name, values in _PLAYBACK_TRACE_FIELDS.items()
+            if type(fields.get(name)) is str and fields[name] in values}
 
 
 class SimulatedClient:
@@ -89,6 +101,7 @@ class IntegrationApp(ConversationApp):
             # A synchronous provider may return after cancel. Its answer must
             # enter neither playback nor the next turn's retained context.
             self.brain.history = previous
+            self._trace("ai", "cancelled", "cancelled")
             raise
         except CloudError as error:
             self._trace("ai", error.code, "error")
@@ -99,7 +112,6 @@ class IntegrationApp(ConversationApp):
             raise
 
     def playback(self, answer):
-        self._trace("fish", "started", "started")
         try:
             return super().playback(answer)
         except TurnCancelled:
@@ -531,14 +543,21 @@ class IntegrationSession:
             check()
             if self.diagnostics is not None:
                 if kind == "prepared":
-                    self.diagnostics.record("fish", "prepared", turn=turn)
+                    self.diagnostics.record("playback", "prepared", turn=turn,
+                        **_playback_trace(fields))
                 elif kind in ("started", "ended", "error", "cancelled"):
-                    self.diagnostics.record("playback", "playback_started" if kind == "started" else kind,
+                    code = fields.get('code') if kind == 'error' else None
+                    code = code if type(code) is str and code in CODES else 'operation_failed'
+                    self.diagnostics.record("playback", "playback_started" if kind == "started"
+                        else code if kind == 'error' else kind,
                         outcome="error" if kind == "error" else "cancelled" if kind == "cancelled" else "ok",
-                        turn=turn)
+                        turn=turn, **_playback_trace(fields))
             with self._lock:
                 if not self._active or turn != self._turn:
                     return
+                trace = self._data.get('expression_trace')
+                if type(trace) is dict:
+                    trace.update(_playback_trace(fields))
                 if kind == "prepared":
                     self._data.update(playback="prepared", phase="thinking", cues=cues,
                                       source=fields.get("source"), position=0.0)
@@ -624,9 +643,15 @@ class IntegrationSession:
         if (isinstance(self.voice, IntegrationVoice) and self.diagnostics is not None
                 and (self.character_life or self.diagnostics.enabled)):
             def timing(stage, code, *, at=None, **metrics):
-                if cancellation.is_set() or self._closed:
+                # Cancel/error observations are allowed through the old worker's
+                # turn gate; they cannot change its face or a newer receipt.
+                if self._closed or cancellation.is_set() and metrics.get('outcome') not in ('cancelled', 'error'):
                     return
                 self.diagnostics.record(stage, code, turn=turn, at=at, **metrics)
+                with self._lock:
+                    trace = self._data.get('expression_trace')
+                    if self._active and turn == self._turn and type(trace) is dict:
+                        trace.update(_playback_trace(metrics))
             self.voice.on_timing, self.voice.timing_clock = timing, self.clock
         with self._lock:
             self.voice.expression_metadata = dict(
@@ -693,7 +718,7 @@ class IntegrationSession:
                     dict(trace, emitted_emotion=None, emission_status="waiting", replayed=True, turn=self._turn)
                     if repeat and trace is not None and self._data["emotion_mode"] == "auto" else None)
             if self.diagnostics is not None:
-                self.diagnostics.begin(self._turn)
+                self.diagnostics.begin(self._turn, turn_id=f"{self.session_id}:{self._turn}")
             self._active = True
             self._started = None
             self._data.update(turn_id=f"{self.session_id}:{self._turn}",

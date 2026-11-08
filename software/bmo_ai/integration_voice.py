@@ -273,6 +273,7 @@ class IntegrationVoice:
         if self.simulate:
             return synthetic_wav(), "synthetic", notice
         if force_piper:
+            self._timing('playback','request_started',playback_path='offline')
             synthesize = self._piper_synthesizer or local_piper.synthesize_wav
             return Path(synthesize(text, binary=self.config.local_piper_binary,
                                    model=self.config.local_piper_model,
@@ -294,12 +295,18 @@ class IntegrationVoice:
                   if self.on_timing is not None and self._fish_synthesizer is None else {})
         streaming = {} if on_chunk is None else {'on_chunk': on_chunk}
         try:
+            self._timing('fish','started')
             result = Path(synthesize(spoken, model=self.config.fish_model,
                                    reference_id=self.config.fish_voice_id,
                                    timeout=self.config.timeout, cancel_check=check,
                                    **credentials, **timing, **streaming))
             self.reset_provider_error()
             return result, "fish", notice
+        except audio.AudioValidationError as error:
+            from .turn_diagnostics import CODES
+            code = error.code if error.code in CODES else 'operation_failed'
+            self._timing('fish',code,outcome='error')
+            raise
         except audio.AudioSynthesisError as error:
             self._provider_failure(error.code)
             check()
@@ -506,46 +513,138 @@ class IntegrationVoice:
                               cached_reaction_id=reaction_clip if cached_reaction else None)
         return expression
 
-    def _stream_speech(self, text, check, emit, expression, delivery, on_playback_start):
-        """Verified PCM prefix → same player clock; cache only after full success.
+    def _stream_reaction_pcm(self, asset, fmt, check):
+        """A <=1 s approved prefix in the answer PCM format, without file mutation.
 
-        Cached reaction composition, explicit Piper and injected legacy players
-        retain their existing complete-WAV path. Music and cached events never
-        enter this transport. No retry after an audible incomplete response.
+        Prefix gain matches the completed reply's baked gain; MasterVolume
+        applies the remaining ratio once. Do not unbake into integer PCM first:
+        that would clip loud samples before attenuating them again. Conversion
+        is bounded and uses the existing linear PCM16 resampling convention.
+        """
+        channels, rate, width, align = fmt
+        if width != 2 or rate > 96000:
+            return b''
+        try:
+            with wave.open(str(asset.path), 'rb') as source:
+                count, source_channels, source_rate = source.getnframes(), source.getnchannels(), source.getframerate()
+                seconds = count/source_rate
+                if (source.getcomptype() != 'NONE' or source.getsampwidth() != 2
+                        or source_channels not in (1, 2) or not 0 < seconds <= 1.):
+                    return b''
+                raw = source.readframes(count)
+                if len(raw) != count*source_channels*2:
+                    return b''
+                samples = struct.unpack('<'+'h'*(count*source_channels), raw)
+                mono = samples if source_channels == 1 else tuple(
+                    (samples[i]+samples[i+1])/2 for i in range(0,len(samples),2))
+                baked = getattr(asset, 'baked_gain', self.config.fish_gain)
+                validate_gain(baked)
+                converted = bytearray()
+                for frame in range(round(seconds*rate)):
+                    if frame % 4096 == 0:check()
+                    at = frame*source_rate/rate
+                    index = min(count-1,int(at));fraction = at-int(at)
+                    sample = mono[index]*(1-fraction)+mono[min(count-1,index+1)]*fraction
+                    value = max(-32768,min(32767,round(sample*self.config.fish_gain/baked)))
+                    converted.extend(struct.pack('<h',value)*channels)
+                return bytes(converted)
+        except (audio.AudioError, OSError, EOFError, wave.Error, ValueError, struct.error, ZeroDivisionError):
+            return b''
+
+    @staticmethod
+    def _reaction_captions(metadata, asset, text):
+        if not hasattr(asset, 'captions'):
+            return
+        from .captions import caption_pair, clean_caption
+        answer = caption_pair(text, metadata.get('caption_payload'))
+        metadata['caption_payload'] = {lang:clean_caption(' '.join(filter(None,
+            (asset.captions.get(lang,''),answer.get(lang,''))))) for lang in ('en','ko')}
+        metadata['caption_asset'] = dict(clip_id=asset.clip_id,
+            candidate_id=asset.candidate_id,sha256=asset.sha256)
+
+    def _stream_speech(self, text, check, emit, expression, delivery, on_playback_start,
+                       *, reaction_asset=None, reaction_clip=None):
+        """Verified prefix/body PCM on one player, complete success only for repeat.
+
+        A body PCM submission is separate from prefix/player start. Without a
+        hardware playback-position observation it is not an acoustic answer
+        start; prefixed turns never fabricate that diagnostic from a timer.
         """
         from .streaming_voice import StreamingPCMPlayer
         raw = output = None
+        prefix_used = False
+        inline_cue = reaction_asset is None and delivery is not None and delivery.reaction != 'none'
+        path = 'fish_reaction_stream' if reaction_asset is not None else 'fish_stream'
+        self._timing('playback','request_started',playback_path=path)
+        expression['playback_path'] = path
+        def leading(fmt):
+            nonlocal prefix_used, path
+            pcm = self._stream_reaction_pcm(reaction_asset,fmt,check)
+            prefix_used = bool(pcm)
+            path = 'fish_reaction_stream' if prefix_used else 'fish_stream'
+            expression.update(playback_path=path, cached_reaction=prefix_used,
+                cached_reaction_id=reaction_clip if prefix_used else None,
+                reaction_cache_status='selected_stream' if prefix_used else 'format_omitted',
+                reaction=delivery.reaction if prefix_used and delivery is not None else 'none',
+                played_reaction=getattr(delivery,'proposed_reaction','none') if prefix_used else 'none')
+            if prefix_used:
+                self._reaction_captions(expression,reaction_asset,text)
+                expression['played_reaction'] = getattr(delivery,'proposed_reaction','none')
+            return pcm
         def prepared(cues):
             check()
-            self._timing('fish','audio_ready')
+            self._timing('fish','audio_ready',playback_path=path,
+                prefix_duration_ms=1000*stream.prefix_frames/stream.format[1],
+                answer_offset_frames=stream.prefix_frames)
             emit('prepared',source='fish',cues=cues,streaming=True,**expression)
         def started():
             check()
-            self._timing('playback','playback_started')
+            self._timing('playback','playback_started',playback_path=path)
             if on_playback_start is not None:
                 on_playback_start()
+            if prefix_used and hasattr(reaction_asset,'candidate_id'):
+                from .voice_bank import VoiceBankError
+                try:self.event_pack.mark_played(reaction_asset.candidate_id,reaction_asset.sha256)
+                except (VoiceBankError,OSError):pass
             check()
             emit('started',source='fish',streaming=True,**expression)
+        def pcm_started(kind, prefix_frames):
+            # Inline Fish sound cues have no observed word alignment either.
+            if kind == 'answer_started' and inline_cue:
+                return
+            self._timing('playback',kind,playback_path=path,answer_offset_frames=prefix_frames,
+                answer_onset_evidence='body_player_boundary' if kind == 'answer_started' else
+                    'body_pcm_submission' if kind == 'answer_pcm' and not inline_cue else
+                    'unlocated_vocal_cue' if inline_cue else 'unknown')
         def progress(cues):
             check()
             emit('progress',source='fish',cues=cues)
         stream = (self._stream_factory or StreamingPCMPlayer)(
             device=self.config.speaker_device, level=self.volume.snapshot()['effective_level'],
-            check=check,prepare=prepared,started=started,progress=progress,env=_player_environment())
+            check=check,prepare=prepared,started=started,progress=progress,env=_player_environment(),
+            prefix_factory=leading if reaction_asset is not None else None,pcm_started=pcm_started,
+            prefix_baked_gain=self.config.fish_gain)
         succeeded = False
         try:
             raw, source, notice = self._synthesize(text,stream._check,delivery=delivery,on_chunk=stream.feed)
             check()
-            # Validation and cache preparation happen while the same output
-            # drains; they do not gate first speech or apply gain twice.
+            stream.finish_input()
             output = attenuated_copy(raw,self.config.fish_gain)
+            # This is completion-only repeat preparation while output drains,
+            # never a prerequisite
+            # for the first answer PCM or a second output process.
+            if prefix_used:
+                joined = self._compose_reaction(reaction_asset,output,check)
+                if joined is None:
+                    raise audio.AudioValidationError('The completed speech cache could not be assembled.', 'speech_cache_failed')
+                audio._discard(output,suppress=True);output = joined
             info = audio._wav_info(output)
             cues = tuple(dict(cue) for cue in wav_cues(output))
             stream.finish()
             check()
             emit('ended',source='fish')
             succeeded = True
-            return output,info,cues
+            return output,info,cues,prefix_used
         except audio.AudioPlaybackError as error:
             self._provider_failure(error.code,source='alsa')
             raise
@@ -577,6 +676,7 @@ class IntegrationVoice:
         cached_reaction = False
         delivery = None
         streamed = False
+        reaction_cache_status = 'none'
         metadata = dict(self.expression_metadata) if type(self.expression_metadata) is dict else {}
         source = "synthetic" if self.simulate else "piper" if _force_piper else "fish"
         try:
@@ -595,6 +695,7 @@ class IntegrationVoice:
             if _event_only and event_asset is None:
                 return False
             if event_asset is not None:
+                self._timing('playback','request_started',playback_path='stored_voice')
                 # Exact source PCM, provenance and clip text; do not pretend a
                 # Drama3 cache came from the live free synthesis configuration.
                 output = audio._new_wav(audio.AudioPlaybackError)
@@ -614,19 +715,39 @@ class IntegrationVoice:
                 delivery = self._expressive_policy.plan(
                     spoken_bmo_name(text, self.config.fish_name_mode),
                     metadata, model=self.config.fish_model)
+                proposed_delivery = delivery
                 reaction_asset, reaction_clip, delivery = self._cached_reaction(
                     spoken_bmo_name(text, self.config.fish_name_mode), metadata, delivery, check)
+                reaction_cache_status = 'selected_full_wav' if reaction_asset is not None else (
+                    'unavailable_or_off' if proposed_delivery.reaction != 'none' else 'none')
+                if reaction_asset is not None and audio._wav_info(reaction_asset.path)['duration_seconds'] > 1.:
+                    from .expressive_voice import REACTION_CUES
+                    reaction_asset.close();reaction_asset = reaction_clip = None
+                    if proposed_delivery.reaction in REACTION_CUES:
+                        delivery = proposed_delivery
+                        reaction_cache_status = 'too_long_inline'
+                    else:
+                        delivery = replace(delivery,reaction='none')
+                        reaction_cache_status = 'too_long_omitted'
             if event_asset is None:
                 settings = {} if delivery is None else {"delivery": delivery}
                 streamed = (not self.simulate and not _force_piper and not _notice
-                    and not self.config.offline_voice and reaction_asset is None
+                    and not self.config.offline_voice
                     and (self._fish_synthesizer is None and self._player is None
                          or self._stream_factory is not None))
                 if streamed:
                     source, notice = 'fish', False
                     expression = self._delivery_expression(metadata,delivery,source)
-                    output,info,cues = self._stream_speech(text,check,emit,expression,delivery,on_playback_start)
+                    expression['reaction_cache_status'] = reaction_cache_status
+                    output,info,cues,cached_reaction = self._stream_speech(text,check,emit,expression,delivery,on_playback_start,
+                        reaction_asset=reaction_asset,reaction_clip=reaction_clip)
+                    reaction_cache_status = expression.get('reaction_cache_status',reaction_cache_status)
+                    if reaction_asset is not None and not cached_reaction:
+                        delivery = replace(delivery,reaction='none')
                 else:
+                    self._timing('playback','request_started',playback_path='synthetic' if self.simulate
+                        else 'offline' if _force_piper else
+                        'fish_reaction_wav' if reaction_asset is not None else 'fish_wav')
                     raw, source, notice = self._synthesize(text, check, force_piper=_force_piper,
                                                           notice=_notice, **settings)
                 # A synchronous provider may finish after cancellation. Discard
@@ -634,7 +755,7 @@ class IntegrationVoice:
                 check()
                 if not streamed:
                     output = attenuated_copy(raw, self.config.fish_gain)
-            if reaction_asset is not None:
+            if reaction_asset is not None and not streamed:
                 joined = (self._compose_reaction(reaction_asset, output, check)
                           if source in ("fish", "synthetic") and not notice else None)
                 if joined is not None:
@@ -649,8 +770,16 @@ class IntegrationVoice:
                             candidate_id=reaction_asset.candidate_id,sha256=reaction_asset.sha256)
                 else:
                     delivery = replace(delivery, reaction="none")
-            expression = self._delivery_expression(metadata,delivery,source,notice=notice,
-                cached_reaction=cached_reaction,reaction_clip=reaction_clip)
+            if streamed:
+                # Keep the exact selected prefix captions/performance for repeat.
+                expression['cached_reaction'] = cached_reaction
+            else:
+                expression = self._delivery_expression(metadata,delivery,source,notice=notice,
+                    cached_reaction=cached_reaction,reaction_clip=reaction_clip)
+                expression['reaction_cache_status'] = reaction_cache_status
+                expression['playback_path'] = ('stored_voice' if event_asset is not None else
+                    'synthetic' if self.simulate else 'offline' if source == 'piper' else
+                    'fish_reaction_wav' if cached_reaction else 'fish_wav')
             if not streamed:
                 info = audio._wav_info(output)
                 cues = event_asset.cues if event_asset is not None else tuple(dict(cue) for cue in wav_cues(output))
@@ -703,10 +832,15 @@ class IntegrationVoice:
             if event_asset is not None:
                 return True
         except (TurnCancelled, KeyboardInterrupt):
-            emit("cancelled", source=source)
+            self._timing('playback','cancelled',outcome='cancelled')
+            emit("cancelled", source=source, code='cancelled')
             raise
-        except BaseException:
-            emit("error", source=source)
+        except BaseException as error:
+            from .turn_diagnostics import CODES
+            proposed = getattr(error,'code',None)
+            code = proposed if type(proposed) is str and proposed in CODES else 'operation_failed'
+            self._timing('fish' if isinstance(error,audio.AudioSynthesisError) else 'playback',code,outcome='error')
+            emit("error", source=source, code=code)
             raise
         finally:
             if reaction_asset is not None:
@@ -728,7 +862,11 @@ class IntegrationVoice:
 
         def started():
             check()
-            self._timing("playback", "playback_started")
+            path = expression.get('playback_path', 'synthetic' if self.simulate else 'offline' if source == 'piper' else 'fish_wav')
+            self._timing("playback", "playback_started",playback_path=path,
+                answer_onset_evidence='cached_only' if source == 'voice_pack' else 'unknown')
+            if source != 'voice_pack' and not expression.get('cached_reaction') and expression.get('reaction','none') == 'none':
+                self._timing('playback','answer_started',playback_path=path,answer_onset_evidence='body_player_boundary')
             if on_playback_start is not None:
                 on_playback_start()
             check()
@@ -769,15 +907,21 @@ class IntegrationVoice:
             if cached is None or self._closed.is_set():
                 return False
             source = cached["source"]
+            self._timing('playback','request_started',playback_path='repeat')
             self._play(cached["path"], source, cached["info"], cached["cues"],
-                       check, emit, on_playback_start, cached["expression"],
+                       check, emit, on_playback_start, dict(cached["expression"],playback_path='repeat'),
                        baked_gain=cached.get('baked_gain', self.config.fish_gain))
             return True
         except (TurnCancelled, KeyboardInterrupt):
-            emit("cancelled", source=source)
+            self._timing('playback','cancelled',outcome='cancelled',playback_path='repeat')
+            emit("cancelled", source=source,code='cancelled')
             raise
-        except BaseException:
-            emit("error", source=source)
+        except BaseException as error:
+            from .turn_diagnostics import CODES
+            proposed = getattr(error,'code',None)
+            code = proposed if type(proposed) is str and proposed in CODES else 'operation_failed'
+            self._timing('playback',code,outcome='error',playback_path='repeat')
+            emit("error", source=source,code=code)
             raise
         finally:
             self._speaking.release()

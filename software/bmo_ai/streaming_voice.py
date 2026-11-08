@@ -141,11 +141,16 @@ class StreamingPCMPlayer:
     measure the speaker's acoustic output. Mouth cues use that same clock.
     """
     def __init__(self, *, device, level, check, prepare, started, progress, env,
-                 process_factory=None, clock=time.monotonic):
+                 process_factory=None, clock=time.monotonic, prefix_factory=None, pcm_started=None,
+                 prefix_baked_gain=1.):
         self.device, self.level, self.check = device, level, check
         self.prepare, self.started_callback, self.progress = prepare, started, progress
         self.env, self.clock = env, clock
         self.process_factory = process_factory or subprocess.Popen
+        self.prefix_factory, self.pcm_started = prefix_factory, pcm_started
+        self.prefix_baked_gain = prefix_baked_gain
+        self.leading = b''
+        self.prefix_frames = 0
         # The total input bound remains 24 MiB; at most 512 KiB waits ahead of
         # the player, rather than accumulating an unbounded streaming response.
         self.queue = Queue(maxsize=128)
@@ -158,6 +163,7 @@ class StreamingPCMPlayer:
         self.cues = []
         self._mouth = None
         self._closed = False
+        self._input_finished = False
         self._deadline = None
 
     def _check(self):
@@ -196,6 +202,13 @@ class StreamingPCMPlayer:
     def _launch(self):
         initial = bytes(self.prefix)
         self.prefix.clear()
+        if self.prefix_factory is not None:
+            self.leading = self.prefix_factory(self.format) or b''
+            channels, rate, width, align = self.format
+            if (type(self.leading) is not bytes or len(self.leading) % align
+                    or len(self.leading) > rate*align):
+                raise _invalid()
+            self.prefix_frames = len(self.leading)//align
         self.thread = Thread(target=self._run, args=(initial,), name='bmo-stream-player', daemon=True)
         self.thread.start()
 
@@ -216,7 +229,9 @@ class StreamingPCMPlayer:
             channels, rate, width, align = self.format
             formats = {1:'U8',2:'S16_LE',3:'S24_3LE',4:'S32_LE'}
             initial = _reduce_chunk(initial,width,self.level)
-            self.cues = self._mouth_cues(initial,0.)
+            leading = (_reduce_chunk(self.leading,width,self.level/self.prefix_baked_gain)
+                       if self.leading else b'')
+            self.cues = self._mouth_cues(leading or initial,0.)
             self.prepare(list(self.cues))
             self._check()
             command = ['aplay','-q',*audio._device_args(self.device),'-t','raw',
@@ -226,7 +241,10 @@ class StreamingPCMPlayer:
             descriptor = process.stdin.fileno()
             os.set_blocking(descriptor,False)
             offset, clock_start = 0., None
-            block = initial
+            block = leading or initial
+            next_initial = initial if leading else None
+            prefix_block = bool(leading)
+            answer_reported = False
             deadline = self._deadline = self.clock()+190.
             while True:
                 self._check()
@@ -257,12 +275,26 @@ class StreamingPCMPlayer:
                         raise audio.AudioPlaybackError('The speech player stopped early.', 'device_unavailable')
                     if not select.select([], [descriptor], [], .02)[1]:
                         continue
-                    position += os.write(descriptor,block[position:])
+                    wrote = os.write(descriptor,block[position:])
+                    position += wrote
+                    if wrote and self.pcm_started is not None:
+                        if clock_start is None:
+                            self.pcm_started('first_pcm', self.prefix_frames)
+                            if prefix_block:
+                                self.pcm_started('reaction_started', self.prefix_frames)
+                        if not prefix_block and not answer_reported:
+                            answer_reported = True
+                            self.pcm_started('answer_pcm', self.prefix_frames)
+                            if not self.prefix_frames:
+                                self.pcm_started('answer_started', 0)
                     if clock_start is None:
                         clock_start = self.clock()
                         self.started.set()
                         self.started_callback()
                 offset += len(block)/(rate*align)
+                if next_initial is not None:
+                    block, next_initial, prefix_block = next_initial, None, False
+                    continue
                 while True:
                     self._check()
                     try:
@@ -305,12 +337,18 @@ class StreamingPCMPlayer:
             else:
                 self.done.set()
 
-    def finish(self):
+    def finish_input(self):
         self._check()
+        if self._input_finished:
+            return
         self.parser.finish()
         if self.thread is None:
             self._launch()
         self._put(None)
+        self._input_finished = True
+
+    def finish(self):
+        self.finish_input()
         while not self.done.wait(.02):
             self._check()
         self._check()

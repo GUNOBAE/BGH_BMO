@@ -109,6 +109,38 @@ class IntegrationVoiceTests(unittest.TestCase):
         piper.assert_not_called()
         self.assertEqual([kind for kind, _ in events], ["error", "prepared", "started", "ended"])
 
+    def test_actual_provider_attempt_and_fallback_paths_are_distinct(self):
+        timing=[]
+        def record(stage,code,**fields):timing.append((stage,code,fields))
+        voice,events=self.new_voice(BMOConfig(tts_provider='fish',offline_voice=True),
+            fish_synthesizer=Mock(side_effect=audio.AudioSynthesisError('Private provider detail.','fish_connection')),
+            piper_synthesizer=lambda *args,**kwargs:synthetic_wav(),
+            player=self.immediate_player,on_timing=record)
+        voice.speak('Fallback answer.')
+        requests=[fields['playback_path'] for stage,code,fields in timing if code=='request_started']
+        self.assertEqual(requests,['fish_wav','offline'])
+        self.assertEqual(sum(stage=='fish' and code=='started' for stage,code,_ in timing),1)
+        self.assertEqual(next(fields for kind,fields in events if kind=='started')['playback_path'],'offline')
+        timing.clear()
+        voice.offline_notice()
+        self.assertFalse(any(stage=='fish' for stage,_,_ in timing))
+
+    def test_provider_error_preserves_code_path_and_no_fictitious_answer_start(self):
+        timing=[]
+        voice,events=self.new_voice(fish_synthesizer=Mock(side_effect=
+            audio.AudioSynthesisError('Never export provider body.','fish_authentication')),
+            player=self.immediate_player,on_timing=lambda stage,code,**fields:timing.append((stage,code,fields)))
+        with self.assertRaises(audio.AudioSynthesisError):voice.speak('Failed request.')
+        self.assertEqual(events,[('error',{'source':'fish','code':'fish_authentication'})])
+        self.assertEqual(timing[0][2]['playback_path'],'fish_wav')
+        self.assertEqual(timing[-1][:2],('fish','fish_authentication'))
+        self.assertFalse(any(code in ('answer_started','playback_started') for _,code,_ in timing))
+        # Readiness blocks retries until credential/operator review; a rejected
+        # attempt must not create another actual-provider start marker.
+        with self.assertRaises(audio.AudioSynthesisError):voice.speak('Still blocked.')
+        self.assertEqual(sum(stage=='fish' and code=='started' for stage,code,_ in timing),1)
+        self.assertNotIn('Never export',repr((events,timing)))
+
     def test_late_synthesis_result_is_discarded_without_start(self):
         cancelled = Event()
         raw_paths = []

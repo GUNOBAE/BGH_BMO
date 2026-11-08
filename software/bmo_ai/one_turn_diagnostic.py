@@ -39,11 +39,16 @@ _ENUMS = frozenset((
     'theatrical_crying', 'theatrical_angry', 'empathetic', 'manual_override',
     'playful', 'gentle_correction', 'chuckle', 'gasp', 'playful_puff', 'sob',
     'hmm', 'ooh', 'aha', 'tada', 'oops', 'wave', 'celebrate', 'shrug',
-    'greeting', 'achievement', 'hesitation', 'not_requested', 'eligible',
+    'greeting', 'achievement', 'hesitation', 'surprise', 'not_requested', 'eligible',
     'sensitive_context', 'action_request', 'acting_required', 'emotion_mismatch',
     'success_event_only', 'context_mismatch', 'vocal_flourish', 'invalid_plan',
     'unsupported_model', 'already_in_speech', 'correction_required',
     'reaction_cooldown', 'reaction_repeat',
+    'fish_stream', 'fish_reaction_stream', 'fish_reaction_wav', 'fish_wav',
+    'stored_voice', 'offline', 'repeat', 'body_player_boundary', 'body_pcm_submission',
+    'unlocated_vocal_cue', 'cached_only', 'unknown',
+    'selected_stream', 'selected_full_wav', 'format_omitted', 'unavailable_or_off',
+    'too_long_inline', 'too_long_omitted',
 ))
 _ENUM_FIELDS = frozenset((
     'requested_emotion', 'model_emotion', 'resolved_emotion', 'emitted_emotion',
@@ -54,7 +59,8 @@ _ENUM_FIELDS = frozenset((
     'stt_status', 'stt_result', 'reason',
     'model_reaction', 'resolved_reaction', 'reaction_reason', 'model_gesture',
     'resolved_gesture', 'gesture_context', 'gesture_reason', 'proposed_reaction',
-    'reaction_policy_reason', 'played_reaction',
+    'reaction_policy_reason', 'played_reaction', 'playback_path', 'answer_onset_evidence',
+    'reaction_cache_status',
 ))
 _BOOL_FIELDS = frozenset((
     'replayed', 'character_life', 'character_life_enabled', 'tts_override_soft',

@@ -16,14 +16,14 @@ import stat
 from threading import RLock
 import time
 
-from .turn_diagnostics import CODES, STAGES, _MARKERS, _SPANS
+from .turn_diagnostics import CODES, STAGES, MARKER_NAMES, PLAYBACK_PATHS, ANSWER_ONSET_EVIDENCE, _SPANS, _RUN_ID, _TURN_ID
 
 
 CAPACITY = 32
 MAX_BYTES = 262144
 _FILE = "completed-turns.json"
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
-_MARKER_NAMES = frozenset(_MARKERS.values())
+_MARKER_NAMES = MARKER_NAMES
 _OUTCOMES = frozenset(("ok", "started", "error", "empty", "cancelled"))
 _CODES = frozenset(("ready", "saved", "disabled", "diagnostic_storage_unavailable",
                     "diagnostic_invalid_record", "diagnostic_write_failed"))
@@ -129,7 +129,7 @@ def _stage(value):
     return None
 
 
-def numeric_receipt(trace, *, revision, profile, mode, speech_safe, recorded_at):
+def numeric_receipt(trace, *, revision, profile, mode, speech_safe, recorded_at, version=3):
     """Rebuild an allowlist, never serialize the trace/config object wholesale."""
     if (type(trace) is not dict or trace.get("enabled") is not True
             or type(trace.get("turn")) is not int or not 1 <= trace["turn"] <= 1000000
@@ -148,7 +148,7 @@ def numeric_receipt(trace, *, revision, profile, mode, speech_safe, recorded_at)
         timings[name] = dict(status="MEASURED" if measured else "UNMEASURED",
                              value_ms=round(right - left, 1) if measured else None)
     timings["acoustic_first_sound_ms"] = dict(status="UNMEASURED", value_ms=None)
-    return dict(version=2, runtime_revision=revision if type(revision) is str and _SHA.fullmatch(revision) else None,
+    result = dict(version=version, runtime_revision=revision if type(revision) is str and _SHA.fullmatch(revision) else None,
                 recorded_at_unix=int(recorded_at), turn=trace["turn"], terminal=trace["terminal"],
                 vad_profile=profile, vad_mode=mode, speech_safe=speech_safe,
                 markers_ms=markers, timings=timings, failure=_stage(trace.get("failure")),
@@ -156,13 +156,45 @@ def numeric_receipt(trace, *, revision, profile, mode, speech_safe, recorded_at)
                 clock="host_monotonic", acoustic_measurement=False,
                 contains_audio=False, contains_transcript=False)
 
+    if version == 3:
+        identity = trace.get('runtime_revision')
+        if type(identity) is str and _SHA.fullmatch(identity):
+            result['runtime_revision'] = identity
+        run, turn = trace.get('run_id'), trace.get('turn_id')
+        result.update(run_id=run if type(run) is str and _RUN_ID.fullmatch(run) else None,
+            turn_id=turn if type(turn) is str and _TURN_ID.fullmatch(turn)
+                and turn.rsplit(':', 1)[1] == str(trace['turn']) else None,
+            playback_path=trace.get('playback_path') if type(trace.get('playback_path')) is str
+                and trace['playback_path'] in PLAYBACK_PATHS else None,
+            playback_metadata={}, answer_onset_evidence=trace.get('answer_onset_evidence')
+                if type(trace.get('answer_onset_evidence')) is str and trace['answer_onset_evidence'] in ANSWER_ONSET_EVIDENCE else 'unknown')
+        raw = trace.get('playback_metadata')
+        if type(raw) is dict:
+            for name, maximum in (('prefix_duration_ms', 180000), ('answer_offset_frames', 34560000)):
+                if _number(raw.get(name), maximum):
+                    result['playback_metadata'][name] = round(raw[name], 4)
+        for name in ('terminal_elapsed_ms', 'failure_elapsed_ms', 'cancellation_elapsed_ms', 'cleanup_failure_elapsed_ms'):
+            value = trace.get(name)
+            result[name] = round(value, 1) if _number(value) else None
+        result['cancellation'] = _stage(trace.get('cancellation'))
+        result['cleanup_failure'] = _stage(trace.get('cleanup_failure'))
+    return result
+
 
 def _stored_receipt(value):
-    if type(value) is not dict or value.get("version") != 2:
+    if (type(value) is not dict or type(value.get("version")) is not int
+            or value['version'] not in (2, 3)):
         return None
     rebuilt = numeric_receipt(dict(value, enabled=True), revision=value.get("runtime_revision"),
         profile=value.get("vad_profile"), mode=value.get("vad_mode"),
-        speech_safe=value.get("speech_safe"), recorded_at=value.get("recorded_at_unix"))
+        speech_safe=value.get("speech_safe"), recorded_at=value.get("recorded_at_unix"), version=value['version'])
+    if rebuilt is not None and value['version'] == 2:
+        # Earlier v2 writers had fewer timing spans. Preserve the bytes/meaning
+        # of those rows; never invent a run, path or observation for old turns.
+        timings = value.get('timings')
+        if type(timings) is not dict or not set(timings) <= set(rebuilt['timings']):
+            return None
+        rebuilt['timings'] = {key: rebuilt['timings'][key] for key in timings}
     return rebuilt if rebuilt == value else None
 
 

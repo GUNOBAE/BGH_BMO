@@ -40,6 +40,8 @@ class OneTurnDiagnosticTests(unittest.TestCase):
             emitted_emotion='angry', validation='validated', degradation_reason='none',
             request_validation='validated', request_kind='acting', character_life=True,
             tts_mechanism='fish_character_s2_v1', tts_backend='fish', tts_override_soft=True,
+            playback_path='fish_reaction_stream', reaction_cache_status='selected_stream',
+            answer_onset_evidence='body_pcm_submission', gesture_context='surprise',
             emission_status='ended', transcript='must not leak into trace',
             raw_provider={'untrusted':'not a trace'}, exception='/private/path',
             voice_style='a sentence that is not an enum')))
@@ -47,6 +49,10 @@ class OneTurnDiagnosticTests(unittest.TestCase):
         self.assertEqual(data['transcript'], text)
         self.assertEqual(data['model_reply'], model)
         self.assertEqual(data['trace']['tts_override_soft'], True)
+        self.assertEqual(data['trace']['playback_path'], 'fish_reaction_stream')
+        self.assertEqual(data['trace']['reaction_cache_status'], 'selected_stream')
+        self.assertEqual(data['trace']['answer_onset_evidence'], 'body_pcm_submission')
+        self.assertEqual(data['trace']['gesture_context'], 'surprise')
         self.assertFalse(data['trace']['contains_text'])
         self.assertNotIn('transcript', data['trace'])
         self.assertNotIn('raw_provider', data['trace'])

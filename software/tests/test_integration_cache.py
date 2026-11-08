@@ -66,7 +66,12 @@ class SessionCacheTests(unittest.TestCase):
             self.assertTrue(self.voice.repeat())
             self.assertTrue(self.voice.repeat())
         self.fish.assert_called_once()
-        self.assertTrue(all(fields == first for fields in self.prepared()))
+        # Retained audio/cues/captions stay exact; diagnostics identify replay
+        # separately from the original provider path.
+        for fields in self.prepared()[1:]:
+            self.assertEqual(fields['playback_path'], 'repeat')
+            self.assertEqual({k:v for k,v in fields.items() if k != 'playback_path'},
+                             {k:v for k,v in first.items() if k != 'playback_path'})
         self.assertTrue(all(command[-1] == str(cached) for command in self.commands))
         self.assertEqual(cached.read_bytes(), original)
         self.voice.client.responses.create.assert_not_called()

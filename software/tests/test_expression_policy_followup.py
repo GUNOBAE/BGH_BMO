@@ -110,11 +110,79 @@ class ExpressionFollowupTests(unittest.TestCase):
         self.assertEqual(voice.reaction, 'none')
         self.assertIn('gentle wonder', voice.text)
 
+    def test_surprise_face_optional_gasp_and_body_are_one_contextual_beat(self):
+        for reaction in ('none', 'gasp'):
+            plan = self.plan(emotion='surprised', reaction=reaction, gesture='shrug',
+                context='surprise', delivery_id='curious')
+            self.assertEqual((plan.face_emotion, plan.reaction_id, plan.gesture_id,
+                plan.gesture_context), ('surprised', reaction, 'shrug', 'surprise'))
+            self.assertEqual(CharacterPlan.from_public(plan.public()), plan)
+            trace = performance_resolution(plan, reaction=reaction, gesture='shrug')
+            self.assertEqual(trace['gesture_reason'], 'eligible')
+        # A gasp/face label alone never asks the device to move, and a
+        # mismatched happy or neutral face cannot grant the surprise profile.
+        for emotion, context, gesture in [('surprised', 'none', 'shrug'),
+                ('surprised', 'greeting', 'wave'), ('neutral', 'surprise', 'shrug'),
+                ('happy', 'surprise', 'shrug')]:
+            with self.subTest(emotion=emotion, context=context):
+                plan = self.plan(emotion=emotion, reaction='gasp', gesture=gesture,
+                    context=context, delivery_id='curious')
+                self.assertEqual(plan.gesture_id, 'none')
+        normal = self.plan(emotion='surprised', gesture='none', context='none', delivery_id='curious')
+        self.assertEqual((normal.gesture_id, normal.reaction_id), ('none', 'none'))
+
+    def test_surprise_control_or_sensitive_context_remains_suppressed(self):
+        for message, control in [('My dad died.', False), ('Record a video.', True),
+                                 ('I am scared.', False)]:
+            plan = CharacterDirector().resolve('surprised', 'gasp', 'shrug',
+                metadata=dict(delivery_id='curious', gesture_context='surprise'),
+                message=message, has_intent=control)
+            self.assertEqual((plan.gesture_id, plan.reaction_id), ('none', 'none'))
+        # A rejected device proposal cannot fall back to a surprise flourish.
+        row = envelope(kind='photo', disposition='execute', gesture='shrug',
+                       reaction='gasp', model_emotion='surprised', delivery='curious')
+        row['character']['gesture_context'] = 'surprise'
+        view = FeatureClient(Provider([row]), character_life=True)
+        view.responses.create(instructions='Synthetic device boundary.',
+            input=[{'role':'user', 'content':'Take a photo please.'}])
+        self.assertIsNone(view.last_reply.intent)
+        self.assertEqual((view.last_reply.gesture, view.last_reply.reaction), ('none', 'none'))
+
+    def test_surprise_semantics_and_brief_voice_direction_use_one_existing_response(self):
+        row = envelope(model_emotion='surprised', delivery='curious', reaction='gasp',
+                       gesture='shrug', speech='That tiny seed grew overnight!')
+        row['character']['gesture_context'] = 'surprise'
+        provider = Provider([row])
+        view = FeatureClient(provider, character_life=True)
+        view.responses.create(instructions='Synthetic one-call reply.',
+            input=[{'role':'user', 'content':'My seed suddenly grew ten centimeters overnight.'}])
+        self.assertEqual(len(provider.requests), 1)
+        plan = view.last_reply.character_plan
+        self.assertEqual((plan.face_emotion, plan.gesture_id, plan.gesture_context),
+                         ('surprised', 'shrug', 'surprise'))
+        self.assertEqual(view.last_resolution['gesture_reason'], 'eligible')
+        policy = ExpressivePolicy()
+        delivery = policy.plan(view.last_reply.speech, self.voice_metadata(plan), model='s2.1-pro-free')
+        self.assertEqual((delivery.reaction, delivery.proposed_reaction), ('gasp', 'gasp'))
+        self.assertIn('[gasping]', delivery.text)
+        self.assertIn('one brief breath', delivery.text)
+        self.assertIn('begin the spoken line immediately', delivery.text)
+        self.assertEqual(delivery.text.count(view.last_reply.speech), 1)
+        self.assertEqual(view.last_reply.speech, 'That tiny seed grew overnight!')
+        self.assertNotIn('[', view.last_reply.speech)
+        policy.completed(delivery)
+        suppressed = policy.plan(view.last_reply.speech, self.voice_metadata(plan), model='s2.1-pro-free')
+        self.assertEqual((suppressed.reaction, suppressed.reaction_reason), ('none', 'reaction_cooldown'))
+        self.assertNotIn('[gasping]', suppressed.text)
+        self.assertIn('gentle wonder', suppressed.text)
+        self.assertIn('one short opening clause', COMPOUND_INSTRUCTIONS)
+        self.assertIn('Merely explaining', COMPOUND_INSTRUCTIONS)
+
     def test_active_schema_and_same_provider_response_carry_context_and_reaction_diagnostics(self):
         schema = feature_text_format(character_life=True)['format']['schema']['properties']['character']
         self.assertIn('gesture_context', schema['required'])
         self.assertEqual(schema['properties']['gesture_context']['enum'],
-                         ['none', 'greeting', 'achievement', 'playful', 'hesitation'])
+                         ['none', 'greeting', 'achievement', 'playful', 'hesitation', 'surprise'])
         requests = []
         class Provider:
             def create(self, **request):

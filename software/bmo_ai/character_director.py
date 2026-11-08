@@ -19,7 +19,7 @@ SOURCES = ("dialogue", "acting", "boot", "idle")
 REACTION_IDS = ("none", "chuckle", "gasp", "playful_puff", "sob",
                 "hmm", "ooh", "aha", "tada", "oops")
 GESTURE_IDS = ("none", "wave", "celebrate", "shrug")
-GESTURE_CONTEXTS = ("none", "greeting", "achievement", "playful", "hesitation")
+GESTURE_CONTEXTS = ("none", "greeting", "achievement", "playful", "hesitation", "surprise")
 GESTURE_REASONS = ("not_requested", "eligible", "sensitive_context", "action_request",
                    "acting", "context_mismatch", "emotion_mismatch", "vocal_flourish")
 REACTION_REASONS = ("not_requested", "eligible", "sensitive_context", "action_request",
@@ -176,15 +176,19 @@ class CharacterDirector:
         # or a happy-face-to-arm rule. Legacy replies with no context keep their
         # speech and expression but cannot grant an automatic body flourish.
         allowed_context = {"wave": ("greeting",), "celebrate": ("achievement",),
-                           "shrug": ("playful", "hesitation")}
+                           "shrug": ("playful", "hesitation", "surprise")}
         if (gesture != "none" and (gesture_context not in allowed_context[gesture]
-                or gesture == "celebrate" and emotion != "happy")):
+                or gesture == "celebrate" and emotion != "happy"
+                or gesture_context == "surprise" and emotion != "surprised")):
             gesture = "none"
-        # A quiet Hmm/Aha may accompany one restrained shrug/celebration. A
-        # laugh, gasp or acted puff already supplies the flourish on its own.
-        # Tracking and physical rate/STOP ownership remain the Host's decision.
+        # Surprise is one coordinated beat: the approved surprised face, one
+        # optional gasp and the fixed surprise arm profile. A surprise face or
+        # gasp alone cannot grant movement. The Host owns actual onset/return,
+        # duration limits and STOP priority; metadata never contains angles.
+        paired_surprise = (reaction == "gasp" and gesture == "shrug"
+            and gesture_context == "surprise" and emotion == "surprised")
         if reaction != "none":
-            if reaction not in ("hmm", "aha"):
+            if reaction not in ("hmm", "aha") and not paired_surprise:
                 gesture = "none"
             gaze = "attentive"
         if has_intent:
@@ -219,7 +223,8 @@ def performance_resolution(plan, *, reaction, gesture, has_intent=False):
         gesture_reason = "action_request"
     elif plan.explicit_acting:
         gesture_reason = "acting"
-    elif plan.face_emotion in ("sad", "crying", "angry"):
+    elif (plan.face_emotion in ("sad", "crying", "angry")
+            or plan.gesture_context == "surprise" and plan.face_emotion != "surprised"):
         gesture_reason = "emotion_mismatch"
     elif plan.reaction_id not in ("none", "hmm", "aha"):
         gesture_reason = "vocal_flourish"

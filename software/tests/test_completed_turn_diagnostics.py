@@ -174,6 +174,7 @@ class CompletedTurnDiagnosticTests(unittest.TestCase):
             ptt_transcriber=lambda *_a, **_kw: "PRIVATE QUESTION", ptt_trace=True,
             ptt_speech_safe=True, completed_turn_store=store)
         self.addCleanup(host.close)
+        host.bind_runtime_identity('d' * 32)
         for number in (1, 2):
             clock.now += .3
             self.assertTrue(host.ptt_button())
@@ -185,7 +186,14 @@ class CompletedTurnDiagnosticTests(unittest.TestCase):
             self.assertEqual(store.snapshot()["retained"], number)
             row = self.read()["records"][-1]
             self.assertEqual((row["turn"], row["terminal"]), (number, "ok"))
+            self.assertEqual(row['runtime_revision'], host.snapshot()['runtime_provenance']['source_revision_at_start'])
+            self.assertEqual(row['run_id'], 'd' * 32)
+            self.assertEqual(row['turn_id'], f'{host.session.session_id}:{number}')
+            self.assertEqual(row['playback_path'], 'fish_wav')
+            self.assertEqual(row['answer_onset_evidence'], 'body_player_boundary')
             self.assertEqual(row["timings"]["last_voiced_to_player_start_ms"]["status"], "MEASURED")
+            self.assertEqual(row['timings']['last_voiced_to_answer_start_ms']['status'], 'MEASURED')
+            self.assertIsNotNone(row['terminal_elapsed_ms'])
             self.assertEqual(row["timings"]["tts_to_first_byte_ms"]["status"], "UNMEASURED")
         self.assertNotIn("PRIVATE QUESTION", (self.directory / "completed-turns.json").read_text())
         self.assertEqual(len(client.requests), 2)

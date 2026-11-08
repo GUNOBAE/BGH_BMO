@@ -173,11 +173,143 @@ class StreamingVoiceTests(unittest.TestCase):
         voice._player=repeat
         self.assertTrue(voice.repeat());self.assertEqual(heard,[pcm])
 
+    def reaction_asset(self,seconds=.35):
+        path=Path(self.directory)/'approved-prefix.wav'
+        raw=bytearray(fixture(seconds));raw[44:]=struct.pack('<h',2000)*round(16000*seconds)
+        path.write_bytes(raw)
+        return SimpleNamespace(path=path,baked_gain=.25,clip_id='RX01',candidate_id='RX01_fixture',
+            sha256='a'*64,captions={'en':'Hehe.','ko':'헤헤.'},info=audio._wav_info(path),close=lambda:None)
+
+    def reaction_voice(self,asset):
+        from bmo_ai.expressive_voice import VoiceDelivery
+        voice=self.voice(expressive=True,character_life=True)
+        proposed=VoiceDelivery('[chuckling] Hehe. A whole checked reply.','happy','chuckle',
+            'fish_character_s2_v1',True,False,'chuckle','eligible')
+        plain=__import__('dataclasses').replace(proposed,text='A whole checked reply.')
+        voice._expressive_policy.plan=lambda *args,**kwargs:proposed
+        voice._cached_reaction=lambda *args:(asset,asset.clip_id,plain)
+        played=[];voice.event_pack=SimpleNamespace(mark_played=lambda *args,**kwargs:played.append(args))
+        return voice,played
+
+    def test_cached_prefix_streams_before_eof_on_one_player_and_body_is_not_prefix_ttfa(self):
+        asset=self.reaction_asset();voice,played=self.reaction_voice(asset)
+        timings=[];voice.on_timing=lambda stage,code,**fields:timings.append((stage,code,fields))
+        def tail():
+            self.assertTrue(self.started.wait(2),'cached prefix restored the whole WAV gate')
+            self.assertFalse(self.download_done.is_set())
+        with patch.object(fish_tts,'urlopen',return_value=self.response(wait_after_prefix=tail)) as request:
+            voice.speak('A whole checked reply.')
+        self.assertEqual(request.call_count,1)
+        self.assertEqual(len(self.processes),1)
+        expected=struct.pack('<h',2000)*5600+struct.pack('<h',3000)*12800
+        self.assertEqual(self.capture.read_bytes(),expected)
+        self.assertEqual(len(played),1)
+        start=next(fields for kind,fields in self.events if kind=='started')
+        self.assertEqual(start['playback_path'],'fish_reaction_stream')
+        self.assertEqual(start['caption_asset']['sha256'],asset.sha256)
+        self.assertEqual(start['cached_reaction_id'],asset.clip_id)
+        self.assertTrue(start['caption_payload']['ko'].startswith('헤헤.'))
+        markers=[code for stage,code,_ in timings if stage=='playback']
+        self.assertEqual(markers.count('first_pcm'),1)
+        self.assertEqual(markers.count('reaction_started'),1)
+        self.assertEqual(markers.count('answer_pcm'),1)
+        self.assertNotIn('answer_started',markers)
+        self.assertGreater(markers.index('answer_pcm'),markers.index('reaction_started'))
+        body=next(fields for stage,code,fields in timings if code=='answer_pcm')
+        self.assertEqual(body['answer_offset_frames'],5600)
+        self.assertEqual(body['answer_onset_evidence'],'body_pcm_submission')
+        with wave.open(str(voice._cache['path']),'rb') as wav:
+            self.assertEqual(wav.readframes(wav.getnframes()),expected)
+        heard=[]
+        def repeat(command,*,on_start,**kwargs):
+            with wave.open(command[-1],'rb') as wav:heard.append(wav.readframes(wav.getnframes()))
+            on_start()
+        voice._player=repeat
+        self.assertTrue(voice.repeat())
+        self.assertEqual(heard,[expected]);self.assertEqual(len(played),1)
+        self.assertEqual(next(fields for kind,fields in reversed(self.events) if kind=='started')['playback_path'],'repeat')
+
+    def test_long_approved_reaction_uses_same_fish_inline_stream_without_prefix_or_fake_body_start(self):
+        asset=self.reaction_asset(2.2);before=asset.path.read_bytes()
+        voice,played=self.reaction_voice(asset);timings=[]
+        voice.on_timing=lambda stage,code,**fields:timings.append((stage,code,fields))
+        with patch.object(fish_tts,'urlopen',return_value=self.response()) as request:
+            voice.speak('A whole checked reply.')
+        self.assertEqual(request.call_count,1)
+        payload=__import__('json').loads(request.call_args.args[0].data)
+        self.assertIn('[chuckling]',payload['text'])
+        start=next(fields for kind,fields in self.events if kind=='started')
+        self.assertEqual(start['playback_path'],'fish_stream')
+        self.assertEqual(start['reaction_cache_status'],'too_long_inline')
+        self.assertFalse(start['cached_reaction'])
+        self.assertEqual(self.capture.read_bytes(),struct.pack('<h',3000)*12800)
+        self.assertEqual(played,[]);self.assertEqual(asset.path.read_bytes(),before)
+        self.assertFalse(any(code=='answer_started' for _,code,_ in timings))
+        body=next(fields for _,code,fields in timings if code=='answer_pcm')
+        self.assertEqual(body['answer_onset_evidence'],'unlocated_vocal_cue')
+
+    def test_loud_baked_prefix_stream_and_repeat_apply_same_volume_without_unbake_clipping(self):
+        asset=self.reaction_asset()
+        raw=bytearray(asset.path.read_bytes());raw[44:]=struct.pack('<h',20000)*5600
+        asset.path.write_bytes(raw)
+        voice,_=self.reaction_voice(asset)
+        voice.volume.set(level=.4)
+        with patch.object(fish_tts,'urlopen',return_value=self.response()):
+            voice.speak('A whole checked reply.')
+        heard=self.capture.read_bytes()
+        self.assertEqual(heard,struct.pack('<h',32000)*5600+struct.pack('<h',4800)*12800)
+        replay=[]
+        def player(command,*,on_start,**kwargs):
+            with wave.open(command[-1],'rb') as wav:replay.append(wav.readframes(wav.getnframes()))
+            on_start()
+        voice._player=player
+        self.assertTrue(voice.repeat())
+        self.assertEqual(replay,[heard])
+        self.assertEqual(asset.path.read_bytes(),raw)
+
+    def test_unsupported_prefix_conversion_keeps_valid_body_stream_without_claiming_reaction(self):
+        asset=self.reaction_asset();voice,played=self.reaction_voice(asset)
+        raw=io.BytesIO()
+        with wave.open(raw,'wb') as wav:
+            wav.setnchannels(1);wav.setsampwidth(3);wav.setframerate(16000)
+            wav.writeframes((12000).to_bytes(3,'little',signed=True)*12800)
+        timing=[];voice.on_timing=lambda stage,code,**fields:timing.append((stage,code,fields))
+        with patch.object(fish_tts,'urlopen',return_value=self.response(raw.getvalue())):
+            voice.speak('A whole checked reply.')
+        start=next(fields for kind,fields in self.events if kind=='started')
+        self.assertEqual(start['reaction_cache_status'],'format_omitted')
+        self.assertEqual(start['playback_path'],'fish_stream')
+        self.assertEqual(start['reaction'],'none')
+        self.assertEqual(start['played_reaction'],'none')
+        self.assertFalse(start['cached_reaction']);self.assertEqual(played,[])
+        self.assertEqual(self.capture.read_bytes(),(3000).to_bytes(3,'little',signed=True)*12800)
+        self.assertEqual(sum(code=='answer_started' for _,code,_ in timing),1)
+        self.assertEqual(voice._cache['expression']['reaction'],'none')
+
+    def test_cancelled_prefixed_stream_keeps_previous_completed_repeat(self):
+        voice,played=self.reaction_voice(self.reaction_asset())
+        with patch.object(fish_tts,'urlopen',return_value=self.response()):voice.speak('First.')
+        previous=voice._cache['path'];self.events.clear();self.started.clear()
+        def cancel_after_prefix():
+            self.assertTrue(self.started.wait(2));self.cancel.set()
+        with patch.object(fish_tts,'urlopen',return_value=self.response(wait_after_prefix=cancel_after_prefix)):
+            with self.assertRaises(TurnCancelled):voice.speak('Cancelled.')
+        self.assertEqual(voice._cache['path'],previous)
+        self.assertNotIn('ended',[kind for kind,_ in self.events])
+        self.assertTrue(all(process.poll() is not None for process in self.processes))
+        self.cancel.clear();self.started.clear()
+        with patch.object(fish_tts,'urlopen',return_value=self.response()):voice.speak('Next.')
+        self.assertEqual(self.events[-1][0],'ended')
+
     def test_bad_header_never_spawns_and_next_request_recovers(self):
-        voice=self.voice()
+        voice=self.voice();timing=[]
+        voice.on_timing=lambda stage,code,**fields:timing.append((stage,code,fields))
         with patch.object(fish_tts,'urlopen',return_value=self.response(b'{"error":"not PCM"}')):
             with self.assertRaises(audio.AudioValidationError):voice.speak('Hello.')
         self.assertFalse(self.processes);self.assertFalse(voice.has_cache)
+        first_failure=next((stage,code) for stage,code,fields in timing if fields.get('outcome')=='error')
+        self.assertEqual(first_failure,('fish','invalid_wav'))
+        self.assertEqual(self.events[-1][1]['code'],'invalid_wav')
         with patch.object(fish_tts,'urlopen',return_value=self.response()):voice.speak('Next.')
         self.assertEqual(self.events[-1][0],'ended')
 
