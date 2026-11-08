@@ -13,9 +13,11 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 SOFTWARE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOFTWARE))
+from checks import check_desktop_app_browser as desktop
 from checks.check_desktop_app_browser import DesktopFixture, FIXTURE
 from bmo_ai.screen_profiles import SCREEN_PROFILES
 
@@ -28,7 +30,7 @@ def wait_features(fixture, predicate, *, pause=time.sleep, timeout=8):
             return value
         pause(.02)
     raise AssertionError("Release gate timed out: " + json.dumps({
-        key: value.get(key) for key in ("phase", "conversation_busy", "motion", "last_result")}))
+        key: value.get(key) for key in ("sequence", "phase", "conversation_busy", "motion", "last_result", "requests")}))
 
 
 def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, include_media=True):
@@ -39,8 +41,14 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, include_media=T
         assert before == SCREEN_PROFILES[profile]["sha256"]
     checks = []
     with tempfile.TemporaryDirectory(prefix="bmo-release-e2e-") as directory:
-        fixture = DesktopFixture(directory, profile=profile, face=face, scenario="release",
-                                 extra_args=("--ptt-trace",))
+        # Acknowledgement makes the existing fixture poll gate deterministic:
+        # never assume that writing hold-host already stopped an in-flight poll.
+        gate="            if (root/'hold-host').exists():return"
+        assert desktop.CHILD.count(gate)==1
+        child=desktop.CHILD.replace(gate,"            if (root/'hold-host').exists():\n                (root/'hold-host-observed').touch();return")
+        with patch.object(desktop,'CHILD',child):
+            fixture = DesktopFixture(directory, profile=profile, face=face, scenario="release",
+                                     extra_args=("--ptt-trace",))
         try:
             with sync_playwright() as pw:
                 browser = pw.chromium.launch(executable_path=chromium, headless=True,
@@ -81,6 +89,32 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, include_media=T
                         page.locator("#face").focus()
                         page.keyboard.press("Enter")
 
+                    def control_finished(receipt, admitted_sequence):
+                        # HTTP admission is not owner execution. Safety IDs are
+                        # reused, and snapshots may still contain an earlier
+                        # terminal result: require a publication AFTER admission.
+                        def finished(snapshot):
+                            record=next((row for row in snapshot['requests']
+                                if row['request_id']==receipt['request_id']),None)
+                            return (snapshot['sequence']>admitted_sequence and record
+                                and record['status'] in ('succeeded','simulated') and record['completed']
+                                and not snapshot['conversation_busy'] and snapshot['audio_owner'] is None
+                                and not snapshot['motion']['active'])
+                        snapshot=wait(finished)
+                        page.wait_for_function("""expected=>{
+                          const state=BMODesktop.features;
+                          return state?.sequence>=expected.sequence&&state.mode==='conversation'
+                            &&!state.conversation_busy&&state.audio_owner===null&&!state.motion.active
+                            &&state.requests.some(row=>row.request_id===expected.request_id
+                              &&row.completed&&['succeeded','simulated'].includes(row.status));
+                        }""",arg=dict(sequence=snapshot['sequence'],request_id=receipt['request_id']))
+                        return snapshot
+
+                    def control_and_wait(action):
+                        receipt=page.evaluate('action=>BMODesktop.control(action)',action)
+                        admitted_sequence=fixture.features()['sequence']
+                        return control_finished(receipt,admitted_sequence)
+
                     gp8()
                     state = wait(lambda s: s["test_fixture"]["b1_commands"] == 1 and s["emotion"] == "happy")
                     assert state["test_fixture"]["b1_gestures"] == ["wave"]
@@ -98,9 +132,33 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, include_media=T
                     assert state["test_fixture"]["b1_commands"] == 1
                     assert (state["test_fixture"]["stt"], state["test_fixture"]["brain"], state["test_fixture"]["synthesis"]) == (1, 1, 1)
                     assert state["emotion"] == "happy"
-                    page.evaluate("()=>BMODesktop.control('cancel')")
-                    wait(lambda s: not s["motion"]["active"] and s["test_fixture"]["b1_holds"] >= 1)
-                    checks.append("repeat preserves emotion/cache with zero recapture/provider/DO; cancel HOLDs the accepted trajectory")
+                    # Reproduce the old false-ready predicate deliberately:
+                    # repeat has already ended/HOLDed before cancel is executed.
+                    # Hold only this injected owner's poll, not product behavior.
+                    wait(lambda s:not s['motion']['active'] and s['test_fixture']['b1_holds']>=1)
+                    hold=Path(directory)/'hold-host'
+                    hold.write_text('bounded synthetic owner-admission ordering gate')
+                    try:
+                        wait(lambda _s:(Path(directory)/'hold-host-observed').is_file())
+                        cancel_receipt=page.evaluate("()=>BMODesktop.control('cancel')")
+                        admitted_sequence=fixture.features()['sequence']
+                        before_cancel=fixture.features()
+                        assert not before_cancel['motion']['active'] and before_cancel['test_fixture']['b1_holds']>=1
+                        with page.expect_response(lambda response:response.url.endswith('/api/control')
+                                and response.request.method=='POST'
+                                and response.request.post_data_json['payload']['action']=='ptt') as response:
+                            gp8()
+                        early_ptt=response.value.json()
+                        assert early_ptt['status']=='accepted' and cancel_receipt['status']=='accepted'
+                    finally:
+                        hold.unlink(missing_ok=True)
+                    state=wait(lambda s:any(row['request_id']==early_ptt['request_id']
+                        and row['status']=='rejected' and row['code']=='stale_mode' for row in s['requests']))
+                    assert (state['test_fixture']['mic_sources'],state['test_fixture']['stt'],
+                            state['test_fixture']['brain'],state['test_fixture']['b1_commands'])==(1,1,1,1)
+                    state=control_finished(cancel_receipt,admitted_sequence)
+                    assert state['test_fixture']['b1_holds']>=1
+                    checks.append("repeat preserves emotion/cache with zero recapture/provider/DO; controlled delayed cancel proves idle/HOLD alone is stale readiness, rejects early GP8 before capture, then exact completion and rendered state allow the next input")
 
                     # Stay below the three-second shell-liveness watchdog while
                     # advancing the two-second gesture cooldown deterministically.
@@ -109,8 +167,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, include_media=T
                     state = wait(lambda s: s["test_fixture"]["b1_commands"] == 2 and s["emotion"] == "surprised")
                     assert state["test_fixture"]["b1_gestures"] == ["wave", "shrug"]
                     assert state["emotion"] == "surprised"
-                    page.evaluate("()=>BMODesktop.control('cancel')")
-                    state = wait(lambda s: not s["conversation_busy"] and not s["motion"]["active"])
+                    state = control_and_wait('cancel')
                     assert state["test_fixture"]["b1_holds"] >= 2
                     pause(.25)
                     assert fixture.features()["test_fixture"]["b1_commands"] == 2
@@ -120,8 +177,8 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", *, include_media=T
                     gp8()
                     state = wait(lambda s: s["test_fixture"]["b1_commands"] == 3)
                     assert state["test_fixture"]["b1_gestures"] == ["wave", "shrug", "celebrate"]
-                    page.evaluate("()=>BMODesktop.control('stop')")
-                    state = wait(lambda s: not s["conversation_busy"] and s["motion"]["stopped"])
+                    state = control_and_wait('stop')
+                    assert state['motion']['stopped']
                     assert state["test_fixture"]["b1_commands"] == 3
                     assert state["test_fixture"]["b1_stops"] == 1
                     assert state["test_fixture"]["b1_latched"]
