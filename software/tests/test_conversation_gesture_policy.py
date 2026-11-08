@@ -61,6 +61,18 @@ class ConversationGesturePolicyTests(unittest.TestCase):
                              'automatic_gesture_context_suppressed')
         self.assertEqual(self.policy.snapshot(100.)['started_in_window'], 0)
 
+    def test_surprise_requires_surprised_face_and_keeps_existing_suppression_and_quota(self):
+        surprise = replace(self.plan, face_emotion='surprised', delivery_id='curious',
+                           gesture_id='shrug', gesture_context='surprise')
+        self.assertEqual(self.reason(plan=surprise), 'eligible')
+        self.assertEqual(self.reason(plan=replace(surprise, face_emotion='neutral')),
+                         'automatic_gesture_context_required')
+        self.assertEqual(self.reason(plan=surprise, has_action=True), 'automatic_gesture_action_turn')
+        self.assertEqual(self.reason(plan=replace(surprise, sensitive_context=True)),
+                         'automatic_gesture_context_suppressed')
+        self.policy.started('other', 90.)
+        self.assertEqual(self.reason(plan=surprise), 'automatic_gesture_cooldown')
+
     def test_wave_needs_first_conversation_or_ten_minute_gap(self):
         self.assertTrue(self.policy.greeting_eligible(100.))
         self.policy.last_conversation = 100.

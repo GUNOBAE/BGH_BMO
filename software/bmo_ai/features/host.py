@@ -2071,6 +2071,9 @@ class FeatureHost(ProductVideoFlow):
         if self._voice_provider_snapshot().get('blocked') or self._cloud_provider_snapshot()['blocked'] or self.modes.mode == 'video':
             return False
         self.request_budget.admit()
+        finish_performance = getattr(self.motion, 'finish_performance', None)
+        if callable(finish_performance):
+            finish_performance(reason='new_turn')
         self._transition("conversation")
         self._greeting_eligible = self._automatic_gestures.greeting_eligible(self.clock())
         self.session.expression_client.set_context({"version": 1, "simulation": self.runtime.simulate,
@@ -2570,7 +2573,14 @@ class FeatureHost(ProductVideoFlow):
                         entry = {"duplicate": True}  # Never decorate without a reservation.
                     if not entry["duplicate"]:
                         try:
-                            result = self.motion.submit(proposal["gesture"], request_id=request,
+                            perform = getattr(self.motion, 'start_performance', None)
+                            if self.character_life and callable(perform):
+                                result = perform(proposal['gesture'],
+                                    performance_context=proposal['character_plan'].gesture_context,
+                                    request_id=request, session_id=self.session.session_id,
+                                    turn_id=turn, mode_generation=generation, started_at=at)
+                            else:
+                                result = self.motion.submit(proposal["gesture"], request_id=request,
                                 session_id=self.session.session_id, turn_id=turn, mode_generation=generation,
                                 started_at=at)
                         except Exception:
@@ -2586,6 +2596,9 @@ class FeatureHost(ProductVideoFlow):
                             self._finish_result(result)
             elif kind == "ended" and turn in self._proposals:
                 self._proposals[turn]["ended"] = True
+                finish_performance = getattr(self.motion, 'finish_performance', None)
+                if callable(finish_performance):
+                    finish_performance(turn_id=turn, reason='playback_ended')
                 if self._arm_turn_state.get('turn_id') == turn:
                     self._arm_turn_state['stage'] = 'ended'
         for event in finished:
@@ -2594,6 +2607,10 @@ class FeatureHost(ProductVideoFlow):
             if event.code in ('authentication', 'permission', 'model', 'missing_key', 'missing_sdk'):
                 self._cloud_runtime_error = event.code
             finished_turn = f"{self.session.session_id}:{event.turn}"
+            if event.code != 'ok':
+                finish_performance = getattr(self.motion, 'finish_performance', None)
+                if callable(finish_performance):
+                    finish_performance(turn_id=finished_turn, reason='cancel')
             if self._arm_turn_state.get('turn_id') == finished_turn and event.code != 'ok':
                 self._arm_turn_state.update(stage='cancelled' if event.code == 'cancelled' else 'error',
                                            eligible_at_player_start=False)
@@ -2767,6 +2784,10 @@ class FeatureHost(ProductVideoFlow):
         for event in self.motion.poll():
             if event.kind == "motion_result":
                 data = event.data
+                current_turn = self._arm_turn_state.get('turn_id')
+                if (current_turn and event.request_id == 'gesture_' + uuid5(self._namespace, current_turn).hex
+                        and event.mode_generation == self.modes.generation):
+                    self._arm_turn_state.update(result_status=data['status'], result_code=event.code)
                 result = HostResult(event.request_id, data["status"], event.code,
                                     data.get("simulated", True), data.get("executed", False),
                                     data.get("completed", False),

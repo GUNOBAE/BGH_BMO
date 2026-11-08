@@ -317,7 +317,14 @@ class FullBatchSemanticHostTests(unittest.TestCase):
                     self.assertTrue(started.wait(2))
                     host.poll()
                     frames = host.motion.link.port.sent
-                    self.assertEqual(sum(x.startswith(b'B1 DO ') for x in frames), int(enabled))
+                    # This fixture is the deployed v1 board. It can still run
+                    # explicit named DO, but cannot safely imitate v3 speech
+                    # entry/hold/return with an old long gesture.
+                    self.assertFalse(any(x.startswith((b'B1 DO ', b'B1 ACT ')) for x in frames))
+                    self.assertEqual(any(x.startswith(b'B1 CAPS ') for x in frames), enabled)
+                    if enabled:
+                        self.assertIn('arm_performance_firmware_required',
+                            host.snapshot()['system_diagnostics']['arms']['conversation']['blocked_reasons'])
                     self.assertEqual(len(provider.requests), 1)
                 finally:
                     release.set()

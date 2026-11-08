@@ -508,6 +508,7 @@ function renderArms(next){
  if(stateTitle)$('arms-status').textContent=stateTitle+' · '+$('arms-status').textContent;
  if(prepareCode==='arm_prepare_firmware_required')$('arms-status').textContent+=' 파이에서 검토된 복귀 프로토콜 설치가 필요해요.';
  else if(armState==='stopped'&&prepareAvailable)$('arms-status').textContent+=' 현재 상태를 확인하려면 팔 다시 준비를 눌러 주세요. 준비만으로 움직이지 않아요.';
+ if(motion.performance_supported===false)$('arms-status').textContent+=' 대화 연출은 파이에서 새 발화 연출 후보 검수가 필요해요. 메뉴 동작은 별도로 사용할 수 있어요.';
  if(!armPreferencePending){$('arms-enabled').checked=usage.enabled===true;$('arms-conversation').checked=usage.conversation_gestures===true;}
  $('arms-enabled').disabled=armPreferencePending||typeof usage.enabled!=='boolean';$('arms-conversation').disabled=armPreferencePending||typeof usage.conversation_gestures!=='boolean';
  const key=JSON.stringify([names,ready]);

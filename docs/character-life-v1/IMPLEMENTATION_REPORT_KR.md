@@ -1,5 +1,64 @@
 # BMO Character Life v1 구현·검증 기록
 
+## 2026-11-09 음악 중단·답변 재생·발화 팔 연출
+
+이 절은 아래 과거 기록보다 최신이다. exact 후보와 같은 SHA의 push/PR CI는
+PR #40 `CLOUD-MUSIC-RECOVERY-READY-20261109` 및 `CLOUD-SPEECH-ARMS-READY-20261109`
+인계를 따른다. 설치·같은 아이콘 실행·사용자 승인은 코드/자동검사와 별도다.
+
+- 음악: 일반 blur/hidden은 음악 pause를 만들지 않는다. 단일 page-owned Worker가
+  화면 polling을 맡고 숨김에서도 연결을 확인한다. 부모의 각 응답 ACK가 없으면
+  다음 요청을 하지 않아 frozen/닫힌 문서를 무한 생존시키지 않는다. 기존 3초
+  shell watchdog과 Desktop disconnect 보호는 유지한다. 실제 Chromium 숨김
+  3초 초과, 문서 종료/freeze, 영상 decode, GP8, pause→seek→play와 대화 복귀를
+  합성 자산으로 검사한다. 설정값이나 HTTP 빈도를 실물 fps/청취로 보고하지 않는다.
+- `media_diagnostics`는 SHA/run/곡/모드/위치/길이/입력·이벤트 원인/브라우저 상태와
+  원래 출력 오류·cleanup 오류를 구분한다. live 감독 음악 실행만 private
+  `~/.local/state/bmo/media-diagnostics/events.json`에 최대32건을 저장한다.
+  `XDG_STATE_HOME`이 있으면 그 아래를 사용한다. 원문·파일 경로·키·오디오는 제외한다.
+  자연 종료와 수동 취소, video decode/play 거절, PCM underrun/stall은 구분한다.
+  `GET /api/diagnostics/media`는 기존 loopback/origin 보호 안에서 heartbeat나
+  장치 상태를 바꾸지 않는 수동 조회다. 오류의 마지막 consumed/submitted/queued
+  frame·rate·monotonic 시각을 정리 뒤에도 보존한다.
+  Pi 댓글6725896507은 실제 blur→paused와 포커스 변화 없는 양 모드 media_failed를
+  별개로 재현했다. 댓글6726186614의 동일 Video PCM 격리51.484초 완주는 GUI/Host
+  없는 조건의 PASS이며 앱 완주나 청취 PASS가 아니다. 원래 PCM 실패 원인은
+  아직 미확정이다. 최신 사용자 저장 음량5%를 자동으로50%로 되돌리지 않는다.
+- Pi 댓글6725739173에서 과거48의 v2 진단30개가 새 timing 키 부재 때문에 모두
+  거부되어7b 진단 저장이 꺼졌음이 확인됐다. 알려진 과거 키만 검증해 기존 행을
+  그대로 보존하고 새 v3 행을 추가한다. 기록 삭제나 실패 무시는 하지 않는다.
+  v3는 run_id/turn_id/실제 재생 경로와 단계·실패·취소 시점을 함께 남긴다.
+- 1초 이하 검증된 캐시 반응은 Fish 본문과 단일 출력으로 다운로드 중 재생한다.
+  전체 WAV 합성 완료 대기를 제거하고 완료된 전체 응답만 repeat에 남긴다.
+  긴 비언어 캐시 접두사는 기존 같은 Fish 요청의 짧은 cue로, 긴 대사 접두사는
+  생략해 고정 대기를 줄인다. 자산·개별 OFF·gain은 보존한다. first PCM/반응 시작/
+  본문 PCM 제출/player-start를 분리하며 prefix 또는 inline cue의 첫 소리를
+  실제 본문 시작으로 간주하지 않는다. 캐시 포맷이 맞지 않으면 해당 접두 반응만
+  생략하고 검증된 Fish 본문 스트리밍을 유지하며 경로를 기록한다.
+- 동일 GPT 응답에 놀람 맥락을 허용한다. 승인 surprised 얼굴·짧은 gasp·작은 팔
+  상승만 함께 허용하며 정보/장치/진지한 고민 억제와 반복·반응 빈도 제한을 유지한다.
+  모델·reasoning·Aaron·Beemo·gain·VAD는 바꾸지 않았다. 새7b 지연 수치는 아직
+  없으며48의8.723초를 현재 성능으로 사용하지 않는다. 실제 본문 첫 소리와 억양은
+  Pi 실측/청취가 필요하다. DNS/연결/응답 헤더 선점 취소의 기존 한계도 남는다.
+- 실제 LegacyMotionFeature/B1에 token별 진입/유지/복귀를 연결했다. 한 답변1회,
+  45초·이동5분2회와 명시적 동작의 구분은 유지한다. 인사는 한 팔, 놀람은 작은
+  양팔 상승이며 발화 종료/새 턴/일반 취소에는 제한된 정상 복귀를 큐에 넣는다.
+  도착을 기다려 음성·다음 입력을 막지 않는다. STOP/GP7/fault/불명 상태는 HOLD/
+  STOP 우선이며 늦은 이전 이벤트가 다음 동작을 살리지 않는다. 고정 유지 상한이며
+  단어별 강조 구간 동기화나 실제 위치 도착을 검증한 것은 아니다.
+- 보드 v1/v2에 새 연출을 긴 DO로 자동 대체하지 않는다. 기존 메뉴·명시적 음성
+  동작은 유지하고 대화 연출은 firmware-required로 구분한다. 별도
+  [v3 검토 후보·정확한 SHA·현재 감독 적용·복귀](../../firmware/staging/bmo_arm_legacy_bridge_v3/README_KR.md)를
+  제공한다. 기존 v2 재준비와 구분하며 핀·보정·좌우 반전·속도 상한·수동 동작은
+  보존한다. 실제 보드 쓰기·서보 동작은 Cloud에서 수행하지 않았다.
+
+Pi는 기존 앱을 정상 종료한 뒤 dirty 작업을 보존하고 fast-forward만 적용한다.
+private runner의 기존 인수 절차로 **목표 SHA = 설치 SHA = runner 인수 SHA =
+BMO Candidate 아이콘 실행본**을 확인한다. 먼저 같은 아이콘에서 음악 두 모드,
+pause/seek/play·GP8 종료·다음 대화를 확인한다. 보드 후보 적용은 별도 현재 감독
+조건과 exact SHA 검토 후 진행한다. 정상본·사적 자산·preferences는 교체하지 않는다.
+
+
 ## 2026-11-08 일상 조작·명시적 팔 복귀·답변 재생 후속
 
 이 절은 아래 과거 구현 기록보다 최신이다. exact 후보 SHA와 push/PR CI는 PR #40의 `CLOUD-DAILY-CONTROLS-READY-20261108` 인계에서 확인한다. Pi는 자동 갱신하지 않는다.

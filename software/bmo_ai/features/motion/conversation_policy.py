@@ -28,7 +28,9 @@ class ConversationGesturePolicy:
         context = getattr(plan, 'gesture_context', 'none')
         if (plan.gesture_id, context) not in {
                 ('wave', 'greeting'), ('celebrate', 'achievement'),
-                ('shrug', 'playful'), ('shrug', 'hesitation')}:
+                ('shrug', 'playful'), ('shrug', 'hesitation'), ('shrug', 'surprise')}:
+            return 'automatic_gesture_context_required'
+        if context == 'surprise' and plan.face_emotion != 'surprised':
             return 'automatic_gesture_context_required'
         if plan.gesture_id == 'wave' and not greeting_eligible:
             return 'automatic_greeting_recent_conversation'

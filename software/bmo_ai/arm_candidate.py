@@ -5,7 +5,8 @@ or rolling back requires a present supervisor, isolated servo power, a clear
 workspace, an immediate physical cutoff, and explicit acknowledgement of that
 reload risk. These declarations are not sensor evidence. No serial/reset,
 calibration or boot change is performed here. --recovery-protocol selects the
-separate reviewed v2 helper+code migration, retaining the same safety checks.
+separate reviewed v2 helper+code migration; --speech-performance selects v3.
+Both retain the same current supervisor and backup/rollback requirements.
 """
 import argparse
 import hashlib
@@ -125,7 +126,7 @@ def candidate_transition(*, action='dry_run', mount=MOUNT, work_directory=None,
                          reviewed_sha=None, user_present=False, servo_power_isolated=False,
                          clearance_verified=False, physical_cutoff_ready=False,
                          reload_risk_acknowledged=False, recovery_protocol=False,
-                         reviewed_helper_sha=None):
+                         reviewed_helper_sha=None, speech_performance=False):
     """Prepare/apply/restore exact reviewed bytes; never imply physical success."""
     if action not in ('dry_run', 'prepare', 'apply', 'rollback'):
         raise ArmCandidateError('invalid_action')
@@ -134,6 +135,13 @@ def candidate_transition(*, action='dry_run', mount=MOUNT, work_directory=None,
         reload_risk_acknowledged=reload_risk_acknowledged)
     if any(type(value) is not bool for value in declarations.values()):
         raise ArmCandidateError('literal_operator_declarations_required')
+    if type(speech_performance) is not bool or speech_performance and recovery_protocol:
+        raise ArmCandidateError('select_one_firmware_candidate')
+    if speech_performance:
+        from .arm_performance_candidate import transition
+        return transition(action=action, mount=mount, work_directory=work_directory,
+            reviewed_sha=reviewed_sha, reviewed_helper_sha=reviewed_helper_sha,
+            declarations=declarations)
     if type(recovery_protocol) is not bool:
         raise ArmCandidateError('literal_recovery_selection_required')
     if recovery_protocol:
@@ -238,6 +246,7 @@ def main(argv=None):
     parser.add_argument('--work-directory', type=Path)
     parser.add_argument('--reviewed-code-sha', dest='reviewed_sha')
     parser.add_argument('--recovery-protocol', action='store_true')
+    parser.add_argument('--speech-performance', action='store_true')
     parser.add_argument('--reviewed-helper-sha')
     for name in _FLAGS:
         parser.add_argument('--'+name.replace('_', '-'), action='store_true')

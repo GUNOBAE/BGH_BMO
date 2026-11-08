@@ -42,7 +42,8 @@ def conversation_arm_status(*, simulate, supervised_requested,
     transport = transport if type(transport) is dict else {}
     response = transport.get("last_response_code")
     enabled_at_ack = (False if response == "DISABLED" else True if response in
-                      ("READY", "ALIVE", "ACCEPTED", "HELD", "STOPPED") else None)
+                      ("READY", "ALIVE", "ACCEPTED", "HELD", "STOPPED", "PERFORMANCE_READY",
+                       "PERFORM_ENTER", "PERFORM_HOLD", "PERFORM_RETURN", "PERFORM_IDLE") else None)
     setup_code = _code(setup_error)
     if setup_error is not None and setup_code is None:
         setup_code = "arm_setup_failed"
@@ -72,6 +73,8 @@ def conversation_arm_status(*, simulate, supervised_requested,
         reasons.append("arm_usage_off")
     if emotion_arms_effective is not True:
         reasons.append("emotion_arms_off")
+    if adapter.get('performance_supported') is False:
+        reasons.append('arm_performance_firmware_required')
     if simulate is not True and adapter.get("real_enabled") is not True:
         reasons.append("arm_adapter_unavailable")
     blocked = adapter.get("blocked_reasons", ())

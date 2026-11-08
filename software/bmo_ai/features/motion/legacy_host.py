@@ -16,13 +16,20 @@ NAMED_GESTURES = frozenset(("wave", "celebrate", "shrug", "raise_left_arm",
 MODEL_ONLY = frozenset(("wave", "celebrate", "shrug"))
 RESPONSE_CODES = frozenset(("READY", "DISABLED", "STOPPED", "ALIVE", "HELD",
     "ACCEPTED", "REQUEST_CONFLICT", "INVALID", "STALE_BOOT", "INVALID_REQUEST_ID",
-    "STALE_REQUEST", "BUSY", "DENIED", "RECOVERABLE", "FAULT_STOPPED", "PREPARED"))
+    "STALE_REQUEST", "BUSY", "DENIED", "RECOVERABLE", "FAULT_STOPPED", "PREPARED",
+    "PERFORMANCE_READY", "PERFORM_ENTER", "PERFORM_HOLD", "PERFORM_RETURN", "PERFORM_IDLE",
+    "POSE_UNSUITABLE", "STALE_PERFORMANCE"))
 MAX_REQUEST_SEQUENCE = 99999999999999999999
 # B1 has no position/completion ACK. Keep heartbeats through the firmware's
 # 15-second hard gesture budget; the host finally HOLDs rather than abandoning
 # a possibly unfinished gesture. This is not proof of a physical end position.
 ACTIVE_BUDGET_S = 15.2
 LEDGER_LIMIT = 4096
+PERFORMANCE_PROFILES = {("wave", "greeting"): "greeting", ("shrug", "surprise"): "surprise",
+    ("celebrate", "achievement"): "celebration", ("shrug", "playful"): "playful",
+    ("shrug", "hesitation"): "playful"}
+PERFORMANCE_PHASES = {"PERFORM_ENTER":"entering", "PERFORM_HOLD":"holding",
+                      "PERFORM_RETURN":"returning", "PERFORM_IDLE":"idle"}
 
 
 def _finite_time(value):
@@ -59,9 +66,13 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
     expected_digest = hashlib.sha256(template.replace(
         b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)).hexdigest()
     if expected_digest != reviewed_sha and root.name == "bmo_arm_legacy_bridge_v1":
-        candidate = root.with_name("bmo_arm_legacy_bridge_v2")
-        if candidate.is_dir():
-            return validate_legacy_install(candidate, reviewed_sha, mount=mount)
+        for name in ("bmo_arm_legacy_bridge_v2", "bmo_arm_legacy_bridge_v3"):
+            candidate = root.with_name(name)
+            if candidate.is_dir():
+                candidate_bytes = (candidate/"code.py").read_bytes().replace(
+                    b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)
+                if hashlib.sha256(candidate_bytes).hexdigest() == reviewed_sha:
+                    return validate_legacy_install(candidate, reviewed_sha, mount=mount)
     if template.count(b"\nREMOTE_ENABLED = False\n") != 1:
         raise LegacyArmError("invalid_reviewed_template")
     expected = template.replace(b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)
@@ -98,6 +109,7 @@ class LegacyArmLink:
         self.last_response_code = None
         self.last_request_id = None
         self.prepare_code = None
+        self.performance_supported = None
 
     def _request(self, command, *, is_hello=False, before_write=None, recovery=False):
         known_stop = self.stopped and self.last_response_code == "STOPPED"
@@ -222,6 +234,43 @@ class LegacyArmLink:
             raise LegacyArmError("gesture_" + code.lower())
         return code
 
+    def performance_capability(self):
+        if self.performance_supported is None:
+            code = self._request("CAPS {rid} {boot}")
+            self.performance_supported = code == "PERFORMANCE_READY"
+        return self.performance_supported
+
+    def performance_start(self, profile, *, before_write):
+        if profile not in PERFORMANCE_PROFILES.values():
+            raise LegacyArmError("invalid_performance")
+        try:
+            permission = self.motor_permission()
+        except Exception:
+            permission = False
+        if permission is not True:
+            raise LegacyArmError(self.permission_code)
+        code = self._request("ACT {rid} {boot} " + profile, before_write=before_write)
+        token = self.last_request_id
+        if code != "PERFORM_ENTER":
+            raise LegacyArmError("performance_" + code.lower())
+        return token
+
+    def performance_end(self, token):
+        if IDENT.fullmatch(token or "") is None:
+            raise LegacyArmError("invalid_performance_token")
+        code = self._request("END {rid} {boot} " + token)
+        if code not in PERFORMANCE_PHASES:
+            raise LegacyArmError("performance_" + code.lower())
+        return PERFORMANCE_PHASES[code]
+
+    def performance_pulse(self, token):
+        if IDENT.fullmatch(token or "") is None:
+            raise LegacyArmError("invalid_performance_token")
+        code = self._request("PULSE {rid} {boot} " + token)
+        if code not in PERFORMANCE_PHASES:
+            raise LegacyArmError("performance_" + code.lower())
+        return PERFORMANCE_PHASES[code]
+
     def ping(self):
         if self.boot is None or self._request("PING {rid} {boot}") != "ALIVE":
             raise LegacyArmError("heartbeat_failed")
@@ -278,6 +327,8 @@ class LegacyMotionFeature:
         self.closed = False
         self.fault = None
         self.last_error = None
+        self.performance = None
+        self.last_performance = None
 
     def set_context(self, session_id, turn_id, mode_generation):
         if type(turn_id) is int and turn_id >= 0:
@@ -296,7 +347,7 @@ class LegacyMotionFeature:
         if not request_id_ok(request_id):
             raise FeatureError("invalid_request_id")
         if (self.closed or self.stopped or self.fault or self.pending is not None
-                or self.active_until is not None or request_id in self.seen):
+                or self.active_until is not None or self.performance is not None or request_id in self.seen):
             return HostResult(request_id, "rejected", "arm_unavailable", simulated=False)
         if len(self.seen) >= LEDGER_LIMIT:
             return HostResult(request_id, "rejected", "motion_ledger_full", simulated=False)
@@ -317,6 +368,114 @@ class LegacyMotionFeature:
             self._auto_contexts.add(self.context)
         self.pending = (request_id, gesture_id, started_at, self.context, explicit, now)
         return HostResult(request_id, "accepted", "gesture_queued", simulated=False)
+
+    def start_performance(self, gesture_id, *, performance_context, request_id, session_id,
+                          turn_id, mode_generation, started_at):
+        """Queue one dialogue decoration on this same B1 owner, never wait for pose."""
+        profile = PERFORMANCE_PROFILES.get((gesture_id, performance_context))
+        if profile is None:
+            return HostResult(request_id, "rejected", "invalid_performance_context", simulated=False)
+        # Reuse all existing admission/dedup/current-turn restrictions, then
+        # reserve this controller's one slot for the token-bound lifecycle.
+        result = self.submit(gesture_id, request_id=request_id, session_id=session_id,
+            turn_id=turn_id, mode_generation=mode_generation, started_at=started_at)
+        if result.status != "accepted":
+            return result
+        pending, self.pending = self.pending, None
+        self.performance = dict(pending=pending, profile=profile, phase="queued", token=None,
+                                finish_reason=None, next_pulse=0., deadline=None)
+        return HostResult(request_id, "accepted", "performance_queued", simulated=False)
+
+    def finish_performance(self, turn_id=None, reason="playback_ended"):
+        """Queue a normal bounded return. STOP/manual/fault can never enter here."""
+        current = self.performance
+        if current is None or (turn_id is not None and str(turn_id) != current['pending'][3][1]):
+            return False
+        if reason not in ('playback_ended', 'new_turn', 'cancel', 'listening', 'thinking', 'mode_change'):
+            raise FeatureError('invalid_performance_finish_reason')
+        if self.closed or self.stopped or self.fault or self.link.closed or self.link.stopped or self.link.unknown:
+            self._retire_performance('performance_return_suppressed', 'cancelled')
+            return False
+        current['finish_reason'] = current['finish_reason'] or reason
+        if current['token'] is None and current['phase'] == 'queued':
+            self._retire_performance('performance_cancelled_before_start', 'cancelled')
+        return True
+
+    def _performance_fresh(self, current):
+        pending = current['pending']; now = _clock_value(self.clock)
+        return (self.performance is current and current['finish_reason'] is None
+                and self.context == pending[3] and _finite_time(now)
+                and 0 <= now-pending[2] <= self.ttl)
+
+    def _retire_performance(self, code, status, *, executed=None):
+        current, self.performance = self.performance, None
+        if current is None:
+            return
+        self.last_performance = dict(profile=current['profile'], phase='ended' if status=='succeeded' else 'interrupted',
+            code=code, finish_reason=current['finish_reason'], turn_id=current['pending'][3][1],
+            position_verified=False)
+        self._event(current['pending'], status, code,
+                    executed=current['token'] is not None if executed is None else executed)
+
+    def _poll_performance(self):
+        current = self.performance
+        if current is None:
+            return
+        try:
+            now = _clock_value(self.clock)
+            if not _finite_time(now):
+                raise LegacyArmError('invalid_motion_clock')
+            if current['phase'] == 'queued':
+                if not self._performance_fresh(current):
+                    self._retire_performance('stale_playback_start', 'rejected')
+                    return
+                if self.link.boot is None:
+                    self.link.hello()
+                if not self.link.performance_capability():
+                    self._retire_performance('arm_performance_firmware_required', 'rejected')
+                    return
+                if not self._performance_fresh(current):
+                    self._retire_performance('stale_playback_start', 'rejected')
+                    return
+                current['phase'] = 'starting'
+                def before_write():
+                    if not self._performance_fresh(current):
+                        return False
+                    current['token'] = self.link.last_request_id
+                    return True
+                token = self.link.performance_start(current['profile'], before_write=before_write)
+                if self.performance is not current:
+                    # A STOP while ACK was in flight already retired this token;
+                    # never follow it with an automatic return or fresh ACT.
+                    return
+                current['token'] = token
+                current['phase'] = 'entering'
+                self.last_gesture = now
+                current['deadline'] = now+4.2
+                self._event(current['pending'], 'running', 'performance_ack_position_unverified', executed=True)
+            if self.performance is not current or current['token'] is None:
+                return
+            if self.link.stopped or self.link.unknown:
+                raise LegacyArmError('performance_stopped_or_unknown')
+            if current['finish_reason'] and current['phase'] not in ('returning', 'idle'):
+                current['phase'] = self.link.performance_end(current['token'])
+                current['next_pulse'] = now+.14
+            elif now >= current['next_pulse']:
+                current['phase'] = self.link.performance_pulse(current['token'])
+                current['next_pulse'] = now+.14
+            if current['phase'] == 'idle':
+                self._retire_performance('performance_return_commanded', 'succeeded')
+            elif now >= current['deadline']:
+                self.link.hold()
+                self._retire_performance('performance_budget_held', 'unknown')
+        except LegacyArmError as error:
+            self.last_error = error.code
+            if error.code in ('stale_playback_start', 'performance_pose_unsuitable', 'performance_busy'):
+                self._retire_performance(error.code, 'rejected')
+            else:
+                # A missing ACK/STOP/GP7/fault never earns an automatic return.
+                self.fault = 'arm_link_unknown'
+                self._retire_performance(error.code, 'unknown')
 
     def _pending_fresh(self, expected=None):
         if self.pending is None or expected is not None and self.pending is not expected:
@@ -346,6 +505,10 @@ class LegacyMotionFeature:
 
     def poll(self):
         if self.closed or self.stopped or self.fault:
+            result, self.events = tuple(self.events), []
+            return result
+        if self.performance is not None:
+            self._poll_performance()
             result, self.events = tuple(self.events), []
             return result
         pending = self.pending
@@ -444,6 +607,10 @@ class LegacyMotionFeature:
         return result
 
     def cancel(self, request_id=None):
+        if self.performance is not None:
+            if request_id in (None, self.performance['pending'][0]):
+                self.finish_performance(reason='cancel')
+            return
         if self.pending is not None and request_id not in (None, self.pending[0]):
             return
         if (self.pending is None and self._active_pending is not None
@@ -467,6 +634,15 @@ class LegacyMotionFeature:
     def stop(self):
         if self.stopped:
             return
+        if self.performance is not None:
+            self._retire_performance('performance_stopped', 'cancelled')
+            # HOLD/STOP has priority over queued normal returns, including while
+            # the start acknowledgement is in flight. No END is sent here.
+            if self.link.boot is not None and not self.link.unknown and not self.link.stopped:
+                try:
+                    self.link.hold()
+                except LegacyArmError as error:
+                    self.fault = 'arm_link_unknown'; self.last_error = error.code
         self.cancel()
         self.stopped = True
         try:
@@ -476,7 +652,7 @@ class LegacyMotionFeature:
             self.last_error = error.code
 
     def prepare(self):
-        if self.closed or self.pending is not None or self.active_until is not None or self._inflight_pending is not None:
+        if self.closed or self.pending is not None or self.active_until is not None or self._inflight_pending is not None or self.performance is not None:
             raise FeatureError("arm_prepare_busy_or_closed")
         try:
             self.link.prepare()
@@ -531,18 +707,23 @@ class LegacyMotionFeature:
         if unknown and not blocked:
             blocked.append('arm_transport_error')
         operation = ('closed' if closed else 'stopped' if stopped else 'fault' if unknown
-                     else 'queued' if self.pending is not None else 'active'
-                     if self.active_until is not None else 'idle')
+                     else 'queued' if self.pending is not None or self.performance is not None and self.performance['phase']=='queued'
+                     else 'active' if self.active_until is not None or self.performance is not None else 'idle')
         return {"simulated": False, "real_enabled": True,
                 "readiness": "BLOCKED" if closed or stopped else "READY" if usable else "UNVERIFIED",
                 "reason_code": reason,
                 "last_error_code": self.last_error,
                 "queued": int(self.pending is not None),
-                "active": self.pending is not None or self.active_until is not None,
+                "active": self.pending is not None or self.active_until is not None or self.performance is not None,
                 "stopped": stopped, "closed": closed,
                 "supported_gestures": sorted(NAMED_GESTURES), "side_reference": "bmo_own",
                 "blocked_reasons": blocked, "operation": operation,
                 "cancel_semantics": "hold_current_commanded_position",
+                "speech_cancel_semantics": "bounded_return_only_with_known_active_token",
+                "performance": (dict(profile=self.performance['profile'], phase=self.performance['phase'],
+                    finish_reason=self.performance['finish_reason'], turn_id=self.performance['pending'][3][1],
+                    position_verified=False) if self.performance is not None else self.last_performance),
+                "performance_supported": self.link.performance_supported,
                 "stop_semantics": "board_latch_not_cleared_by_host_restart_not_power_cut",
                 "position_verified": False, "physical_verified": False,
                 "prepare_code": self.link.prepare_code,
