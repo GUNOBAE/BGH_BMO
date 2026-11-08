@@ -293,8 +293,16 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                     assert diagnostic["enabled"] is True
                     assert diagnostic["contains_audio"] is diagnostic["contains_transcript"] is False
                     assert diagnostic["failure"] is None and 0 < len(diagnostic["events"]) <= 96
-                    assert {"microphone", "vad", "stt", "ai", "fish", "playback"} <= {
-                        event["stage"] for event in diagnostic["events"]}
+                    stages={event["stage"] for event in diagnostic["events"]}
+                    assert {"microphone", "vad", "stt", "ai", "playback"} <= stages
+                    # This fixture synthesizes locally. An unconditional Fish
+                    # start marker used to fabricate a provider stage; preserve
+                    # the product fix and verify the actual route in the UI.
+                    assert "fish" not in stages
+                    assert diagnostic['playback_path']=='synthetic'
+                    assert not any(name.startswith('tts_') for name in diagnostic['markers_ms'])
+                    assert diagnostic['timings']['tts_to_first_byte_ms']==dict(status='UNMEASURED',value_ms=None)
+                    assert diagnostic['timings']['first_byte_to_player_ms']==dict(status='UNMEASURED',value_ms=None)
                     panel = page.locator("#system-dialog").inner_text()
                     for private in ("Synthetic button question.", "A synthetic desktop response.",
                                     "Private provider fixture detail", "OPENAI_API_KEY", "FISH_API_KEY", directory):
@@ -303,7 +311,7 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                                            headers={"X-BMO-Token": "INVALID_TEST_TOKEN"})[0] == 403
                     assert fixture.features()["test_fixture"]["mic_sources"] == 1
                     page.locator("#system-dialog .dialog-close").click()
-                    checks.append("explicit --ptt-trace shows all six dialogue stages in the closed-by-default system panel without transcript/PCM/keys/private paths; invalid token opens zero sources")
+                    checks.append("explicit --ptt-trace shows the actual synthetic playback route and only executed stages, without fabricated Fish markers/timings or transcript/PCM/keys/private paths; invalid token opens zero sources")
 
                     # Repeat only the retained gained response, never input/brain/synthesis.
                     page.evaluate("()=>BMODesktop.control('repeat')")
