@@ -8,11 +8,60 @@ from pathlib import Path
 import sys
 import tempfile
 import time
+from unittest.mock import patch
 
 SOFTWARE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOFTWARE))
 from checks.check_desktop_app_browser import DesktopFixture, FIXTURE
+from checks import check_desktop_app_browser as desktop_fixture
 from bmo_ai.screen_profiles import SCREEN_PROFILES
+
+
+
+def _onset_interleaving_child():
+    """Schedule real player-start AFTER the Host's event drain for one turn.
+
+    Only injected IO scheduling changes. Record the actual published snapshot
+    before the next owner poll; do not extend output duration or event freshness.
+    """
+    child = desktop_fixture.CHILD
+    spawn = "    process=real_popen(command,**options);players.append(process);counts['players']+=1"
+    gated_spawn = """    if scenario=='character' and (root/'split-onset').exists():
+        deadline=time.monotonic()+3
+        while not (root/'onset-refresh-entered').exists():
+            if time.monotonic()>deadline:raise AssertionError('Onset owner boundary not reached')
+            time.sleep(.001)
+""" + spawn
+    anchor = "    host=FeatureHost(**settings,client=client);hosts.append(host)"
+    owner = anchor + """
+    if scenario=='character':
+        original_refresh=host._refresh
+        def refresh():
+            state=host.session.snapshot()
+            if ((root/'split-onset').exists() and not (root/'onset-interleaving.json').exists()
+                    and state['playback']=='prepared' and state['turn_id'] in host._proposals):
+                (root/'onset-refresh-entered').touch()
+                deadline=time.monotonic()+3
+                while host.session.snapshot()['playback']!='started':
+                    if time.monotonic()>deadline:raise AssertionError('Onset player boundary not reached')
+                    time.sleep(.001)
+                original_refresh()
+                published=host.snapshot()
+                evidence={key:published[key] for key in ('phase','emotion','character_life','system_diagnostics')}
+                (root/'onset-interleaving.json').write_text(json.dumps(evidence))
+                (root/'split-onset').unlink()
+                return
+            original_refresh()
+        host._refresh=refresh
+"""
+    assert child.count(spawn) == child.count(anchor) == 1
+    return child.replace(spawn, gated_spawn).replace(anchor, owner)
+
+
+def _current_player_start_processed(state, turn):
+    """A publication fence independent of the expected emotion/delivery value."""
+    value = state['system_diagnostics']['arms']['conversation']
+    return value['turn_id'] == turn and value['player_start_seen']
 
 
 def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
@@ -21,9 +70,10 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
     before = hashlib.sha256(face.read_bytes()).hexdigest()
     checks = []
     with tempfile.TemporaryDirectory(prefix="bmo-character-browser-") as directory:
-        fixture = DesktopFixture(directory, profile=profile, face=face, scenario="character",
-            extra_args=("--character-life", "--ptt-trace", "--idle-voice", "--wake-word",
-                        "--voice-bank-directory", str(Path(directory)/"character-bank")))
+        with patch.object(desktop_fixture, 'CHILD', _onset_interleaving_child()):
+            fixture = DesktopFixture(directory, profile=profile, face=face, scenario="character",
+                extra_args=("--character-life", "--ptt-trace", "--idle-voice", "--wake-word",
+                            "--voice-bank-directory", str(Path(directory)/"character-bank")))
         try:
             status, initial_html = fixture.request("/")
             assert status == 200 and "<h1>Starting BMO…</h1>".encode() in initial_html
@@ -100,15 +150,39 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium"):
                     page.wait_for_function("()=>BMODesktop.state?.character_life?.presence?.mode==='quiet'")
                     assert fixture.state()["character_life"]["presence"]["enabled"] is False
                     checks.append("explicit quiet mode suppresses idle speech without changing conversation or OS sleep")
+                    previous_plan = fixture.features()['character_life']['last_played_plan']
+                    (Path(directory)/'split-onset').touch()
                     for question, emotion, delivery in (("우는 연기를 해봐", "crying", "theatrical_crying"),
                                                         ("장난스럽게 화내 봐", "angry", "theatrical_angry")):
+                        previous_turn = fixture.features()['turn_diagnostics']['turn_id']
                         page.evaluate("q=>BMODesktop.control('question',q)", question)
-                        played = wait(lambda s:s["phase"] == "speaking" and s["emotion"] == emotion)
+                        # Session state is worker-owned; last_played_plan is an
+                        # owner-processed diagnostic. Capture the new turn, then
+                        # wait on its actual processed-start marker, not on the
+                        # expected delivery (which must remain an assertion).
+                        current = wait(lambda s:s['turn_diagnostics']['turn_id'] != previous_turn)
+                        turn = current['turn_diagnostics']['turn_id']
+                        played = wait(lambda s:_current_player_start_processed(s, turn))
                         plan = played["character_life"]["last_played_plan"]
-                        assert plan["delivery_id"] == delivery and plan["explicit_acting"]
+                        onset = played['system_diagnostics']['arms']['conversation']
+                        evidence = dict(phase=played['phase'], emotion=played['emotion'],
+                            turn_id=onset['turn_id'], stage=onset['stage'],
+                            player_start_seen=onset['player_start_seen'],
+                            player_start_fresh=onset['player_start_fresh'],
+                            delivery_id=plan['delivery_id'], explicit_acting=plan['explicit_acting'])
+                        assert onset['player_start_fresh'], evidence
+                        assert played['phase'] == 'speaking' and played['emotion'] == emotion, evidence
+                        assert plan["delivery_id"] == delivery and plan["explicit_acting"], evidence
                         page.wait_for_function("e=>BMOIntegration.state?.emotion===e&&document.querySelector('#face').contentWindow.BMOFace.getState().selectedEmotion===e", arg=emotion)
                         wait(lambda s:not s["conversation_busy"])
                         assert fixture.features()["emotion"] == emotion
+                    transient = json.loads((Path(directory)/'onset-interleaving.json').read_text())
+                    assert transient['phase'] == 'speaking' and transient['emotion'] == 'crying'
+                    assert transient['character_life']['last_played_plan'] == previous_plan
+                    pending_turn = transient['character_life']['expression_trace']['turn_id']
+                    assert not _current_player_start_processed(transient, pending_turn)
+                    assert previous_plan['delivery_id'] != 'theatrical_crying'
+                    checks.append("forced player-start after Host event drain proves speaking/face alone precedes historical plan publication; exact current-turn processed-start fences the unchanged delivery assertion")
                     checks.append("explicit crying/angry acting traverses real Host, director, voice, session and unchanged face API")
                     audit = fixture.features()["test_fixture"]
                     page.evaluate("()=>BMODesktop.control('repeat')")
