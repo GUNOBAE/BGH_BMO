@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from bmo_ai.cloud import CloudError
 from bmo_ai.core import BrainResponseError
+from bmo_ai.expression_contract import ExpressionFormatError
 from bmo_ai.features.reply import FeatureClient, COMPOUND_INSTRUCTIONS, COMPACT_COMPOUND_INSTRUCTIONS
 from bmo_ai.integration_profile import integration_config, policy_brain
 from bmo_ai.integration_session import IntegrationSession
@@ -182,6 +183,34 @@ class ProviderEvidenceTests(unittest.TestCase):
                 self.assertEqual(len(session.brain.history), 2)
                 self.assertEqual(len(provider.requests[-1]['input']), 1)
         self.assertEqual(len(provider.requests), 2)  # No repair/retry call.
+
+    def test_reply_apply_keeps_classified_expression_errors_instead_of_generic_apply_code(self):
+        for error in (CloudError('expression_format', 'The reply did not match the expression contract.'),
+                      ExpressionFormatError()):
+            with self.subTest(kind=type(error).__name__):
+                provider = Provider([envelope()])
+                diagnostics = TurnDiagnostics(enabled=True)
+                view = FeatureClient(provider, character_life=True)
+                def apply(*_args):
+                    raise error
+                session = IntegrationSession(integration_config(), provider, simulate=True,
+                    emotion_mode='auto', character_life=True, reply_client=view,
+                    diagnostics=diagnostics, on_reply=apply)
+                try:
+                    self.assertTrue(session.start('A short fixture question.'))
+                    deadline = time.monotonic() + 3
+                    while session.busy and time.monotonic() < deadline:
+                        session.poll(); time.sleep(.002)
+                    self.assertFalse(session.busy)
+                    trace = diagnostics.snapshot()
+                    self.assertEqual(trace['terminal'], 'expression_format')
+                    self.assertEqual(trace['failure']['code'], 'expression_format')
+                    self.assertEqual(trace['stage_metadata']['ai']['ai_substage'], 'reply_apply')
+                    self.assertEqual(session.brain.history, [])
+                    self.assertNotIn('tts_started', trace['markers_ms'])
+                    self.assertEqual(len(provider.requests), 1)
+                finally:
+                    session.close()
 
     def test_original_http_status_and_exception_enum_survive_cloud_error_translation(self):
         class RateLimitError(RuntimeError):

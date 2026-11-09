@@ -18,7 +18,7 @@ from .captions import caption_pair, clean_caption, MODES as CAPTION_MODES
 from .cloud import CloudError
 from .core import BrainResponseError
 from .provider_evidence import observed_call, exception_evidence
-from .expression_contract import ExpressionClient
+from .expression_contract import ExpressionClient, ExpressionFormatError
 from .hardware import FaceState
 from .integration_face import wav_cues, MOUTHS
 from .integration_profile import policy_brain
@@ -105,6 +105,10 @@ class IntegrationApp(ConversationApp):
                         metrics if type(metrics) is dict else self._answer_metrics, 'reply_apply')
                 except TurnCancelled:
                     raise
+                except (CloudError, BrainResponseError):
+                    raise  # Preserve an already classified fixed public cause.
+                except ExpressionFormatError:
+                    raise CloudError('expression_format', 'The reply did not match the expression contract.') from None
                 except Exception:
                     # A completed provider envelope is not an applied reply.
                     # Keep the original safe exception class in evidence while

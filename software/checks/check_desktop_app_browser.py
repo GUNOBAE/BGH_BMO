@@ -8,6 +8,7 @@ device is opened. Production output never needs to disclose this test URL.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import http.client
 import json
@@ -286,6 +287,18 @@ def greeting_factory(*,config,simulate):
 
 def on_started(app):
     apps.append(app)
+    if scenario=='clock_control':
+        original_poll=app.poll
+        def controlled_poll():
+            marker=root/'pause-owner-poll'
+            if marker.exists():
+                (root/'owner-poll-paused').write_text('before DesktopRuntime.poll')
+                deadline=time.monotonic()+3
+                while marker.exists():
+                    if time.monotonic()>deadline:raise AssertionError('Owner poll fixture gate expired')
+                    time.sleep(.002)
+            return original_poll()
+        app.poll=controlled_poll
     if scenario=='character':
         def presence_clock():
             try:offset=float((root/'presence-clock.txt').read_text())
@@ -413,8 +426,8 @@ class DesktopFixture:
             {"run_id": state["run_id"], "screen_sha256": json.loads(payload)["sha256"],
              "frame_version": "synthetic-contract-v1"}})
         if response[0] == 202:
-            self.wait(lambda value: value["progress_percent"] == 100 or value["phase"] == "error")
-            if self.state()["phase"] != "error":
+            settled = self.wait(lambda value: value["progress_percent"] == 100 or value["phase"] == "error")
+            if settled["phase"] != "error":
                 return self.request("/api/desktop", payload={"action": "face_presented", "value":
                     {"run_id": state["run_id"]}})
         return response
@@ -426,6 +439,32 @@ class DesktopFixture:
             if predicate(value):return value
             time.sleep(.01)
         raise AssertionError("Desktop state did not reach expected boundary: " + json.dumps(value))
+
+    @contextmanager
+    def pause_owner_poll(self):
+        """Test-only barrier: publish clock jumps between complete owner polls.
+
+        Atomic file replacement prevents torn values but does not prevent one
+        product poll from observing two offsets across its separate deadlines.
+        Only the explicit clock_control scenario installs this gate.
+        """
+        marker, acknowledged = self.root / "pause-owner-poll", self.root / "owner-poll-paused"
+        acknowledged.unlink(missing_ok=True)
+        marker.write_text("pause at next owner poll")
+        try:
+            deadline = time.monotonic() + 3
+            while True:
+                try:
+                    if acknowledged.read_text() == "before DesktopRuntime.poll":
+                        break
+                except FileNotFoundError:
+                    pass
+                if self.process.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError("Owner poll fixture did not acknowledge pause")
+                time.sleep(.002)
+            yield
+        finally:
+            marker.unlink(missing_ok=True)
 
     def set_clock(self, value):
         """Publish one complete offset while the launcher concurrently reads it."""
