@@ -61,3 +61,49 @@ def response_evidence(response):
     if count is not None:
         result['reasoning_tokens'] = count
     return result
+
+
+# Names are matched, never serialized from an arbitrary exception object. Read
+# the original exception before the cloud adapter replaces its public message.
+_EXCEPTION_CLASSES = {
+    'CloudError': 'cloud_error', 'ExpressionFormatError': 'expression_format_error',
+    'BrainResponseError': 'brain_response_error', 'TypeError': 'type_error',
+    'ValueError': 'value_error', 'KeyError': 'key_error', 'AttributeError': 'attribute_error',
+    'IndexError': 'index_error', 'RuntimeError': 'runtime_error', 'TimeoutError': 'timeout_error',
+    'ConnectionError': 'connection_error', 'OSError': 'os_error', 'AssertionError': 'assertion_error',
+    'AuthenticationError': 'authentication_error', 'PermissionDeniedError': 'permission_denied_error',
+    'APITimeoutError': 'api_timeout_error', 'APIConnectionError': 'api_connection_error',
+    'APIStatusError': 'api_status_error', 'RateLimitError': 'rate_limit_error',
+    'BadRequestError': 'bad_request_error', 'InternalServerError': 'internal_server_error',
+    'NotFoundError': 'not_found_error', 'UnprocessableEntityError': 'unprocessable_entity_error',
+}
+
+
+def exception_evidence(error):
+    result = {'exception_class': _EXCEPTION_CLASSES.get(type(error).__name__, 'other')}
+    status = getattr(error, 'status_code', None)
+    if type(status) is int and 100 <= status <= 599:
+        result['http_status'] = status
+    return result
+
+
+def observed_call(operation, evidence, substage):
+    """One operation, recording its bounded phase/cost even if it raises.
+
+    No response bodies, exception strings/chains or transport request IDs escape.
+    This is observation only: no retry and no exception suppression.
+    """
+    import time
+    if substage not in ('provider_request', 'response_parse', 'reply_apply'):
+        raise ValueError('Unsupported provider observation stage')
+    evidence['ai_substage'] = substage
+    began = time.monotonic()
+    try:
+        return operation()
+    except Exception as error:
+        evidence.update(exception_evidence(error))
+        raise
+    finally:
+        elapsed = max(0., (time.monotonic() - began) * 1000)
+        previous = evidence.get(substage + '_ms', 0.)
+        evidence[substage + '_ms'] = round(min(300000., elapsed + previous), 4)

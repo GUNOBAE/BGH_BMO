@@ -618,8 +618,6 @@ class PttRecorder:
                 if not accepted:
                     raise MicError("invalid_pcm_frame")
                 if self._captured_bytes >= int(16000 * 2 * self.settings["max_duration"]):
-                    gate.release_ptt(generation=generation)
-                    pending = gate.poll()
                     result = PcmCapture(capture_id, generation, "cancelled", "max_buffer", b"", 16000)
                     break
                 desired = "speech" if gate.snapshot()["speech_detected"] else "listening"
@@ -708,7 +706,8 @@ class PttRecorder:
                         result = replace(result, pcm=result.pcm[trim_samples * 2:])
                 self._ready = result
         observed("capture_close", "capture_ready", captured_bytes=len(result.pcm),
-                 duration_ms=len(result.pcm) / 32, capture_end_reason=result.code,
+                 duration_ms=len(result.pcm) / 32, sample_frames=len(result.pcm) // 2,
+                 capture_end_reason=result.code,
                  capture_limit_ms=self.settings["max_duration"] * 1000,
                  preroll_ms=self.preroll_seconds * 1000,
                  trimmed_leading_bytes=trim_samples * 2)
@@ -757,7 +756,8 @@ class PttRecorder:
                 raise MicError("invalid_pcm_result")
             check()
             _timing(self.on_timing, "stt", "wav_ready", at=_clock_now(self.clock),
-                    captured_bytes=len(capture.pcm))
+                    captured_bytes=len(capture.pcm), sample_frames=len(capture.pcm) // 2,
+                    duration_ms=len(capture.pcm) / 32)
             _timing(self.on_timing, "stt", "request_started", at=_clock_now(self.clock))
             result = (transcriber or audio.transcribe)(client, Path(path), model=model, language=language)
             check()

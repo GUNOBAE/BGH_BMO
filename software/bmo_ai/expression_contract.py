@@ -173,11 +173,17 @@ class ExpressionResponses:
 
     def create(self, **request):
         self.reset()
-        from .provider_evidence import request_evidence, response_evidence
+        self.last_call_metrics = {'ai_substage': 'request_build'}
+        from .provider_evidence import request_evidence, response_evidence, observed_call
         adapted = expression_request(request)
         self.last_call_metrics = request_evidence(adapted)
-        response = self._responses.create(**adapted)
+        response = observed_call(lambda: self._responses.create(**adapted),
+            self.last_call_metrics, 'provider_request')
         self.last_call_metrics.update(response_evidence(response))
+        return observed_call(lambda: self._process_response(response),
+            self.last_call_metrics, 'response_parse')
+
+    def _process_response(self, response):
         status = getattr(response, "status", None)
         incomplete = getattr(response, "incomplete_details", None)
         error = getattr(response, "error", None)

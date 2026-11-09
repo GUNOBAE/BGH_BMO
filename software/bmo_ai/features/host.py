@@ -1394,10 +1394,14 @@ class FeatureHost(ProductVideoFlow):
             if self.arm_usage is not None and not self.arm_usage.enabled:
                 raise FeatureError('arm_usage_off')
             performance = intent.target in ('wave', 'celebrate', 'shrug')
-            if not fresh or performance and self.session.snapshot()['playback'] != 'started':
+            if not fresh:
                 result = HostResult(request, 'rejected', 'stale_playback_start')
             else:
                 result = self._submit_explicit_arm(intent, request, started_at=at)
+                if performance and self.session.snapshot()['playback'] != 'started':
+                    finish = getattr(self.motion, 'finish_performance', None)
+                    if callable(finish):
+                        finish(turn_id=turn, reason='playback_ended')
         except FeatureError as error:
             result = HostResult(request, 'rejected', error.code)
         except Exception:

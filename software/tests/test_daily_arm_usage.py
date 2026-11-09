@@ -34,6 +34,7 @@ class Port:
         elif verb == 'STOP': self.stopped = True; code = 'STOPPED'
         elif verb == 'DO': code = 'STOPPED' if self.stopped else 'ACCEPTED'
         elif verb == 'PING': code = 'ALIVE'
+        elif verb == 'CAPS': code = 'INVALID'  # Exact v1 unknown-verb response.
         else: code = 'HELD'
         return ('B1 ACK '+rid+' boot_fixture '+code+' POSITION_UNVERIFIED\n').encode()
     def close(self): self.closed = True

@@ -40,14 +40,16 @@ CODES = frozenset({
     "speech_cache_failed",
     "missing_piper", "piper_failed", "piper_timeout", "capture_limit_reached",
     "llm_incomplete_output", "llm_content_filter", "llm_incomplete", "llm_response_failed",
-    "llm_empty_reply", "llm_input_too_long",
+    "llm_empty_reply", "llm_input_too_long", "reply_apply_failed",
 })
 METRICS = {"rms_min": 1., "rms_max": 1., "threshold": 1., "ambient_rms": 1.,
            "captured_bytes": 960000, "frames": 10000, "duration_ms": 180000,
            "sample_rate": 48000, "channels": 2, "preroll_ms": 500,
            "trimmed_leading_bytes": 960000, "prefix_duration_ms": 180000,
            "answer_offset_frames": 34560000,
-           "capture_limit_ms": 30000, "transcript_chars": 16384,
+           "capture_limit_ms": 30000, "transcript_chars": 16384, "sample_frames": 480000,
+           "provider_request_ms": 300000, "response_parse_ms": 300000, "reply_apply_ms": 300000,
+           "http_status": 599,
            "input_tokens": 1000000, "output_tokens": 1000000, "reasoning_tokens": 1000000,
            "max_output_tokens": 1000000, "request_input_chars": 1000000,
            "request_instruction_chars": 1000000, "request_schema_chars": 1000000,
@@ -60,17 +62,31 @@ BOOLEANS = frozenset({"microphone_open", "voice_detected", "close_verified", "am
 STAGE_FIELDS = {
     "ai": frozenset({"input_tokens", "output_tokens", "reasoning_tokens", "max_output_tokens",
         "request_input_chars", "request_instruction_chars", "request_schema_chars",
-        "response_output_chars", "response_status", "incomplete_reason"}),
-    "stt": frozenset({"captured_bytes", "transcript_chars", "duration_ms"}),
+        "response_output_chars", "response_status", "incomplete_reason", "ai_substage",
+        "exception_class", "http_status", "provider_request_ms", "response_parse_ms", "reply_apply_ms"}),
+    "stt": frozenset({"captured_bytes", "transcript_chars", "duration_ms", "sample_frames"}),
     "microphone": frozenset({"captured_bytes", "duration_ms", "capture_limit_ms", "capture_end_reason"}),
-    "capture_close": frozenset({"captured_bytes", "duration_ms", "capture_limit_ms", "capture_end_reason"}),
+    "capture_close": frozenset({"captured_bytes", "duration_ms", "capture_limit_ms", "capture_end_reason", "sample_frames"}),
 }
 METRIC_ENUMS = {
+    "ai_substage": frozenset({"provider_request", "response_parse", "reply_apply", "request_build", "unknown"}),
+    "exception_class": frozenset({"other", "cloud_error", "expression_format_error", "brain_response_error",
+        "type_error", "value_error", "key_error", "attribute_error", "index_error", "runtime_error",
+        "timeout_error", "connection_error", "os_error", "assertion_error", "authentication_error",
+        "permission_denied_error", "api_timeout_error", "api_connection_error", "api_status_error",
+        "rate_limit_error", "bad_request_error", "internal_server_error", "not_found_error",
+        "unprocessable_entity_error"}),
     "response_status": frozenset({"completed", "incomplete", "failed", "cancelled", "in_progress", "queued", "unknown"}),
     "incomplete_reason": frozenset({"max_output_tokens", "content_filter", "unknown", "none"}),
     "capture_end_reason": frozenset({"max_duration", "max_buffer", "pcm_duration_limit", "pcm_byte_limit",
         "silence", "ptt_released", "no_speech", "user_cancelled"}),
 }
+
+
+def _safe_metric_number(name, value):
+    return (name in METRICS and type(value) in (int, float) and math.isfinite(value)
+            and 0 <= value <= METRICS[name]
+            and (name != "http_status" or type(value) is int and 100 <= value <= 599))
 
 
 def safe_stage_metadata(value):
@@ -86,8 +102,7 @@ def safe_stage_metadata(value):
             item = raw.get(name)
             if name in METRIC_ENUMS and type(item) is str and item in METRIC_ENUMS[name]:
                 clean[name] = item
-            elif (name in METRICS and type(item) in (int, float) and math.isfinite(item)
-                  and 0 <= item <= METRICS[name]):
+            elif _safe_metric_number(name, item):
                 clean[name] = round(item, 4)
         if clean:
             result[stage] = clean
@@ -271,8 +286,7 @@ class TurnDiagnostics:
                         safe[name] = value
                     elif name in BOOLEANS and type(value) is bool:
                         safe[name] = value
-                    elif (name in METRICS and type(value) in (int, float)
-                          and math.isfinite(value) and 0 <= value <= METRICS[name]):
+                    elif _safe_metric_number(name, value):
                         safe[name] = round(value, 4)
                 if type(playback_path) is str and playback_path in PLAYBACK_PATHS:
                     self._playback_path = playback_path

@@ -39,7 +39,7 @@ _PUBLIC_CODES = frozenset({
     "audio_cleanup_failed", "invalid_transcription_response", "audio_download_timeout",
     "speech_download_too_large", "invalid_speech_download", "tool_unavailable",
     "llm_incomplete_output", "llm_content_filter", "llm_incomplete", "llm_response_failed",
-    "llm_empty_reply", "llm_input_too_long",
+    "llm_empty_reply", "llm_input_too_long", "reply_apply_failed",
     "capture_limit_reached", "pcm_duration_limit", "pcm_byte_limit", "pcm_truncated",
     "microphone_capture_failed", "microphone_start_failed", "microphone_read_failed",
     "microphone_stream_closed", "microphone_tool_unavailable", "pcm_audio_format_failed",

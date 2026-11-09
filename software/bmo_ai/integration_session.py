@@ -16,6 +16,8 @@ from .audio import AudioPlaybackError
 from .conversation import ConversationWorker, TurnCancelled
 from .captions import caption_pair, clean_caption, MODES as CAPTION_MODES
 from .cloud import CloudError
+from .core import BrainResponseError
+from .provider_evidence import observed_call, exception_evidence
 from .expression_contract import ExpressionClient
 from .hardware import FaceState
 from .integration_face import wav_cues, MOUTHS
@@ -63,7 +65,9 @@ class IntegrationApp(ConversationApp):
 
     def _trace(self, stage, code="ok", outcome="ok"):
         if self.trace_stage is not None:
-            metrics = getattr(self.brain, "last_call_metrics", {}) if stage == "ai" and outcome != "started" else {}
+            metrics = getattr(self.brain, "last_call_metrics", None) if stage == "ai" and outcome != "started" else {}
+            if type(metrics) is not dict:
+                metrics = getattr(self, '_answer_metrics', {})
             self.trace_stage(stage, code, outcome=outcome, **metrics)
     def _notice(self, error):
         if self.config.offline_voice and error.code in ("connection", "timeout", "server", "rate_limit"):
@@ -89,12 +93,23 @@ class IntegrationApp(ConversationApp):
             raise
 
     def answer(self, message):
+        self._answer_metrics = {}
         previous = [dict(item) for item in self.brain.history]
         self._trace("ai", "started", "started")
         try:
             answer = super().answer(message)
             if self.stage_reply is not None:
-                self.stage_reply(answer)
+                try:
+                    metrics = getattr(self.brain, 'last_call_metrics', None)
+                    observed_call(lambda: self.stage_reply(answer),
+                        metrics if type(metrics) is dict else self._answer_metrics, 'reply_apply')
+                except TurnCancelled:
+                    raise
+                except Exception:
+                    # A completed provider envelope is not an applied reply.
+                    # Keep the original safe exception class in evidence while
+                    # exposing a distinct fixed terminal cause to the worker.
+                    raise BrainResponseError('The completed reply could not be applied.', 'reply_apply_failed') from None
             self._check_cancelled()
             self._trace("ai")
             return answer
@@ -105,10 +120,15 @@ class IntegrationApp(ConversationApp):
             self._trace("ai", "cancelled", "cancelled")
             raise
         except CloudError as error:
+            self.brain.history = previous
             self._trace("ai", error.code, "error")
             self._notice(error)
             raise
         except Exception as error:
+            self.brain.history = previous
+            evidence = getattr(self.brain, 'last_call_metrics', None)
+            if type(evidence) is dict and 'exception_class' not in evidence:
+                evidence.update(exception_evidence(error))
             self._trace("ai", getattr(error, "code", "operation_failed"), "error")
             raise
 

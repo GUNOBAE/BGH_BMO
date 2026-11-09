@@ -106,6 +106,12 @@ class ProviderEvidenceTests(unittest.TestCase):
                 self.assertEqual(brain.last_call_metrics.get('response_status'),
                     'completed' if code == 'expression_format' else None)
                 self.assertNotIn('PRIVATE', json.dumps(brain.last_call_metrics))
+                self.assertEqual(brain.last_call_metrics['ai_substage'],
+                    'response_parse' if code == 'expression_format' else 'provider_request')
+                self.assertEqual(brain.last_call_metrics['exception_class'],
+                    'expression_format_error' if code == 'expression_format' else 'timeout_error')
+                self.assertIn('provider_request_ms', brain.last_call_metrics)
+                self.assertEqual('response_parse_ms' in brain.last_call_metrics, code == 'expression_format')
                 self.assertIsNone(view.last_reply)
                 self.assertEqual(len(provider.requests), 1)
 
@@ -137,6 +143,61 @@ class ProviderEvidenceTests(unittest.TestCase):
                 self.assertEqual(session.snapshot()['playback'], 'ended')
         self.assertEqual(len(provider.requests), 2)
         self.assertEqual(len(session.brain.history), 2)
+
+    def test_reply_apply_failure_is_separate_from_provider_and_parser_and_rolls_back_history(self):
+        provider = Provider([envelope(), envelope()])
+        diagnostics = TurnDiagnostics(enabled=True)
+        view = FeatureClient(provider, character_life=True)
+        applies = []
+        def apply(reply, *_ids):
+            applies.append(reply)
+            if len(applies) == 1:
+                raise TypeError('PRIVATE local response processing detail')
+        session = IntegrationSession(integration_config(), provider, simulate=True,
+            emotion_mode='auto', character_life=True, reply_client=view,
+            diagnostics=diagnostics, on_reply=apply)
+        self.addCleanup(session.close)
+        for number in (1, 2):
+            self.assertTrue(session.start('A short fixture question.'))
+            deadline = time.monotonic() + 3
+            while session.busy and time.monotonic() < deadline:
+                session.poll(); time.sleep(.002)
+            self.assertFalse(session.busy)
+            trace = diagnostics.snapshot()
+            meta = trace['stage_metadata']['ai']
+            self.assertEqual(meta['response_status'], 'completed')
+            self.assertEqual(meta['ai_substage'], 'reply_apply')
+            self.assertTrue(all(name in meta for name in
+                ('provider_request_ms', 'response_parse_ms', 'reply_apply_ms')))
+            self.assertNotIn('PRIVATE', json.dumps(trace))
+            if number == 1:
+                self.assertEqual(trace['terminal'], 'reply_apply_failed')
+                self.assertEqual(trace['failure']['code'], 'reply_apply_failed')
+                self.assertEqual(meta['exception_class'], 'type_error')
+                self.assertEqual(session.brain.history, [])
+                self.assertNotEqual(session.snapshot()['playback'], 'started')
+            else:
+                self.assertEqual(trace['terminal'], 'ok')
+                self.assertNotIn('exception_class', meta)
+                self.assertEqual(len(session.brain.history), 2)
+                self.assertEqual(len(provider.requests[-1]['input']), 1)
+        self.assertEqual(len(provider.requests), 2)  # No repair/retry call.
+
+    def test_original_http_status_and_exception_enum_survive_cloud_error_translation(self):
+        class RateLimitError(RuntimeError):
+            status_code = 429
+        provider = RawProvider([RateLimitError('PRIVATE raw provider request')])
+        brain, view = self.brain(provider)
+        with self.assertRaises(CloudError) as caught:
+            brain.ask('A fixture question.')
+        self.assertEqual(caught.exception.code, 'rate_limit')
+        self.assertEqual(brain.last_call_metrics['ai_substage'], 'provider_request')
+        self.assertEqual(brain.last_call_metrics['exception_class'], 'rate_limit_error')
+        self.assertEqual(brain.last_call_metrics['http_status'], 429)
+        self.assertNotIn('response_status', brain.last_call_metrics)
+        self.assertNotIn('PRIVATE', json.dumps(brain.last_call_metrics))
+        self.assertIsNone(view.last_reply)
+        self.assertEqual(len(provider.requests), 1)
 
     def test_malformed_usage_cannot_smuggle_strings_bools_or_unbounded_counts(self):
         raw = response('PRIVATE', 'short', 'PRIVATE')

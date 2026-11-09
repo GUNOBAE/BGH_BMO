@@ -133,6 +133,50 @@ class CompletedTurnDiagnosticTests(unittest.TestCase):
         self.assertEqual(row["stage_metadata"], {"ai": {"response_output_chars": 20}})
         self.assertNotIn("PRIVATE", json.dumps(row))
 
+    def test_ai_substage_error_evidence_survives_private_reload_without_exception_text(self):
+        store = self.store()
+        trace = TurnDiagnostics(enabled=True, clock=lambda: self.now, completed_sink=store.record)
+        trace.begin(1)
+        trace.record("stt", "wav_ready", captured_bytes=480000, sample_frames=240000, duration_ms=15000)
+        trace.record("ai", "started", ai_substage="provider_request")
+        self.now += 4.5
+        trace.record("ai", "operation_failed", outcome="error", ai_substage="response_parse",
+            provider_request_ms=4400.5, response_parse_ms=99.5, exception_class="type_error",
+            http_status=200, error_message="PRIVATE", response_body="PRIVATE JSON")
+        trace.finish("operation_failed")
+        raw = (self.directory / "completed-turns.json").read_bytes()
+        row, = self.read()["records"]
+        self.assertEqual(row["stage_metadata"]["ai"], dict(ai_substage="response_parse",
+            provider_request_ms=4400.5, response_parse_ms=99.5, exception_class="type_error", http_status=200))
+        self.assertEqual(row["stage_metadata"]["stt"], dict(captured_bytes=480000,
+            sample_frames=240000, duration_ms=15000))
+        self.assertEqual(row["failure"], dict(stage="ai", code="operation_failed", outcome="error"))
+        self.assertNotIn(b"PRIVATE", raw)
+        trace.record("ai", "ok", ai_substage="reply_apply", exception_class="other")
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), raw)
+        store.close()
+        self.assertEqual(self.store().snapshot()["retained"], 1)
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), raw)
+
+    def test_ai_substage_unknown_labels_and_invalid_http_values_never_enter_receipts(self):
+        for invalid in (True, 200., 99, 600, float("nan"), "PRIVATE HTTP"):
+            trace = TurnDiagnostics(enabled=True, clock=lambda: self.now)
+            trace.begin(1)
+            trace.record("ai", "operation_failed", outcome="error", ai_substage="PRIVATE REQUEST",
+                exception_class="PrivateException", http_status=invalid,
+                provider_request_ms=-1, response_parse_ms=float("inf"), reply_apply_ms=300001)
+            self.assertEqual(trace.snapshot()["stage_metadata"], {})
+            self.assertEqual(trace.snapshot()["events"][-1]["metrics"], {})
+        trace.record("ai", "operation_failed", outcome="error", ai_substage="reply_apply",
+            exception_class="key_error", http_status=503, provider_request_ms=1200, reply_apply_ms=.5)
+        trace.finish("operation_failed")
+        store = self.store()
+        self.assertTrue(store.record(trace.snapshot()))
+        row, = self.read()["records"]
+        self.assertEqual(row["stage_metadata"]["ai"]["http_status"], 503)
+        self.assertEqual(row["stage_metadata"]["ai"]["ai_substage"], "reply_apply")
+        self.assertNotIn("PRIVATE", json.dumps(row))
+
     def test_oldest_completed_records_are_bounded_across_sessions(self):
         store = self.store()
         for number in range(1, CAPACITY + 9):

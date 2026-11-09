@@ -74,7 +74,12 @@ def conversation_arm_status(*, simulate, supervised_requested,
         reasons.append("arm_usage_off")
     if emotion_arms_effective is not True and not explicit:
         reasons.append("emotion_arms_off")
-    if adapter.get('performance_supported') is False and (not explicit or gesture in MODEL_ONLY):
+    performance = adapter.get('performance')
+    path = (performance.get('path') if type(performance) is dict
+            and performance.get('turn_id') == turn else None)
+    path = path if path in ('speech_profile', 'legacy_named_gesture') else None
+    if (adapter.get('performance_supported') is False and (not explicit or gesture in MODEL_ONLY)
+            and not (explicit and path == 'legacy_named_gesture')):
         reasons.append('arm_performance_firmware_required')
     if simulate is not True and adapter.get("real_enabled") is not True:
         reasons.append("arm_adapter_unavailable")
@@ -112,6 +117,7 @@ def conversation_arm_status(*, simulate, supervised_requested,
                           request_origin='explicit' if explicit else 'automatic',
                           semantic_validated=explicit,
                           readiness_code=_code(state.get('readiness_code')),
+                          execution_path=path,
                           plan_emotion=state.get("plan_emotion") if type(state.get("plan_emotion")) is str and state["plan_emotion"] in _EMOTIONS else None,
                           playback_emotion=state.get("playback_emotion") if type(state.get("playback_emotion")) is str and state["playback_emotion"] in _EMOTIONS else None,
                           player_start_seen=started, player_start_fresh=started and fresh,

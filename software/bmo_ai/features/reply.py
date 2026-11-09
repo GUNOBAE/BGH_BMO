@@ -13,7 +13,7 @@ from ..character_director import (CharacterDirector, CharacterPlan, DELIVERIES,
                                   INTENSITIES, GAZES, GESTURE_CONTEXTS,
                                   latest_user_text, performance_resolution)
 from ..acting_request import requested_acting
-from ..provider_evidence import request_evidence, response_evidence
+from ..provider_evidence import request_evidence, response_evidence, observed_call
 from .motion.gesture_rules_v2 import EXPLICIT_ACTIONS as ARM_INTENT_ACTIONS
 from .camera.request import current_photo_request
 from .request_semantics import request_schema, resolve_interpretation, request_denial
@@ -672,7 +672,7 @@ class FeatureResponses:
     def create(self, **request):
         self.last_reply = None
         self.last_resolution = None
-        self.last_call_metrics = {}
+        self.last_call_metrics = {'ai_substage': 'request_build'}
         # Reuse request validation/bounds; replace the two-field instructions and
         # schema together rather than appending conflicting JSON contracts.
         adapted = expression_request(request)
@@ -693,8 +693,13 @@ class FeatureResponses:
                 "The host starts its cancellable countdown after you finish speaking. "
                 "Do not claim that a photo has already been captured or saved.")
         self.last_call_metrics = request_evidence(adapted)
-        response = self._responses.create(**adapted)
+        response = observed_call(lambda: self._responses.create(**adapted),
+            self.last_call_metrics, 'provider_request')
         self.last_call_metrics.update(response_evidence(response))
+        return observed_call(lambda: self._process_response(response, request, turn_token, photo_requested),
+            self.last_call_metrics, 'response_parse')
+
+    def _process_response(self, response, request, turn_token, photo_requested):
         if callable(self.local_turn_observer):
             try:
                 self.local_turn_observer(dict(input_text=latest_user_text(request),

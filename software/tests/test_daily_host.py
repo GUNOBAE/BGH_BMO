@@ -196,7 +196,12 @@ class DailyHostTests(unittest.TestCase):
                 self.assertEqual(len(self.verbs(port, 'DO')), 1)
                 self.assertEqual(self.verbs(port, 'DO')[0].split()[-1], target.encode())
                 self.assertEqual(host.session.expression_client.last_reply.speech,
+                    "Hello, friend! Here comes a little wave." if target == 'wave' else
                     "Okay, I'll ask my arms to do that.")
+                if target == 'wave':
+                    self.assertEqual(host.snapshot()['system_diagnostics']['arms']['conversation']['execution_path'],
+                                     'legacy_named_gesture')
+                    self.assertEqual(self.verbs(port, 'ACT'), [])
                 self.assertEqual(len(provider.requests), 1)
                 self.assertFalse(host.snapshot()['system_diagnostics']['arms']['physical_verified'])
                 host.control(HostControl('repeat'), 'repeat_' + str(len(self.hosts)))

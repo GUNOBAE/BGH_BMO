@@ -171,6 +171,52 @@ class SpeechArmTests(unittest.TestCase):
         self.assertEqual(self.verbs().count(b'ACT'),1);self.assertEqual(self.verbs().count(b'END'),1)
         self.assertFalse(self.motion.snapshot()['active'])
 
+    def test_explicit_legacy_request_keeps_named_action_when_short_speech_already_ended(self):
+        for module in (v1, v2):
+            with self.subTest(version=module.__name__):
+                board=module.LegacyBridge(None,'oldBoot',lambda *_:None,lambda *_:None,lambda:0,
+                    clock=self.clock)
+                board.enabled=True
+                port=FakePort(board)
+                motion=LegacyMotionFeature(LegacyArmLink(port,motor_permission=lambda:True),clock=self.clock,cooldown=0)
+                motion.set_context('s','t',1)
+                motion.start_performance('wave',performance_context='greeting',request_id='explicit',
+                    session_id='s',turn_id='t',mode_generation=1,started_at=self.clock(),explicit=True)
+                motion.finish_performance('t','playback_ended')
+                events=motion.poll()
+                self.assertEqual(sum(b' DO ' in raw for raw in port.sent),1)
+                self.assertFalse(any(b' ACT ' in raw for raw in port.sent))
+                self.assertFalse(any(b' END ' in raw for raw in port.sent))
+                self.assertTrue(events[-1].data['executed'])
+                self.assertFalse(events[-1].data['position_verified'])
+                self.assertEqual(motion.snapshot()['performance']['path'],'legacy_named_gesture')
+                motion.finish_performance('t','playback_ended'); motion.poll()
+                self.assertEqual(sum(b' DO ' in raw for raw in port.sent),1)
+                motion.stop()
+
+    def test_short_ended_modern_speech_never_starts_act_or_falls_back_to_do(self):
+        self.motion.start_performance('wave',performance_context='greeting',request_id='explicit',
+            session_id='session',turn_id='turn1',mode_generation=1,started_at=self.clock(),explicit=True)
+        self.motion.finish_performance('turn1','playback_ended')
+        events=self.motion.poll()
+        self.assertEqual(events[-1].code,'performance_cancelled_before_start')
+        self.assertNotIn(b'ACT',self.verbs()); self.assertNotIn(b'DO',self.verbs())
+
+    def test_cancel_or_expired_legacy_speech_cannot_fallback_to_named_motion(self):
+        for reason in ('cancel','expired'):
+            with self.subTest(reason=reason):
+                board=v1.LegacyBridge(None,'oldBoot',lambda *_:None,lambda *_:None,lambda:0,
+                    clock=self.clock)
+                board.enabled=True; port=FakePort(board)
+                motion=LegacyMotionFeature(LegacyArmLink(port,motor_permission=lambda:True),clock=self.clock,cooldown=0)
+                motion.set_context('s','t',1)
+                motion.start_performance('wave',performance_context='greeting',request_id='explicit',
+                    session_id='s',turn_id='t',mode_generation=1,started_at=self.clock(),explicit=True)
+                if reason == 'cancel':motion.cancel()
+                else:self.clock.advance(1.1)
+                motion.poll()
+                self.assertFalse(any(b' DO ' in raw for raw in port.sent))
+
     def test_stop_during_start_ack_never_resurrects_token_or_sends_return(self):
         original=self.port.read_until
         def read(*args):

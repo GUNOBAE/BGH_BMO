@@ -266,7 +266,7 @@ class FullBatchSemanticHostTests(unittest.TestCase):
                 self.assertEqual(host.snapshot()['last_result']['code'], 'current_user_action_required')
                 self.assertEqual(len(provider.requests), 1)
 
-    def test_cancel_before_reply_playback_ends_cannot_dispatch_late_named_arm(self):
+    def test_cancel_after_explicit_player_start_holds_without_a_late_named_arm(self):
         started, release = Event(), Event()
         def player(_command, *, on_start, cancel_check, **_kwargs):
             on_start()
@@ -282,10 +282,16 @@ class FullBatchSemanticHostTests(unittest.TestCase):
         self.assertTrue(host.start_question('Wave to me.'))
         self.assertTrue(started.wait(2))
         host.poll()
+        # The current request now starts alongside speech. The old board uses
+        # its existing named DO; cancellation must HOLD it and never dispatch
+        # a second command at the later speech-ended boundary.
+        self.assertEqual(sum(x.startswith(b'B1 DO ') for x in host.motion.link.port.sent), 1)
         host.control(HostControl('cancel'), 'cancel_before_finished_reply')
         release.set()
         self.finish(host)
-        self.assertFalse(any(x.startswith(b'B1 DO ') for x in host.motion.link.port.sent))
+        self.assertEqual(sum(x.startswith(b'B1 DO ') for x in host.motion.link.port.sent), 1)
+        self.assertTrue(any(x.startswith(b'B1 HOLD ') for x in host.motion.link.port.sent))
+        self.assertIsNone(host.motion.active_until)
         self.assertEqual(len(provider.requests), 1)
         self.assertFalse(host.snapshot()['conversation_busy'])
         self.assertEqual(host.snapshot()['request_budget']['admitted_count'], 1)

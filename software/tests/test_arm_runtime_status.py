@@ -67,6 +67,20 @@ class ArmRuntimeStatusTests(unittest.TestCase):
         self.assertFalse(result["launcher"]["emotion_arms_effective"])
         self.assertIn("arm_data_port_busy_or_unavailable", result["conversation"]["blocked_reasons"])
 
+    def test_explicit_legacy_named_path_is_not_misreported_as_current_speech_profile(self):
+        turn = dict(turn_id='session:3', stage='submitted', gesture_id='wave',
+            explicit_request=True, semantic_validated=True, player_start_seen=True,
+            player_start_fresh=True, automatic_reason='explicit_request')
+        motion = dict(real_enabled=True, performance_supported=False,
+            performance=dict(path='legacy_named_gesture', turn_id='session:3'))
+        state = self.status(turn_state=turn, motion=motion, emotion_arms_effective=False)['conversation']
+        self.assertEqual(state['execution_path'], 'legacy_named_gesture')
+        self.assertNotIn('arm_performance_firmware_required', state['blocked_reasons'])
+        self.assertNotIn('emotion_arms_off', state['blocked_reasons'])
+        motion['performance']['turn_id'] = 'session:2'
+        later = self.status(turn_state=turn, motion=motion)['conversation']
+        self.assertIsNone(later['execution_path'])
+
     def test_status_projection_is_bounded_and_never_copies_arbitrary_text(self):
         private = "never copy this transcript or credential"
         result = self.status(setup_error=private, motion={"blocked_reasons": private},

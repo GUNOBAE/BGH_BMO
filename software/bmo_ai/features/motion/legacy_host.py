@@ -115,6 +115,7 @@ class LegacyArmLink:
         self.last_request_id = None
         self.prepare_code = None
         self.performance_supported = None
+        self.performance_capability_code = None
         self._port_lock = RLock()
         self._motor_waiting = Event()
         self._imu_counter = 0
@@ -306,6 +307,7 @@ class LegacyArmLink:
     def performance_capability(self):
         if self.performance_supported is None:
             code = self._request("CAPS {rid} {boot}")
+            self.performance_capability_code = code
             self.performance_supported = code == "PERFORMANCE_READY"
         return self.performance_supported
 
@@ -496,7 +498,7 @@ class LegacyMotionFeature:
             return result
         pending, self.pending = self.pending, None
         self.performance = dict(pending=pending, profile=profile, phase="queued", token=None,
-                                finish_reason=None, next_pulse=0., deadline=None)
+                                finish_reason=None, next_pulse=0., deadline=None, path='speech_profile')
         return HostResult(request_id, "accepted", "performance_queued", simulated=False)
 
     def finish_performance(self, turn_id=None, reason="playback_ended"):
@@ -510,13 +512,15 @@ class LegacyMotionFeature:
             self._retire_performance('performance_return_suppressed', 'cancelled')
             return False
         current['finish_reason'] = current['finish_reason'] or reason
-        if current['token'] is None and current['phase'] == 'queued':
+        if (current['token'] is None and current['phase'] == 'queued'
+                and not (current['pending'][4] and reason == 'playback_ended')):
             self._retire_performance('performance_cancelled_before_start', 'cancelled')
         return True
 
-    def _performance_fresh(self, current):
+    def _performance_fresh(self, current, *, allow_ended=False):
         pending = current['pending']; now = _clock_value(self.clock)
-        return (self.performance is current and current['finish_reason'] is None
+        return (self.performance is current and (current['finish_reason'] is None
+                or allow_ended and pending[4] and current['finish_reason'] == 'playback_ended')
                 and self.context == pending[3] and _finite_time(now)
                 and 0 <= now-pending[2] <= self.ttl)
 
@@ -526,7 +530,7 @@ class LegacyMotionFeature:
             return
         self.last_performance = dict(profile=current['profile'], phase='ended' if status=='succeeded' else 'interrupted',
             code=code, finish_reason=current['finish_reason'], turn_id=current['pending'][3][1],
-            position_verified=False)
+            position_verified=False, path=current['path'])
         self._event(current['pending'], status, code,
                     executed=current['token'] is not None if executed is None else executed)
 
@@ -539,13 +543,30 @@ class LegacyMotionFeature:
             if not _finite_time(now):
                 raise LegacyArmError('invalid_motion_clock')
             if current['phase'] == 'queued':
-                if not self._performance_fresh(current):
+                if not self._performance_fresh(current, allow_ended=True):
                     self._retire_performance('stale_playback_start', 'rejected')
                     return
                 if self.link.boot is None:
                     self.link.hello()
                 if not self.link.performance_capability():
+                    if (current['pending'][4] and self.link.performance_capability_code == 'INVALID'
+                            and self._performance_fresh(current, allow_ended=True)
+                            and not (self.link.stopped or self.link.unknown)):
+                        # v1/v2 have no ACT. Preserve an explicitly requested
+                        # existing named DO once; its own finite firmware plan
+                        # is not the v3 speech entry/hold/return contract. An
+                        # automatic decoration never takes this fallback.
+                        self.pending = current['pending']
+                        self.performance = None
+                        self.last_performance = dict(profile=current['profile'], phase='legacy_named',
+                            path='legacy_named_gesture', code='legacy_named_gesture',
+                            finish_reason=current['finish_reason'], turn_id=current['pending'][3][1],
+                            position_verified=False)
+                        return
                     self._retire_performance('arm_performance_firmware_required', 'rejected')
+                    return
+                if current['finish_reason'] == 'playback_ended':
+                    self._retire_performance('performance_cancelled_before_start', 'cancelled')
                     return
                 if not self._performance_fresh(current):
                     self._retire_performance('stale_playback_start', 'rejected')
@@ -596,7 +617,8 @@ class LegacyMotionFeature:
         _, _, started_at, context, explicit, queued_at = self.pending
         now = _clock_value(self.clock)
         return (_finite_time(now) and now >= queued_at and self.context == context
-                and (explicit or _finite_time(started_at) and 0 <= now - started_at <= self.ttl))
+                and (explicit and started_at is None
+                     or _finite_time(started_at) and 0 <= now - started_at <= self.ttl))
 
     def _expire_pending(self):
         request_id = self.pending[0]
@@ -623,8 +645,9 @@ class LegacyMotionFeature:
             return result
         if self.performance is not None:
             self._poll_performance()
-            result, self.events = tuple(self.events), []
-            return result
+            if self.performance is not None or self.pending is None:
+                result, self.events = tuple(self.events), []
+                return result
         pending = self.pending
         attempted_pending = None
         dispatched_pending = None
@@ -842,7 +865,7 @@ class LegacyMotionFeature:
                 "speech_cancel_semantics": "bounded_return_only_with_known_active_token",
                 "performance": (dict(profile=self.performance['profile'], phase=self.performance['phase'],
                     finish_reason=self.performance['finish_reason'], turn_id=self.performance['pending'][3][1],
-                    position_verified=False) if self.performance is not None else self.last_performance),
+                    position_verified=False, path=self.performance['path']) if self.performance is not None else self.last_performance),
                 "performance_supported": self.link.performance_supported,
                 "stop_semantics": "board_latch_not_cleared_by_host_restart_not_power_cut",
                 "position_verified": False, "physical_verified": False,

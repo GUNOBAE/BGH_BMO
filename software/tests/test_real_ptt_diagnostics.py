@@ -113,6 +113,11 @@ class RealPttDiagnosticsTests(unittest.TestCase):
         stages = {e["stage"] for e in trace["events"]}
         self.assertTrue({"microphone", "vad", "stt", "ai", "fish", "playback"} <= stages)
         self.assertNotIn("PRIVATE", json.dumps(trace))
+        capture = trace["stage_metadata"]["capture_close"]
+        stt = trace["stage_metadata"]["stt"]
+        self.assertEqual(capture["sample_frames"] * 2, capture["captured_bytes"])
+        self.assertEqual(stt["sample_frames"], capture["sample_frames"])
+        self.assertEqual(stt["duration_ms"], stt["sample_frames"] / 16)
 
     def test_each_failure_identifies_its_actual_stage_without_raw_detail(self):
         for stage, code in (("stt", "authentication"), ("ai", "timeout"),

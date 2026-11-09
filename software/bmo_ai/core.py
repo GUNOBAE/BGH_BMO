@@ -7,7 +7,7 @@ here, and callers can inject a fake client for offline tests.
 import os
 
 from .cloud import call_cloud
-from .provider_evidence import request_evidence, response_evidence
+from .provider_evidence import request_evidence, response_evidence, observed_call
 
 
 SYSTEM_PROMPT = """You are BMO, a cheerful, curious, tiny robot companion inspired by a friendly game console.
@@ -125,12 +125,12 @@ class BMOBrain:
         return trimmed
 
     def ask(self, message):
-        self.last_call_metrics = {}
+        self.last_call_metrics = {'ai_substage': 'request_build'}
         if not isinstance(message, str):
             raise TypeError("message must be a string")
         # Check raw input too: padding cannot bypass the request budget.
         if len(message) > self.max_input_chars:
-            self.last_call_metrics = {'request_input_chars': min(len(message), 1000000)}
+            self.last_call_metrics.update(request_input_chars=min(len(message), 1000000))
             raise BrainResponseError("The question exceeded the text input limit.", "llm_input_too_long")
         message = message.strip()
         if not message:
@@ -153,7 +153,8 @@ class BMOBrain:
             request["reasoning"] = {"effort": self.reasoning_effort}
         self.last_call_metrics = request_evidence(request)
         try:
-            response = call_cloud(lambda: self.client.responses.create(**request))
+            response = call_cloud(lambda: observed_call(
+                lambda: self.client.responses.create(**request), self.last_call_metrics, 'provider_request'))
             self.last_call_metrics.update(response_evidence(response))
         finally:
             # Structured adapters observe the final provider request and original
@@ -162,6 +163,10 @@ class BMOBrain:
             evidence = getattr(self.client.responses, "last_call_metrics", None)
             if type(evidence) is dict:
                 self.last_call_metrics.update(evidence)
+        return observed_call(lambda: self._complete_response(response, candidate),
+            self.last_call_metrics, 'response_parse')
+
+    def _complete_response(self, response, candidate):
         # Require the API completion marker even if partial text is present.
         # Injectable clients should return the same status as the SDK contract.
         status = getattr(response, "status", None)
