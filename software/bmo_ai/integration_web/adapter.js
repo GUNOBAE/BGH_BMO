@@ -26,6 +26,8 @@
       this.raf = null;
       this.frameWindow = null;
       this.entrance = null;
+      this.visualOwner = null;
+      this.visualConflict = null;
       this.entranceState = {status: "idle", target: "expression_layers"};
       this.resetFace();
       this.onFramePageHide = () => this.close();
@@ -191,6 +193,10 @@
       if (terminal.has(next.playback)) this.terminal.add(key);
       this.sequence = next.sequence;
       this.state = {...next, cues: next.playback === "started" ? next.cues.map(c => ({...c})) : []};
+      if (this.visualOwner !== null && (["listening", "thinking"].includes(next.phase)
+          || next.phase === "speaking" && next.playback === "started" && next.source !== "provided_media_cues")) {
+        this.visualConflict?.();
+      }
       this.received = performance.now();
       this.lastSuccess = this.received;
       if (this.status) this.status.textContent = "";
@@ -198,7 +204,35 @@
       return true;
     }
 
+    claimVisual(owner, onConflict = null) {
+      if (this.closed || typeof owner !== "string" || !owner || this.visualOwner && this.visualOwner !== owner) return false;
+      const current = this.state;
+      if (current && (["listening", "thinking"].includes(current.phase)
+          || current.phase === "speaking" && current.playback === "started" && current.source !== "provided_media_cues")) {
+        onConflict?.();
+        return false;
+      }
+      if (this.visualOwner === owner) return true;
+      this.cancelEntrance("visual_owner");
+      this.suspend();
+      this.visualOwner = owner;
+      this.visualConflict = onConflict;
+      return true;
+    }
+
+    releaseVisual(owner) {
+      if (this.visualOwner !== owner) return false;
+      this.visualOwner = null;
+      this.visualConflict = null;
+      this.resetFace();
+      // Polling continued under the music layer: apply the CURRENT conversation,
+      // never the emotion saved when the song first started.
+      if (!this.closed) this.applyFace();
+      return true;
+    }
+
     applyFace() {
+      if (this.visualOwner !== null) return;
       const face = this.face, state = this.state;
       if (!face || !state || this.closed) return;
       const active = state.playback === "started" && state.phase === "speaking" && !!state.utterance_id;
@@ -232,7 +266,7 @@
     }
 
     renderMouth(now) {
-      if (!this.speaking || !this.face || !this.state) return;
+      if (this.visualOwner !== null || !this.speaking || !this.face || !this.state) return;
       const state = this.state;
       const position = state.position + Math.max(0, now - this.received) / 1000;
       let lo = 0, hi = state.cues.length - 1, index = -1;
@@ -251,7 +285,7 @@
     }
 
     suspend() {
-      this.face?.stop();
+      if (this.visualOwner === null) this.face?.stop();
       this.speaking = false;
       this.mouth = null;
     }

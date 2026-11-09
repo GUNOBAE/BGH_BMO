@@ -58,6 +58,11 @@ class HostControl:
             valid = type(self.value) is str and self.value in (*EMOTIONS, "auto", "manual")
         elif self.action == "subtitles":
             valid = type(self.value) is str and self.value in ('off', 'en', 'ko')
+        elif self.action == 'singing_mood':
+            from .contracts import valid_id
+            valid = (type(self.value) is dict and set(self.value) == {'id', 'mood'}
+                and valid_id(self.value['id'])
+                and type(self.value['mood']) is str and self.value['mood'] in ('joyful', 'gentle'))
         elif self.action == 'imu_reactions':
             valid = type(self.value) is bool
         elif self.action == 'imu_trial':
@@ -451,6 +456,8 @@ class FeatureHost(ProductVideoFlow):
                 self.volume.set(**saved_preferences['volume'])
             if 'subtitle_mode' in saved_preferences:
                 self.session.set_subtitles(saved_preferences['subtitle_mode'])
+            if 'singing_moods' in saved_preferences:
+                self.media.load_singing_moods(saved_preferences['singing_moods'])
         except Exception:
             pass  # An optional settings file cannot prevent the face/dialogue startup.
         self._saved_subtitle_mode = self.session.subtitle_snapshot()['mode']
@@ -861,6 +868,19 @@ class FeatureHost(ProductVideoFlow):
                                              mode_generation=self.modes.generation)
             return fd, size, dict(source='private_local_media')
         except (FeatureError, OSError):
+            return None
+
+    def get_music_singing(self, token, mode_generation):
+        """Read only the prepared analysis owned by this active Face playback."""
+        state = self.media.snapshot()
+        expected = str(state.get('request_id'))+'_'+str(state.get('playback_generation'))
+        if (self.modes.mode != 'music' or self.modes.generation != mode_generation
+                or state.get('variant') != 'face' or token != expected):
+            return None
+        try:
+            return self.media.singing_profile_bytes(request_id=self._active_media_request,
+                mode_generation=mode_generation, playback_generation=state['playback_generation'])
+        except (FeatureError, OSError, ValueError):
             return None
 
     def _retire_music_preparation(self, code, *, failed=False):
@@ -1670,7 +1690,14 @@ class FeatureHost(ProductVideoFlow):
             return self._remember(HostResult(request, "rejected", "feature_closed"))
         try:
             action, value = control.action, control.value
-            if action == 'media_observation':
+            if action == 'singing_mood':
+                settings = self.media.set_singing_mood(value['id'], value['mood'])
+                saved = self.preferences is not None and self.preferences.update(singing_moods=settings)
+                return self._remember(HostResult(request, 'succeeded',
+                    'singing_mood_saved' if saved else 'singing_mood_session_only',
+                    simulated=self.runtime.simulate, completed=True,
+                    completion='setting_saved' if saved else 'session_setting'))
+            elif action == 'media_observation':
                 if value['generation'] != self.media.snapshot().get('playback_generation'):
                     raise FeatureError('stale_mode')
                 self._media_lifecycle.update(hidden=value['hidden'], focused=value['focused'])
@@ -3022,7 +3049,8 @@ class FeatureHost(ProductVideoFlow):
                 browser_input_owner=not self.native_game_foreground,
                 return_grace_remaining=max(0., self._native_return_grace_until-self.clock()) if self._native_return_grace_until else 0.),
             'action_plan': self.compound.snapshot(),
-            "media": {"catalog": [dict(item.public(), variants=list(self.media.variants(item.id))) for item in self.media.catalog()],
+            "media": {"catalog": [dict(item.public(), variants=list(self.media.variants(item.id)),
+                singing_mood=self.media.singing_mood(item.id)) for item in self.media.catalog()],
                 **self.media.snapshot(),
                 'video_url': ('/api/music-video/'+str(self._active_media_request)+'_'+str(self.media.snapshot().get('playback_generation')))
                     if self.modes.mode == 'music' and self.media.snapshot().get('variant') == 'video' else None,

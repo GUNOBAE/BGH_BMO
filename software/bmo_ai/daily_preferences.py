@@ -2,7 +2,8 @@
 
 Only explicit settings changes write this store. Construction is read-only and
 missing settings leave the launcher's existing defaults intact. This file holds
-no device permission, approval, credentials, conversation or audio metadata.
+no device permission, approval, credentials, conversation or raw audio. Song
+mood choices bind the catalog ID to its verified audio hash.
 """
 from copy import deepcopy
 import fcntl
@@ -17,9 +18,9 @@ from threading import RLock
 from .private_credentials import CredentialError, _close, _private_file
 
 
-MAX_BYTES = 4096
+MAX_BYTES = 32768
 _FILE = "preferences.json"
-_FIELDS = frozenset(("volume", "subtitle_mode", "presence_mode", "imu_reactions"))
+_FIELDS = frozenset(("volume", "subtitle_mode", "presence_mode", "imu_reactions", "singing_moods"))
 
 
 def default_directory():
@@ -47,6 +48,19 @@ def _validated(values):
         raise ValueError("invalid presence")
     if "imu_reactions" in result and type(result["imu_reactions"]) is not bool:
         raise ValueError("invalid IMU preference")
+    if "singing_moods" in result:
+        from .features.contracts import valid_id
+        import re
+        choices = result['singing_moods']
+        if type(choices) is not dict or len(choices) > 128:
+            raise ValueError('invalid singing preferences')
+        for media_id, value in choices.items():
+            if (not valid_id(media_id) or type(value) is not dict
+                    or set(value) != {'audio_sha256', 'mood'}
+                    or type(value['audio_sha256']) is not str
+                    or re.fullmatch('[a-f0-9]{64}', value['audio_sha256']) is None
+                    or value['mood'] not in ('joyful', 'gentle')):
+                raise ValueError('invalid singing preference')
     return result
 
 

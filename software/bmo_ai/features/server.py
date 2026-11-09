@@ -50,6 +50,10 @@ class FeatureServer:
             for name, mime in (("desktop.js", "text/javascript; charset=utf-8"),
                                ("desktop_poll.js", "text/javascript; charset=utf-8"),
                                ('playable.js', 'text/javascript; charset=utf-8'),
+                               ('bmo_singing_a02.js', 'text/javascript; charset=utf-8'),
+                               ('bmo_singing_plan.js', 'text/javascript; charset=utf-8'),
+                               ('bmo_music_analysis.js', 'text/javascript; charset=utf-8'),
+                               ('singing_adapter.js', 'text/javascript; charset=utf-8'),
                                ("desktop.css", "text/css; charset=utf-8")):
                 self._resources["/" + name] = (mime, product.joinpath(name).read_bytes())
             if developer:
@@ -241,6 +245,22 @@ class FeatureServer:
                         photo_id = path.removeprefix("/api/photo/")
                         image = owner.host.photo_bytes(photo_id) if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", photo_id) else None
                         self._send(200, image, "image/png") if image else self._send(404)
+                    elif path.startswith('/api/music-singing/'):
+                        token = path.removeprefix('/api/music-singing/')
+                        try:
+                            query = parse_qsl(request_url.query, keep_blank_values=True,
+                                              strict_parsing=True, max_num_fields=1)
+                            if (len(query) != 1 or query[0][0] != 'mode_generation'
+                                    or re.fullmatch(r'[0-9]{1,12}', query[0][1]) is None
+                                    or re.fullmatch(r'[A-Za-z0-9_:-]{1,128}_[0-9]{1,12}', token) is None):
+                                raise ValueError()
+                            generation = int(query[0][1])
+                        except ValueError:
+                            self._send(400)
+                            return
+                        getter = getattr(owner.host, 'get_music_singing', None)
+                        profile = getter(token, generation) if callable(getter) else None
+                        self._send(200, profile, 'application/json') if profile is not None else self._send(404)
                     elif path.startswith('/api/music-video/'):
                         media_token = path.removeprefix('/api/music-video/')
                         if re.fullmatch(r'[A-Za-z0-9_:-]{1,128}_[0-9]{1,12}', media_token) and not request_url.query:

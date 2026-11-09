@@ -468,6 +468,9 @@ class DesktopRuntime:
     def open_music_video(self, token):
         return self.host.open_music_video(token) if self.host is not None else None
 
+    def get_music_singing(self, token, mode_generation):
+        return self.host.get_music_singing(token, mode_generation) if self.host is not None else None
+
     def open_video(self, video_id):
         return self.host.open_video(video_id) if self.host is not None else None
 

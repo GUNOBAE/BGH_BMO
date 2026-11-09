@@ -25,9 +25,29 @@ def main(argv=None):
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--install", action="store_true")
     mode.add_argument("--retire", action="store_true")
+    mode.add_argument("--prepare-singing", action="store_true",
+        help="Prepare bounded local TWO MOODS analysis for installed WAVs; app must be stopped")
     args = parser.parse_args(argv)
     try:
-        if args.media_seed is not None:
+        if args.prepare_singing:
+            from .features.media.singing_analysis import prepare_profile
+            if args.content_root is None or args.media_seed is not None or args.audio is not None:
+                raise FeatureError('media_review_required')
+            items = load_library(args.content_root)
+            if args.media_id is not None:
+                items = tuple(item for item in items if item.id == args.media_id)
+            if not items:
+                raise FeatureError('asset_pending')
+            results = []
+            for item in items:
+                try:
+                    results.append(dict(id=item.id, **prepare_profile(args.content_root,item)))
+                except FeatureError as error:
+                    results.append(dict(id=item.id,status='UNAVAILABLE',code=error.code,playback='NOT_RUN'))
+            report = dict(status='READY' if all(r['status']=='READY' for r in results) else 'PARTIAL',
+                          items=results,playback='NOT_RUN',audio_preserved=True,
+                          approximation='whole_mix_not_lyrics_or_vocals')
+        elif args.media_seed is not None:
             from .features.media.seed import review_media_seed, install_media_seed, SPACE_SEED_SHA256
             if args.audio is not None or args.retire:
                 raise FeatureError("media_review_required")
@@ -55,7 +75,7 @@ def main(argv=None):
             report = {"status": "AVAILABLE_FOR_REVIEW" if items else "ASSET_PENDING", "items": len(items),
                       "runtime_enabled": False, "playback": "NOT_RUN", "cue_kind": "none"}
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0
+        return 2 if args.prepare_singing and report['status'] != 'READY' else 0
     except FeatureError as error:
         from .features.media.seed import MediaDecodeError
         report = {"status": "REJECTED", "code": error.code, "playback": "NOT_RUN"}

@@ -1,0 +1,15 @@
+<!doctype html><html lang="en" data-synthetic-contract="bmo-face-v1"><meta charset="utf-8"><title>Synthetic singing SVG contract — no BMO artwork</title>
+<style>body{margin:0;background:#fafafa}svg{width:100vw;height:100vh}</style>
+<svg id="face" viewBox="0 0 1000 600"><defs id="art"><g id="eye-happy-open"><g><path d="M300 240 Q325 200 350 240" fill="none" stroke="black"/></g><g><path d="M650 240 Q675 200 700 240" fill="none" stroke="black"/></g></g></defs><g id="lookRoot"><g id="eyePairAdjust"><g id="eyes"><path d="M300 220 H350 M650 220 H700" stroke="black"/></g></g><g id="mouthAdjust"><g id="mouth"><path d="M450 390 H550" stroke="black"/></g></g></g></svg>
+<script id="assets" type="application/json">{}</script><script>
+(()=>{'use strict';
+// Deliberately simple public geometric fixtures. None of these paths are R10.
+const opening='<defs><clipPath id="fixture-clip"><path d="M-100 -30 Q0 -60 100 -30 L100 40 Q0 80 -100 40Z"/></clipPath></defs><path d="M-100 -30 Q0 -60 100 -30 L100 40 Q0 80 -100 40Z" fill="none" stroke="black"/><path d="M-80 -25 H80 V0 H-80Z" fill="#F8FCF6"/><path d="M-50 40 Q0 20 50 40 V60 H-50Z" fill="#50D65E"/>';
+const closed='<path d="M416 388 H584" fill="none" stroke="black"/>';
+document.getElementById('assets').textContent=JSON.stringify({mouths:{neutral:{closed,open:opening,round:opening},happy:{closed,open:opening}}});
+const state={version:'synthetic-contract-v1',artworkRevision:'review-r10',fixture:true,selectedEmotion:'neutral',activity:'idle',speech:'off',mouth:'closed',mouthHref:'#mouth-closed',gaze:{x:0,y:0},eyeOnly:{x:0,y:0}};
+const events=[];function record(method){events.push({method,...state});if(events.length>1000)events.shift();}
+function stop(){state.speech='off';state.mouth='closed';record('stop');}
+window.BMOFace={setEmotion(v){state.selectedEmotion=v;state.activity='idle';record('setEmotion');},setActivity(v){stop();state.activity=v;record('setActivity');},setSpeaking(v){if(v){state.speech='external';state.activity='idle';}else stop();record('setSpeaking');},setMouth(v){state.mouth=v;state.mouthHref='#mouth-'+v;record('setMouth');},look(x,y){state.gaze={x,y};},lookEyes(x,y){state.eyeOnly={x,y};},blink(){},stop,getState(){return JSON.parse(JSON.stringify(state));}};
+window.BMOFaceContractEvents=events;
+})();</script></html>

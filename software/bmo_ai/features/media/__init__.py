@@ -205,10 +205,13 @@ class MediaFeature:
         self._video_fd = None
         self._playback_generation = 0
         self._last_terminal = None
+        self._singing_moods = {}
+        self._singing_cache = {}
         self._inspect_assets()
 
     def _inspect_assets(self):
         self._asset_status = {}
+        self._singing_cache = {}
         for item in self._items:
             try:
                 with AssetHandle(self.content_root, item):
@@ -221,6 +224,69 @@ class MediaFeature:
                         pass
             except FeatureError as error:
                 self._asset_status[item.id] = ("ASSET_PENDING" if error.code == "asset_pending" else "UNVERIFIED", error.code)
+            else:
+                self._load_singing_profile(item)
+
+    def load_singing_moods(self, values):
+        """Apply only a saved choice for the same catalog ID and audio bytes."""
+        self._singing_moods = {}
+        if type(values) is not dict:
+            return
+        for item in self._items:
+            value = values.get(item.id)
+            if (type(value) is dict and set(value) == {'audio_sha256', 'mood'}
+                    and value['audio_sha256'] == item.sha256
+                    and value['mood'] in ('joyful', 'gentle')):
+                self._singing_moods[item.id] = dict(value)
+
+    def singing_mood(self, catalog_id):
+        return self._singing_moods.get(catalog_id, {}).get('mood', 'joyful')
+
+    def set_singing_mood(self, catalog_id, mood):
+        item = next((item for item in self._items if item.id == catalog_id), None)
+        if item is None or mood not in ('joyful', 'gentle'):
+            raise FeatureError('invalid_singing_mood')
+        self._singing_moods[catalog_id] = dict(audio_sha256=item.sha256, mood=mood)
+        return {key:dict(value) for key,value in self._singing_moods.items()}
+
+    def _load_singing_profile(self, item):
+        # Only called during catalog inspection, before an output is admitted.
+        # A missing optional profile never changes music readiness.
+        from .singing_analysis import load_profile
+        try:
+            profile, raw, digest = load_profile(self.content_root, item)
+            if len(raw)+sum(len(entry[1] or b'') for entry in self._singing_cache.values()) > 8*1024*1024:
+                raise FeatureError('singing_profile_cache_capacity')
+            self._singing_cache[item.id] = ({'audio_sha256':profile['audio_sha256']}, raw, digest, 'ready')
+        except FeatureError as error:
+            status = 'missing' if error.code == 'singing_profile_missing' else 'invalid'
+            self._singing_cache[item.id] = (None, None, None, status)
+
+    def _singing_snapshot(self):
+        item = self._active
+        if item is None or self._variant != 'face':
+            return dict(status='inactive', audio_sha256=self._handle.asset.sha256 if self._handle else None,
+                        profile_sha256=None, url=None)
+        cached = self._singing_cache.get(item.id, (None, None, None, 'missing'))
+        status = cached[3]
+        return dict(status=status, audio_sha256=item.sha256, profile_sha256=cached[2],
+            url=(f'/api/music-singing/{self._request}_{self._playback_generation}'
+                 f'?mode_generation={self._generation}') if status == 'ready' else None)
+
+    def singing_profile_bytes(self, *, request_id, mode_generation, playback_generation):
+        if (self._active is None or self._handle is None or self._variant != 'face'
+                or self._state not in ('playing', 'paused')
+                or request_id != self._request or mode_generation != self._generation
+                or playback_generation != self._playback_generation):
+            raise FeatureError('singing_profile_inactive')
+        profile, raw, digest, status = self._singing_cache.get(self._active.id, (None, None, None, 'missing'))
+        if status != 'ready' or profile['audio_sha256'] != self._handle.asset.sha256:
+            raise FeatureError('singing_profile_unavailable')
+        return raw
+
+    def singing_profile(self, **identity):
+        import json
+        return json.loads(self.singing_profile_bytes(**identity))
 
     def catalog(self):
         result = []
@@ -255,6 +321,8 @@ class MediaFeature:
                     capabilities=list(self.backend.capabilities) if self.backend else [],
                     simulated=bool(self.backend and self.backend.simulated),
                     cue_kind=self._handle.asset.cue_kind if self._handle and self._handle.cues else "none",
+                    singing_mood=self.singing_mood(self._active.id) if self._active else "joyful",
+                    singing_profile=self._singing_snapshot(),
                     last_terminal=dict(self._last_terminal) if self._last_terminal else None,**producer)
 
     @staticmethod

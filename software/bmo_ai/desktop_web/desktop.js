@@ -1,6 +1,8 @@
 /* Product wrapper only. The pinned R10 and Python audio owner stay unchanged. */
 (()=>{'use strict';
 const $=id=>document.getElementById(id),frame=$('face'),token=document.querySelector('meta[name="bmo-command-token"]').content;
+const singing=window.BMOProductSinging?.attach(frame);
+let singingMoodPending=null;
 let pollWorker=null,pollOwner="main_fallback",pollSerial=0,renderSerial=Promise.resolve();
 let state=null,closed=false,timer=null,controller=null,epoch=0,handshakeFrame=null,lastSuccess=performance.now(),currentMode='conversation',lastGaze=null,presentedRun=null,presentationGeneration=0;
 let enterDown=false,pttEnabled=false,pttPending=false,pttRequest=null,pttEpoch=0,pttFinishPending=false;
@@ -14,7 +16,7 @@ let volumePending=null,volumeSerial=0,volumeRequest=null,volumeQueue=Promise.res
 let faceVolumeTimer=null,uiActivityTimer=null,uiActivitySent=false,uiMenuSequence=null;
 let noticeUntil=0,noticeText='',presenceTestPending=false,presenceTestSeen=null,armPreferencePending=false,armRequest=null,imuPreferencePending=null,imuTrialPending=null;
 let mediaKeyHeld=false,mediaVideoKey=null,mediaSeekPending=false,mediaVideoFailure=null,mediaSyncRequired=false,mediaPlayPending=null;
-let mediaHoldTimer=null,mediaHoldStarted=0,mediaHoldTriggered=false,mediaStopping=false,mediaControlsTimer=null,musicErrorTimer=null,mediaNextPending=null,mediaStopPending=null;
+let mediaHoldTimer=null,mediaHoldStarted=0,mediaHoldTriggered=false,mediaStopping=false,mediaControlsTimer=null,musicErrorTimer=null,mediaNextPending=null,mediaStopPending=null,mediaClockPending=null;
 let previewRun=null,previewSerial=0,previewTimer=null,previewAbort=null,previewBitmap=null,previewDraw=null,previewBusy=false,previewSuppressedKey=null;
 const previewEvidence={target_fps:20,active:false,pending:0,max_pending:0,requests:0,received:0,decoded:0,displayed:0,
  dropped:0,not_displayed:0,duplicates:0,errors:0,last_received_id:null,last_decoded_id:null,last_displayed_id:null,
@@ -254,7 +256,7 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
  const cap=next.ptt?.max_seconds;
  $('capture-limit').textContent=Number.isFinite(cap)?'Ask naturally, up to '+cap+' seconds. Short questions finish when you stop speaking.':'';
  const failures={capture_limit_reached:'That question reached the recording limit. Please try it in smaller parts.',no_speech:'말소리를 감지하지 못했어요. 버튼을 누르고 다시 말해 주세요.',stt_empty:'말을 알아듣지 못했어요. 다시 말해 주세요.'};
- $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':failures[failure?.code]||(capture==='failed'&&failure?.stage!=='stt'?'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.':'대화를 완료하지 못했어요. 준비 상태에서 실패 단계를 확인해 주세요.')):
+ $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':failures[failure?.code||next.ptt?.code]||(capture==='failed'&&failure?.stage!=='stt'?'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.':'대화를 완료하지 못했어요. 준비 상태에서 실패 단계를 확인해 주세요.')):
   wakeHint||({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
  if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){
   const openingGameMenu=!$('game-menu').open;
@@ -581,12 +583,21 @@ function mediaObservation(event,error_code=null){
   hidden:document.hidden,focused:document.hasFocus(),error_code}).catch(()=>{});
 }
 function mediaCommand(action,source,value=null){
- if(action!=='stop'&&(mediaNextPending!==null||mediaStopping))return Promise.resolve({status:'rejected',code:'music_transition_pending'});
+ if(action!=='stop'&&(mediaNextPending!==null||mediaClockPending!==null||mediaStopping))return Promise.resolve({status:'rejected',code:'music_transition_pending'});
  if(action==='resume'||action==='replay'){
   mediaVideoFailure=null;mediaSyncRequired=true;
   if($('notice').dataset.musicError){noticeUntil=0;noticeText='';clearTimeout(musicErrorTimer);delete $('notice').dataset.musicError;$('notice').hidden=true;}
  }
- return control('media_command',{action,source,generation:featureState?.media?.playback_generation||0,value});
+ const pending=['seek','replay'].includes(action)?{action,modeGeneration:featureState?.mode_generation,
+  generation:featureState?.media?.playback_generation,mediaRequest:featureState?.media?.request_id,request_id:null,stopSource:null}:null;
+ if(pending){mediaClockPending=pending;if(featureState)renderMusic(featureState);}
+ return control('media_command',{action,source,generation:featureState?.media?.playback_generation||0,value}).then(receipt=>{
+  if(pending&&mediaClockPending===pending){pending.request_id=receipt.request_id;
+   if(['rejected','failed','unknown','cancelled'].includes(receipt.status)){
+    mediaClockPending=null;musicCommandFailed('음악 재생 위치를 확인해 주세요. 다시 요청할 수 있어요.');
+   }
+  }return receipt;
+ }).catch(reason=>{if(pending&&mediaClockPending===pending){mediaClockPending=null;musicCommandFailed('음악 상태를 확인해 주세요. 다시 요청할 수 있어요.');}throw reason;});
 }
 function videoErrorCode(error){return ({1:'aborted',2:'network',3:'decode',4:'unsupported'})[error?.code]||'unknown';}
 function stopMediaVideo(){
@@ -603,12 +614,14 @@ function showMusicControls(){
  mediaControlsTimer=setTimeout(hideMusicControls,2600);
 }
 function stopMusic(source='touch_stop'){
+ singing?.retire('stop_requested');
  if(mediaStopping)return Promise.resolve();
  mediaStopping=true;clearTimeout(mediaHoldTimer);clearTimeout(mediaControlsTimer);
  $('music-surface').dataset.controlsVisible='false';
  clearCaption();stopMediaVideo();
  for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
  if(mediaNextPending){mediaNextPending.stopSource=source;return Promise.resolve();}
+ if(mediaClockPending){mediaClockPending.stopSource=source;return Promise.resolve();}
  return dispatchMusicStop(source,featureState);
 }
 function musicCommandFailed(message){
@@ -627,7 +640,7 @@ function dispatchMusicStop(source,next){
  }).catch(()=>{if(mediaStopPending===pending)musicCommandFailed('음악 종료를 확인해 주세요. 다시 눌러 요청할 수 있어요.');});
 }
 function nextMusic(){
- if(mediaNextPending||mediaStopping||featureState?.mode!=='music')return;
+ if(mediaNextPending||mediaClockPending||mediaStopping||featureState?.mode!=='music')return;
  const pending={modeGeneration:featureState.mode_generation,generation:featureState.media?.playback_generation,request_id:null,stopSource:null};
  mediaNextPending=pending;renderMusic(featureState);
  control('next').then(receipt=>{
@@ -641,9 +654,9 @@ function nextMusic(){
 function syncMusicCommands(next){
  const receipt=id=>(next.requests||[]).find(item=>item.request_id===id)
   ||(next.last_result?.request_id===id?next.last_result:null);
- for(const pending of [mediaNextPending,mediaStopPending]){
+ for(const pending of [mediaNextPending,mediaStopPending,mediaClockPending]){
   if(pending&&(next.mode!=='music'||next.mode_generation!==pending.modeGeneration)){
-   mediaNextPending=mediaStopPending=null;mediaStopping=false;return;
+   mediaNextPending=mediaStopPending=mediaClockPending=null;mediaStopping=false;return;
   }
  }
  const change=mediaNextPending,ack=change?.request_id&&receipt(change.request_id);
@@ -665,12 +678,51 @@ function syncMusicCommands(next){
    }else if(rejected)error('다음 음악 요청을 완료하지 못했어요. 다시 선택해 주세요.');
   }
  }
+ const clockChange=mediaClockPending,clockAck=clockChange?.request_id&&receipt(clockChange.request_id);
+ if(clockChange&&next.media?.request_id!==clockChange.mediaRequest){mediaClockPending=null;if(clockChange.stopSource)mediaStopping=false;}
+ else if(clockChange&&clockAck){
+  const rejected=['rejected','failed','unknown','cancelled','unsupported'].includes(clockAck.status);
+  const applied=['simulated','succeeded'].includes(clockAck.status)&&next.media.playback_generation>clockChange.generation;
+  if(rejected||applied){
+   mediaClockPending=null;
+   if(clockChange.stopSource){
+    const generation=next.media.playback_generation;
+    queueMicrotask(()=>{
+     if(featureState?.mode==='music'&&featureState.mode_generation===clockChange.modeGeneration
+       &&featureState.media?.request_id===clockChange.mediaRequest&&featureState.media.playback_generation===generation)
+      dispatchMusicStop(clockChange.stopSource,featureState);
+     else{mediaStopping=false;mediaStopPending=null;}
+    });
+   }else if(rejected)error('음악 재생 위치를 바꾸지 못했어요. 다시 요청할 수 있어요.');
+  }
+ }
  const stop=mediaStopPending,result=stop?.request_id&&receipt(stop.request_id);
  if(result&&['rejected','failed','unknown','cancelled'].includes(result.status))
   musicCommandFailed('음악 종료를 확인해 주세요. 다시 눌러 요청할 수 있어요.');
 }
+async function setSingingMood(id,mood){
+ if(singingMoodPending!==null||!['joyful','gentle'].includes(mood))return;
+ const pending={id,mood,request_id:null,started:performance.now()};singingMoodPending=pending;
+ $('music-mood').disabled=true;
+ for(const select of document.querySelectorAll('[data-song-mood]'))select.disabled=true;
+ try{
+  const receipt=await control('singing_mood',{id,mood});
+  if(singingMoodPending!==pending)return;
+  if(['accepted','running'].includes(receipt.status))pending.request_id=receipt.request_id;
+  else{singingMoodPending=null;if(['rejected','failed','unknown'].includes(receipt.status))throw Error('mood_rejected');}
+ }catch(_){singingMoodPending=null;error('Singing mood could not be saved.');}
+}
 function renderMusic(next){
+ const moodPending=singingMoodPending;
+ if(moodPending?.request_id){
+  const receipt=(next.requests||[]).find(row=>row.request_id===moodPending.request_id);
+  if(receipt&&!['accepted','running'].includes(receipt.status)){
+   singingMoodPending=null;if(['rejected','failed','unknown'].includes(receipt.status))error('Singing mood could not be saved.');
+  }else if(performance.now()-moodPending.started>10000){singingMoodPending=null;error('Check the saved singing mood before trying again.');}
+ }
+ for(const select of document.querySelectorAll('[data-song-mood]'))select.disabled=singingMoodPending!==null;
  syncMusicCommands(next);
+ singing?.sync(next,{stopping:mediaStopping});
  const media=next.media||{},active=next.mode==='music',live=next.capabilities?.music==='explicit_supervised';
  const catalog=media.catalog||[];
  $('music-readiness').textContent=catalog.length?(live?'검증된 로컬 음악을 선택한 출력 장치에서 재생해요.':next.simulation?'합성 자료로 앱 연결을 검사해요. 실제 음원·출력은 별도 검수가 필요해요.':'음악을 가져왔어요. 재생에는 현재 실행의 명시적 허가가 필요해요.'):'사용자 음악을 private 목록에 가져오면 여기서 선택할 수 있어요.';
@@ -687,12 +739,19 @@ function renderMusic(next){
    button.onclick=()=>intent('play_song',item.id,mode).then(()=>{if(modes.length>1)$('music-dialog').close();}).catch(()=>error('음악을 시작하지 못했어요.'));
    row.append(button);
   }
+  if(modes.includes('face')){
+   const label=document.createElement('label');label.className='song-mood';label.textContent='Singing mood ';
+   const select=document.createElement('select');select.dataset.songMood=item.id;select.setAttribute('aria-label',item.title+' singing mood');
+   for(const [value,text] of [['joyful','Joyful'],['gentle','Gentle']]){const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);}
+   select.value=item.singing_mood==='gentle'?'gentle':'joyful';
+   select.onchange=()=>setSingingMood(item.id,select.value);label.append(select);row.append(label);
+  }
   $('music-list').append(row);
  }}
- const transition=mediaNextPending!==null||mediaStopping;
+ const transition=mediaNextPending!==null||mediaClockPending!==null||mediaStopping;
  for(const [id,capability] of [['music-pause','pause'],['music-resume','resume']])$(id).disabled=!active||transition||!media.capabilities?.includes(capability);
  $('music-next').disabled=!active||transition;$('music-stop').disabled=!active||mediaStopping;$('music-back').disabled=!active||mediaStopping;
- $('music-surface').dataset.nextPending=String(mediaNextPending!==null);$('music-surface').dataset.stopping=String(mediaStopping);
+ $('music-surface').dataset.nextPending=String(mediaNextPending!==null);$('music-surface').dataset.stopping=String(mediaStopping);$('music-surface').dataset.clockPending=String(mediaClockPending!==null);
  const wasActive=!$('music-surface').hidden;
  $('music-surface').hidden=!active;document.body.dataset.musicScreen=String(active);
  if(!active){
@@ -714,6 +773,9 @@ function renderMusic(next){
  if(!mediaSeekPending&&document.activeElement!==$('music-seek'))$('music-seek').value=String(Math.min(duration,Math.max(0,position)));
  $('music-seek').disabled=!active||transition||!media.capabilities?.includes('seek')||duration<=0;
  $('music-replay').disabled=!active||transition||!media.capabilities?.includes('replay');
+ $('music-mood-control').hidden=!active||variant!=='face';
+ $('music-mood').value=media.singing_mood==='gentle'?'gentle':'joyful';
+ $('music-mood').disabled=!active||transition||singingMoodPending!==null;
  const player=$('music-video');player.muted=true;player.volume=0;
  const url=typeof media.video_url==='string'&&media.video_url.startsWith('/api/')?media.video_url:null;
  const identity=video&&url?JSON.stringify([media.active_id,url,media.playback_generation]):null;
@@ -1266,6 +1328,7 @@ for(const [id,action] of [['music-pause','pause'],['music-resume','resume']])$(i
 $('music-next').onclick=nextMusic;
 $('music-stop').onclick=()=>stopMusic('touch_stop');
 $('music-toggle').onclick=()=>{const action=featureState?.media?.state==='playing'?'pause':'resume';return mediaCommand(action,'touch_'+action).catch(()=>error('음악 상태를 확인해 주세요.'));};
+$('music-mood').onchange=()=>{const id=featureState?.media?.active_id;if(id)setSingingMood(id,$('music-mood').value);};
 $('music-replay').onclick=()=>mediaCommand('replay','touch_replay').catch(()=>error('음악을 다시 시작하지 못했어요.'));
 $('music-seek').onchange=()=>{const position=Number($('music-seek').value);if(!Number.isFinite(position))return;mediaSeekPending=true;mediaCommand('seek','touch_seek',position).catch(()=>error('음악 재생 위치를 바꾸지 못했어요.')).finally(()=>{mediaSeekPending=false;});};
 $('music-back').onclick=()=>stopMusic('touch_back');
@@ -1447,7 +1510,7 @@ window.addEventListener('blur',event=>{
  },0);
 });
 window.addEventListener('gamepaddisconnected',()=>releasePad());
-window.addEventListener('pagehide',()=>{mediaObservation('pagehide');stopPolling();clearSelectKey();hintObserver?.disconnect();clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
+window.addEventListener('pagehide',()=>{singing?.close();mediaObservation('pagehide');stopPolling();clearSelectKey();hintObserver?.disconnect();clearCaption();photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();cancelPTT();closed=true;hideFaceVolume();clearTimeout(uiActivityTimer);stopPreview();stopVideoReview();stopMediaVideo();window.BMOPlayableGames?.close();epoch++;clearTimeout(timer);controller?.abort();window.BMOIntegration?.close();});
 document.addEventListener('visibilitychange',()=>{mediaObservation(document.hidden?'hidden':'visible');clearCaption();clearTimeout(timer);if(pollWorker)pollWorker.postMessage({action:'visibility',hidden:document.hidden});if(document.hidden){hideFaceVolume();stopPreview();$('video-review-player').pause();window.BMOPlayableGames?.suspend('hidden');photoReviewKeyHeld=false;videoKeyHeld=false;releasePad();if(!nativeOwnsInput())cancelPTT();}else{syncUiActivity();refreshAdapter();}poll();});
-window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence,previewEvidence};Object.defineProperty(window.BMODesktop,'pollEvidence',{get:()=>({owner:pollOwner,hidden:document.hidden,closed})});window.BMOPlayableGames?.configure({control,intent});startPolling();
+window.BMODesktop={state:null,desktop,control,intent,menu,inputEvidence,gamepadEvidence:padEvidence,previewEvidence};Object.defineProperty(window.BMODesktop,'singing',{get:()=>singing?.snapshot()||null});Object.defineProperty(window.BMODesktop,'pollEvidence',{get:()=>({owner:pollOwner,hidden:document.hidden,closed})});window.BMOPlayableGames?.configure({control,intent});startPolling();
 })();

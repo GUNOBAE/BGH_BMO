@@ -1,5 +1,86 @@
 # BMO Character Life v1 구현·검증 기록
 
+## 2026-11-10 v4 boot 호환·긴 질문·발화 팔·TWO MOODS 06
+
+최신 실기 근거는 PR #40 `PI-CFB-FIELD-PREPARATION-20261110`(댓글6747860723)과
+작업 중 추가된 `PI-FOLLOWUP-DIAGNOSTICS-20261110`(댓글6748747461)이다.
+cfbeb3f의 Video51.484333초/Face51.467042초 앱 완주와 같은 아이콘·중단 후 대화는
+이번 사용자 PASS다. 과거8c underrun을 현재 실패로 재사용하지 않는다. 아래 새 코드는
+Pi에 자동 적용하지 않았으며, 정확한 배포 SHA와 같은 SHA의 push/PR CI는 최신 READY를 따른다.
+
+- **v4 설치 차단:** 기존 reviewed boot의 실제 원본은
+  `firmware/staging/bmo_arm_supervised_v1/boot.py`이며 SHA`f59e20f9…`이다.
+  canonical`1540f755…`와 이 정확한 변형만 허용한다. 설치/백업/복귀와 실행 backend는
+  기존 boot 바이트를 보존하고 실제 해시를 profile binding까지 전달한다. v3 선행 설치는
+  필요 없다. 공식 `imu_candidate`의 현재 감독 조건·검토 SHA·backup 절차를 유지한다.
+- **긴 질문:** source/coordinator/PCM 한도를30초로 일치시킨다. 기존 VAD가 짧은 질문을
+  말끝에 종료하며 매번30초를 기다리지 않는다. 상한에 도달한 미완성 발화는
+  `capture_limit_reached`로 안내하고 STT/장치 명령에 넘기지 않는다. 새 Pi 진단의 run
+  `d280c54ea12248e8a758f5ceb19a12bd` 네 실패(:5/:6/:9/:11)는 STT 후 AI 구간의
+  `operation_failed`이며 짧은 입력에서도 발생했다. 원래 하위 예외·선택 WAV 길이·종료
+  reason은 없어 그 실제 원인을12초 제한/원격 LLM/로컬 적용 중 하나로 확정하지 않는다.
+- **답변 경로:** 최신 실제 두 턴은 마지막 voiced frame→본문 player11.0328/8.7566초,
+  LLM6.6677/5.6068초, prefix0, `fish_stream`이었다. 누적된 중복 feature 지시문을
+  하나의 활성 계약으로 줄이고 최종 요청 예산·응답 상태/incomplete reason·사용 token 수를
+  원문 없이 보존한다. 모델·등급·음색·VAD 설정은 유지한다. 코드의 전송량 감소는
+  실측 속도 PASS가 아니며 새 Pi 실측과 실제 스피커 음향 시작은 별도다. 후속 Pi 보고의
+  같은cfb 자연 사용 표본6.1072/9.6135초는 위 표본과 별도로 보존하며 이번 수정의
+  개선폭으로 사용하지 않는다. provider 요청·응답 검증·답변 적용의 하위 구분과 허용된
+  예외 분류/HTTP 상태를 같은 SHA/run/turn에 기록한다. 원문·응답 JSON·키·PCM은 저장하지 않는다.
+  재현된 로컬 답변 적용 실패에서는 재생하지 않은 답변이 history에 남던 문제도 고쳤다.
+  이전 history를 복원하고 `reply_apply_failed`로 끝낸 뒤 다음 대화를 받는다. 이것을
+  과거 Pi 네 실패의 확정 원인으로 보지는 않는다.
+- **명시적 팔:** 단일 의미 응답의 명시적 팔 요청은 자동 장식과 구분한다. 준비된 장치의
+  인사/축하/작은 어깨 연출을 실제 player-start에 한 번 연결하고 끝/취소에서 기존
+  entry→hold→return 소유권을 정리한다. 자동 장식의45초/이동5분2회 제한을 명시적 요청에
+  잘못 적용하지 않으며, 장치 준비·STOP·중복/late-event 제한은 유지한다. ACK는 실물 도달
+  증거가 아니다. 현재 Pi는 보드v1/실제 armsOFF/새 IMU profile없음으로 미준비다.
+  구형 v1/v2의 명시적 요청은 정확한 구형 CAPS 응답일 때 기존 유한 named DO를 유지한다.
+  이 경로는 `legacy_named_gesture`로 구분하며 v3/v4의 `speech_profile` 연출이나 새로운
+  자동 복귀로 표시하지 않는다. 자동 장식에는 이 구형 fallback을 쓰지 않는다.
+- **울음 전달:** 기존 tearful/theatrical_crying과 같은 Aaron의 soft override 경로를
+  실제 요청/Director/얼굴/Fish 모델·태그·fallback 단계별로 확인한다. 요청 성공과
+  사용자의 슬픈 목소리 청취 승인을 구분한다. 임의 성우·pitch·유료 모델 전환은 없다.
+
+노래 얼굴은 사용자가 제공한 ZIP SHA
+`3897358010c10ab0d651978c65389d100b39455d401a2e85d31b5ffcb3a553d3`의
+**TWO MOODS 06** renderer0.6.0/planner1.2.0/analyzer1.0.0을 통합한다. 첨부 문서의
+제작 당시 visual pending은 이번 사용자의 통합 요청을 막는 재승인 조건이 아니다.
+joyful의 웃는 감은 눈/미소 입과 gentle의 편안한 감은 눈/O 입 작화를 그대로 사용한다.
+원본 R10과 첨부 비교본은 변경하지 않는다. 새로운 눈물·찡그림 도형을 추가하지 않는다.
+
+실제 음원 SHA에 묶인 전체 음악 강약 분석은 앱을 종료한 상태에서 한 번 준비한다.
+PCM 출력 중 분석하거나 별도 브라우저 오디오를 재생하지 않는다. 준비 캐시가 없거나
+검증되지 않으면 기존 `{time,mouth}` cue를 유지하며 level=.6을 실제 신호로 사용하지 않는다.
+새 profile/plan/mouth/acting/noteEvents는 별도 계약으로 구분한다. 얼굴 시간은 기존
+isolated PCM의 `position_seconds`/`output_started`와 request·mode/playback generation을 따른다.
+pause/seek/replay/Video/GP8/종료와 늦은 분석 callback에서 레이어를 정리하고 다음 대화에
+시각 소유권을 돌려준다. 곡별 `Singing mood: Joyful / Gentle`은 기본 Joyful이며
+사용자의 선택과 음원 SHA를 private preferences에 저장한다. BPM으로 감정을 추정하지 않는다.
+이 기능은 **전체 음악 강약 근사**이며 가사·음소·보컬 분리 립싱크가 아니다.
+제품 회귀에서 확인한 seek/replay 직후 Pause의 이전 generation 요청도 수정했다.
+HTTP202만으로 완료로 보지 않고 실제 새 재생 generation을 확인한 뒤 다음 조작을 받으며,
+대기 중 Stop은 한 번만 이어 처리한다. 기존 watchdog과 단일 오디오 소유권은 유지한다.
+
+Pi 담당의 추가 준비(기존 import를 다시 하지 않음):
+
+```bash
+cd /home/bgh/BMO_CHARACTER_LIFE
+PYTHONPATH=software .venv-device/bin/python -m bmo_ai.imu_candidate --keep-reviewed-motors
+PYTHONPATH=software .venv-device/bin/python -m bmo_ai.imu_candidate \
+  --keep-reviewed-motors --prepare \
+  --work-directory /home/bgh/BMO_private/staging/arm-v4-reviewed-20261110
+PYTHONPATH=software .venv-device/bin/python -m bmo_ai.media_assets \
+  --content-root /home/bgh/BMO_private/runtime/media-space-potatoes-v1 --prepare-singing
+```
+
+이미 존재하는 staging 경로는 새 이름을 쓴다. apply는 별도 현재 실물 조건을 확인한 Pi만
+수행하며, 팔 commissioning과 IMU 여섯 조건별 반복 실측/profile은 별도다. 프로필 준비 후
+같은 **BMO Candidate** 아이콘을 실행하고 목표 SHA=설치 SHA=runner 인수 SHA=아이콘 실행본을
+대조한다. 앱 종료는 설정→BMO 종료, 복귀는 보존된 정상본 아이콘이다. 기존 private 설정과
+자산·정상본을 덮어쓰지 않는다. 이번 추가 실기는 긴 질문/실패 복구, 실제 본문 지연과
+울음 전달, 준비 후 명시적 축하 팔, 두 노래 분위기의 pause/seek/복귀에 집중한다.
+
 ## 2026-11-09 MPU6050 상대 움직임 반응 후속
 
 이 후속은 음악·답변·B1 발화 연출 후보 `8c3de0d`를 보존한다. exact 후속 SHA와

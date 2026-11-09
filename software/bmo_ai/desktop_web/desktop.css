@@ -82,3 +82,5 @@ body[data-music-screen="true"] #notice:not([data-music-error="true"]){display:no
 @media(max-width:430px){#face-volume{right:8px;left:8px;gap:5px;justify-content:center;padding:8px}#face-volume-value{min-width:64px}}
 
 [data-bmo-adjusting="true"]{outline:4px dashed #ffdb72!important;background:#397265!important}
+
+.song-mood{display:block;margin:8px 0;font-size:17px}.song-mood select{min-height:40px;font-size:17px}#music-mood-control select{min-height:36px;font-size:15px}#music-mood-control{display:flex;align-items:center;gap:5px}
