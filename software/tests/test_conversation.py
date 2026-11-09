@@ -13,7 +13,7 @@ from bmo_ai.audio import AudioValidationError
 from bmo_ai.cloud import CloudError
 from bmo_ai.config import BMOConfig
 from bmo_ai.conversation import ConversationWorker, TurnCancelled
-from bmo_ai.core import BMOBrain
+from bmo_ai.core import BMOBrain, BrainResponseError
 from bmo_ai.expression_contract import ExpressionClient
 from bmo_ai.hardware import FaceState
 from bmo_ai.offline_demo import offline_app
@@ -323,9 +323,12 @@ class WorkerTests(unittest.TestCase):
                   CloudError("rate_limit", "private provider body"),
                   AudioValidationError("private path", "invalid_wav"),
                   TimeoutError("private request"), RuntimeError("private prompt"),
-                  CloudError("private_code", "private body")]
+                  CloudError("private_code", "private body"),
+                  BrainResponseError("private incomplete JSON", "llm_incomplete_output"),
+                  BrainResponseError("private payload", "private_code")]
         for error, expected in zip(errors, ("authentication", "rate_limit", "invalid_wav", "timeout",
-                                             "operation_failed", "operation_failed")):
+                                             "operation_failed", "operation_failed", "llm_incomplete_output",
+                                             "operation_failed")):
             with self.subTest(expected=expected):
                 fail = [True]
 

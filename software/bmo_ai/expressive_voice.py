@@ -5,11 +5,16 @@ request delivery, not proof that the generated audio sounds expressive. Approval
 still requires listening. Construction and planning perform no IO.
 """
 from dataclasses import dataclass
+import re
 
 from .expression_contract import FACE_EMOTIONS, ExpressionReply
+from .character_director import CharacterPlan, VOICE_DIRECTIONS, IDENTITY_DIRECTION
 
 
-REACTIONS = ("none", "chuckle", "gasp", "playful_puff", "sob")
+REACTIONS = ("none", "chuckle", "gasp", "playful_puff", "sob", "hmm", "ooh", "aha", "tada", "oops")
+REACTION_POLICY_REASONS = ("not_requested", "eligible", "invalid_plan", "unvalidated",
+    "unsupported_model", "sensitive_context", "already_in_speech", "success_event_only",
+    "correction_required", "reaction_cooldown", "reaction_repeat")
 SUPPORTED_MODELS = frozenset(("s2.1-pro-free", "s2.1-pro"))
 EMOTION_CUES = {
     "neutral": "", "happy": "[happy] ", "sad": "[sad] ",
@@ -25,12 +30,28 @@ REACTION_CUES = {
 }
 
 
+def strip_written_laughter(text):
+    """Chat shorthand is not a phonetic script or a request to read letters."""
+    return re.sub(r'[ㅋㅎ]{2,}', '', text).strip()
+
+
+def already_reactive(spoken):
+    """Do not add another sound to an answer already containing one."""
+    return bool(re.search(r'(?i)\b(?:ha(?:ha)+|he(?:he)+|h[am]{2,}|hmm+|oo+h|aha|ta[ -]?da|oops|whoa)\b|[ㅋㅎ]{2,}', spoken)
+                or re.search(r'(?i)\b(?:ha|heh|hee)(?:[ ,.!-]+(?:ha|heh|hee))+\b|^\s*(?:hah?|heh)\b[!,.-]', spoken)
+                or re.search(r'(?i)^\s*(?:oh!|(?:wow|yay|whew)\b)', spoken))
+
+
 @dataclass(frozen=True, slots=True)
 class VoiceDelivery:
     text: str
     emotion: str
     reaction: str
     mechanism: str
+    override_soft: bool = False
+    explicit_acting: bool = False
+    proposed_reaction: str = "none"
+    reaction_reason: str = "not_requested"
 
 
 class ExpressivePolicy:
@@ -42,6 +63,8 @@ class ExpressivePolicy:
     def __init__(self):
         self._successful = 0
         self._last_reaction = -3
+        self._last_character_reaction = None
+        self._last_character_at = -3
 
     def plan(self, spoken, metadata, *, model):
         value = metadata if type(metadata) is dict else {}
@@ -50,6 +73,8 @@ class ExpressivePolicy:
             emotion = "neutral"
         # Keep the same strict clean-speech boundary before adding host tags.
         ExpressionReply(spoken, emotion)
+        if "character_plan" in value:
+            return self._character_plan(spoken, value, model=model)
         if model not in SUPPORTED_MODELS:
             return VoiceDelivery(spoken, "neutral", "none", "plain_fallback")
         validated = value.get("emotion_validation") == "validated"
@@ -64,7 +89,56 @@ class ExpressivePolicy:
         return VoiceDelivery(EMOTION_CUES[emotion] + cue + spoken,
                              emotion, reaction, "fish_s2_allowlist_v1")
 
+    def _character_plan(self, spoken, metadata, *, model):
+        try:
+            plan = CharacterPlan.from_public(metadata["character_plan"])
+        except (ValueError, TypeError):
+            return VoiceDelivery(spoken, "neutral", "none", "plain_fallback", reaction_reason="invalid_plan")
+        if (model not in (*SUPPORTED_MODELS, "drama-3")
+                or metadata.get("emotion_validation") != "validated"
+                or metadata.get("emotion") != plan.face_emotion):
+            return VoiceDelivery(spoken, "neutral", "none", "plain_fallback",
+                proposed_reaction=plan.reaction_id, reaction_reason=("unsupported_model"
+                    if model not in (*SUPPORTED_MODELS, "drama-3") else "unvalidated"))
+        reaction = plan.reaction_id
+        reason = "not_requested" if reaction == "none" else "eligible"
+        if reaction != "none":
+            if plan.sensitive_context:
+                reason = "sensitive_context"
+            elif already_reactive(spoken):
+                reason = "already_in_speech"
+            elif reaction == "tada":
+                reason = "success_event_only"
+            elif (reaction == "oops" and plan.delivery_id != "gentle_correction"
+                  and not re.search(
+                    r"(?i)\b(?:my mistake|i was wrong|i meant|sorry|correction|let me correct)\b|(?:잘못|정정|미안)", spoken)):
+                reason = "correction_required"
+            elif not plan.explicit_acting and self._successful - self._last_character_at < 3:
+                reason = "reaction_cooldown"
+            elif (not plan.explicit_acting and reaction == self._last_character_reaction
+                    and self._successful - self._last_character_at < 6):
+                reason = "reaction_repeat"
+        if reason not in ("not_requested", "eligible"):
+            reaction = "none"
+        cues = {"none": "", "chuckle": "[chuckling] ", "gasp": "[gasping] [one brief breath, then begin the spoken line immediately] ",
+                "playful_puff": "[sighing, brief playful puff] ", "sob": "[sobbing, one short breath] ",
+                "hmm": "", "ooh": "", "aha": "", "tada": "", "oops": ""}
+        # The default Soft instruction used to precede and conflict with acted
+        # crying/anger. Preserve voice identity separately and use one congruent
+        # host delivery, without changing voice ID, pronunciation or gain.
+        text = IDENTITY_DIRECTION + VOICE_DIRECTIONS[plan.delivery_id] + cues[reaction] + spoken
+        return VoiceDelivery(text, plan.face_emotion, reaction,
+            "fish_character_drama3_v1" if model == "drama-3" else "fish_character_s2_v1",
+            override_soft=True, explicit_acting=plan.explicit_acting,
+            proposed_reaction=plan.reaction_id, reaction_reason=reason)
+
     def completed(self, delivery):
+        if delivery.mechanism.startswith("fish_character_"):
+            if delivery.reaction != "none" and not delivery.explicit_acting:
+                self._last_character_at = self._successful
+                self._last_character_reaction = delivery.reaction
+            self._successful += 1
+            return
         if delivery.reaction != "none":
             self._last_reaction = self._successful
         self._successful += 1

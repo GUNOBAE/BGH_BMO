@@ -1,0 +1,368 @@
+"""Completed numeric timing receipts; no provider, device or original speech."""
+import json
+from pathlib import Path
+import stat
+from tempfile import TemporaryDirectory
+import time
+import unittest
+from unittest.mock import Mock, patch
+
+from bmo_ai.completed_turn_diagnostics import CAPACITY, MAX_BYTES, CompletedTurnStore, source_revision
+from bmo_ai.turn_diagnostics import TurnDiagnostics
+
+
+class CompletedTurnDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory()))
+        self.directory = self.root / "timings"
+        self.now = 10.
+        self.enterContext(patch("socket.socket.connect", side_effect=AssertionError("network forbidden")))
+        self.enterContext(patch("subprocess.Popen", side_effect=AssertionError("device/provider forbidden")))
+
+    def store(self, directory=None, **kw):
+        value = CompletedTurnStore(directory or self.directory, runtime_revision="a" * 40,
+            wall_clock=lambda: 1800000000, **kw)
+        self.addCleanup(value.close)
+        return value
+
+    def trace(self, sink=None, turn=1):
+        value = TurnDiagnostics(enabled=True, clock=lambda: self.now, completed_sink=sink)
+        value.mark_input(); value.begin(turn)
+        for stage, code, elapsed in (
+            ("vad", "last_voiced", .40), ("vad", "vad_closed", 1.32),
+            ("capture_close", "capture_closed", 1.35), ("stt", "request_started", 1.40),
+            ("stt", "ok", 1.60), ("ai", "started", 1.62), ("ai", "ok", 2.20),
+            ("fish", "started", 2.25), ("fish", "audio_first_byte", 2.50),
+            ("fish", "audio_downloaded", 3.), ("fish", "audio_ready", 3.05),
+            ("playback", "playback_started", 3.10)):
+            self.now = 10. + elapsed
+            value.record(stage, code)
+        return value
+
+    def read(self):
+        return json.loads((self.directory / "completed-turns.json").read_text())
+
+    def test_completion_saves_once_then_survives_next_turn_and_reopen(self):
+        store = self.store()
+        trace = self.trace(store.record)
+        self.assertEqual(store.snapshot()["retained"], 0)
+        self.assertFalse((self.directory / "completed-turns.json").exists())
+        trace.finish("ok")
+        trace.finish("ok")
+        trace.begin(2)
+        self.assertEqual(trace.snapshot()["markers_ms"], {"turn_admitted": 0.})
+        record, = self.read()["records"]
+        self.assertEqual(record["runtime_revision"], "a" * 40)
+        self.assertEqual(record["terminal"], "ok")
+        self.assertEqual(record["timings"]["last_voiced_to_player_start_ms"]["value_ms"], 2700.)
+        self.assertEqual(record["timings"]["capture_close_to_stt_ms"]["value_ms"], 50.)
+        self.assertEqual(record["timings"]["stt_to_llm_ms"]["value_ms"], 20.)
+        self.assertEqual(record["timings"]["llm_to_tts_ms"]["value_ms"], 50.)
+        self.assertEqual(record["timings"]["audio_ready_to_player_ms"]["value_ms"], 50.)
+        self.assertEqual(record["timings"]["acoustic_first_sound_ms"], dict(status="UNMEASURED", value_ms=None))
+        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE((self.directory / "completed-turns.json").stat().st_mode), 0o600)
+        store.close()
+        self.assertEqual(self.store().snapshot()["retained"], 1)
+
+    def test_missing_markers_stay_unmeasured_and_private_payloads_never_persist(self):
+        store = self.store(vad_profile="balanced", vad_mode="webrtc")
+        trace = TurnDiagnostics(enabled=True, clock=lambda: self.now)
+        trace.begin(1); trace.record("stt", "authentication", outcome="error"); trace.finish("authentication")
+        value = trace.snapshot()
+        value.update(transcript="PRIVATE TRANSCRIPT", audio=b"PCM", path="/private/user",
+                     provider={"api_key": "SECRET"})
+        value["markers_ms"]["SECRET"] = 5
+        value["markers_ms"]["player_started"] = float("nan")
+        value["timings"]["llm_ms"] = dict(status="MEASURED", value_ms=10)
+        self.assertTrue(store.record(value))
+        raw = (self.directory / "completed-turns.json").read_text()
+        for secret in ("PRIVATE", "SECRET", "PCM", "/private", "api_key", "provider"):
+            self.assertNotIn(secret, raw)
+        row, = self.read()["records"]
+        self.assertEqual(row["vad_profile"], "balanced")
+        self.assertEqual(row["failure"]["code"], "authentication")
+        self.assertEqual(row["timings"]["llm_ms"], dict(status="UNMEASURED", value_ms=None))
+        self.assertFalse(row["contains_audio"] or row["contains_transcript"])
+
+    def test_safe_capture_and_provider_counts_survive_reload_without_original_payloads(self):
+        store = self.store()
+        trace = TurnDiagnostics(enabled=True, clock=lambda: self.now, completed_sink=store.record)
+        trace.begin(1)
+        trace.record("capture_close", "capture_ready", captured_bytes=560000, duration_ms=17500,
+                     capture_end_reason="silence", capture_limit_ms=30000, pcm=b"PRIVATE PCM")
+        trace.record("stt", "ok", transcript_chars=900, transcript="PRIVATE QUESTION")
+        trace.record("ai", "started", max_output_tokens=900, request_input_chars=1200,
+                     request_instruction_chars=6000, request_schema_chars=4500)
+        trace.record("ai", "llm_incomplete_output", outcome="error", response_status="incomplete",
+                     incomplete_reason="max_output_tokens", input_tokens=2000, output_tokens=900,
+                     reasoning_tokens=700, response_output_chars=55, output="PRIVATE JSON")
+        trace.finish("llm_incomplete_output")
+        original = (self.directory / "completed-turns.json").read_bytes()
+        row, = self.read()["records"]
+        self.assertEqual(row["stage_metadata"]["capture_close"], dict(captured_bytes=560000,
+            duration_ms=17500, capture_end_reason="silence", capture_limit_ms=30000))
+        self.assertEqual(row["stage_metadata"]["ai"]["max_output_tokens"], 900)
+        self.assertEqual(row["stage_metadata"]["ai"]["incomplete_reason"], "max_output_tokens")
+        self.assertNotIn(b"PRIVATE", original)
+        store.close()
+        self.assertEqual(self.store().snapshot()["retained"], 1)
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), original)
+        trace.begin(2)
+        self.assertEqual(trace.snapshot()["stage_metadata"], {})
+
+    def test_legacy_v3_without_stage_metadata_is_preserved_and_unknown_fields_are_not_saved(self):
+        store = self.store()
+        trace = self.trace()
+        trace.finish("ok")
+        value = trace.snapshot()
+        value.pop("stage_metadata")
+        self.assertTrue(store.record(value))
+        before = (self.directory / "completed-turns.json").read_bytes()
+        self.assertNotIn(b"stage_metadata", before)
+        store.close()
+        reopened = self.store()
+        self.assertEqual(reopened.snapshot()["retained"], 1)
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), before)
+        value["turn"] = 2
+        value["stage_metadata"] = {"ai": {"response_status": "PRIVATE", "incomplete_reason": "PRIVATE",
+            "input_tokens": float("inf"), "output_tokens": True, "request_schema_chars": -1,
+            "api_key": "PRIVATE", "response_output_chars": 20}, "PRIVATE": {"input_tokens": 10}}
+        self.assertTrue(reopened.record(value))
+        row = self.read()["records"][-1]
+        self.assertEqual(row["stage_metadata"], {"ai": {"response_output_chars": 20}})
+        self.assertNotIn("PRIVATE", json.dumps(row))
+
+    def test_ai_substage_error_evidence_survives_private_reload_without_exception_text(self):
+        store = self.store()
+        trace = TurnDiagnostics(enabled=True, clock=lambda: self.now, completed_sink=store.record)
+        trace.begin(1)
+        trace.record("stt", "wav_ready", captured_bytes=480000, sample_frames=240000, duration_ms=15000)
+        trace.record("ai", "started", ai_substage="provider_request")
+        self.now += 4.5
+        trace.record("ai", "operation_failed", outcome="error", ai_substage="response_parse",
+            provider_request_ms=4400.5, response_parse_ms=99.5, exception_class="type_error",
+            http_status=200, error_message="PRIVATE", response_body="PRIVATE JSON")
+        trace.finish("operation_failed")
+        raw = (self.directory / "completed-turns.json").read_bytes()
+        row, = self.read()["records"]
+        self.assertEqual(row["stage_metadata"]["ai"], dict(ai_substage="response_parse",
+            provider_request_ms=4400.5, response_parse_ms=99.5, exception_class="type_error", http_status=200))
+        self.assertEqual(row["stage_metadata"]["stt"], dict(captured_bytes=480000,
+            sample_frames=240000, duration_ms=15000))
+        self.assertEqual(row["failure"], dict(stage="ai", code="operation_failed", outcome="error"))
+        self.assertNotIn(b"PRIVATE", raw)
+        trace.record("ai", "ok", ai_substage="reply_apply", exception_class="other")
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), raw)
+        store.close()
+        self.assertEqual(self.store().snapshot()["retained"], 1)
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), raw)
+
+    def test_ai_substage_unknown_labels_and_invalid_http_values_never_enter_receipts(self):
+        for invalid in (True, 200., 99, 600, float("nan"), "PRIVATE HTTP"):
+            trace = TurnDiagnostics(enabled=True, clock=lambda: self.now)
+            trace.begin(1)
+            trace.record("ai", "operation_failed", outcome="error", ai_substage="PRIVATE REQUEST",
+                exception_class="PrivateException", http_status=invalid,
+                provider_request_ms=-1, response_parse_ms=float("inf"), reply_apply_ms=300001)
+            self.assertEqual(trace.snapshot()["stage_metadata"], {})
+            self.assertEqual(trace.snapshot()["events"][-1]["metrics"], {})
+        trace.record("ai", "operation_failed", outcome="error", ai_substage="reply_apply",
+            exception_class="key_error", http_status=503, provider_request_ms=1200, reply_apply_ms=.5)
+        trace.finish("operation_failed")
+        store = self.store()
+        self.assertTrue(store.record(trace.snapshot()))
+        row, = self.read()["records"]
+        self.assertEqual(row["stage_metadata"]["ai"]["http_status"], 503)
+        self.assertEqual(row["stage_metadata"]["ai"]["ai_substage"], "reply_apply")
+        self.assertNotIn("PRIVATE", json.dumps(row))
+
+    def test_oldest_completed_records_are_bounded_across_sessions(self):
+        store = self.store()
+        for number in range(1, CAPACITY + 9):
+            trace = TurnDiagnostics(enabled=True, clock=lambda: self.now, completed_sink=store.record)
+            trace.begin(number); trace.finish("cancelled" if number % 2 else "ok")
+        self.assertEqual(store.snapshot()["retained"], CAPACITY)
+        self.assertEqual(self.read()["records"][0]["turn"], 9)
+        self.assertLess((self.directory / "completed-turns.json").stat().st_size, MAX_BYTES)
+        self.assertEqual(list(self.directory.iterdir()), [self.directory / "completed-turns.json"])
+
+    def test_storage_error_is_redacted_and_cannot_fail_completed_turn_or_repeat_sink(self):
+        store = self.store()
+        trace = self.trace(store.record)
+        with patch("bmo_ai.completed_turn_diagnostics.os.link", side_effect=OSError("PRIVATE PATH")):
+            trace.finish("ok")
+        self.assertEqual(trace.snapshot()["terminal"], "ok")
+        self.assertFalse(store.snapshot()["enabled"])
+        self.assertEqual(store.snapshot()["code"], "diagnostic_write_failed")
+        self.assertNotIn("PRIVATE", json.dumps(store.snapshot()))
+        self.assertEqual(list(self.directory.iterdir()), [])
+        sink = Mock(side_effect=RuntimeError("private observer"))
+        trace = self.trace(sink)
+        trace.finish("ok"); trace.finish("ok")
+        sink.assert_called_once()
+
+    def test_foreign_existing_file_symlink_checkout_and_public_directory_preserved(self):
+        self.directory.mkdir(mode=0o700)
+        path = self.directory / "completed-turns.json"
+        path.write_text("preserve user file"); path.chmod(0o600)
+        self.assertFalse(self.store().snapshot()["enabled"])
+        self.assertEqual(path.read_text(), "preserve user file")
+        linked = self.root / "linked"; linked.symlink_to(self.directory, target_is_directory=True)
+        self.assertFalse(self.store(linked).snapshot()["enabled"])
+        public = self.root / "public"; public.mkdir(); public.chmod(0o755)
+        self.assertFalse(self.store(public).snapshot()["enabled"])
+        checkout = self.root / "checkout"; checkout.mkdir(mode=0o700); (checkout / ".git").mkdir()
+        self.assertFalse(self.store(checkout / "timings").snapshot()["enabled"])
+        self.assertFalse((checkout / "timings").exists())
+        path.unlink(); path.symlink_to(public / "must-not-create")
+        self.assertFalse(self.store().snapshot()["enabled"])
+        self.assertFalse((public / "must-not-create").exists())
+
+    def test_replaced_file_and_changed_directory_permission_disable_only_storage(self):
+        store = self.store(); trace = self.trace()
+        trace.finish("ok"); self.assertTrue(store.record(trace.snapshot()))
+        path = self.directory / "completed-turns.json"
+        path.unlink(); path.write_text("replacement"); path.chmod(0o600)
+        self.assertFalse(store.record(trace.snapshot()))
+        self.assertEqual(path.read_text(), "replacement")
+        other = self.store(self.root / "other")
+        (self.root / "other").chmod(0o755)
+        self.assertFalse(other.record(trace.snapshot()))
+        self.assertEqual(other.snapshot()["code"], "diagnostic_write_failed")
+
+    def test_atomic_update_preserves_previous_records_on_publish_error(self):
+        store = self.store(); trace = self.trace()
+        trace.finish("ok"); self.assertTrue(store.record(trace.snapshot()))
+        original = (self.directory / "completed-turns.json").read_bytes()
+        with patch("bmo_ai.completed_turn_diagnostics.os.replace", side_effect=OSError("private")):
+            self.assertFalse(store.record(trace.snapshot()))
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), original)
+        self.assertEqual(list(self.directory.iterdir()), [self.directory / "completed-turns.json"])
+
+    def test_disabled_diagnostics_never_write_and_incomplete_trace_is_rejected(self):
+        store = self.store()
+        trace = TurnDiagnostics(enabled=False, clock=lambda: self.now, completed_sink=store.record)
+        trace.begin(1); trace.finish("ok")
+        self.assertFalse((self.directory / "completed-turns.json").exists())
+        trace = TurnDiagnostics(enabled=True, clock=lambda: self.now); trace.begin(1)
+        self.assertFalse(store.record(trace.snapshot()))
+        self.assertEqual(store.snapshot()["retained"], 0)
+
+    def test_actual_host_completion_persists_then_next_ptt_turn_adds_one_receipt(self):
+        from bmo_ai.features.host import FeatureHost, FeatureSimulatedClient
+        from bmo_ai.features.runtime import RuntimePolicy
+        from bmo_ai.integration_profile import integration_config
+        from bmo_ai.integration_voice import IntegrationVoice, synthetic_wav
+        from test_ptt_session_integration import Clock, ControlledSource
+        clock, client, config = Clock(), FeatureSimulatedClient(), integration_config()
+        voice = IntegrationVoice(config, client, simulate=False,
+            fish_synthesizer=lambda *_a, **_kw: synthetic_wav(),
+            player=lambda *_a, **kw: kw["on_start"](), emit=lambda *_a, **_kw: None)
+        store = self.store()
+        host = FeatureHost(config=config, client=client, voice=voice, clock=clock,
+            runtime=RuntimePolicy(simulate=False, conversation_ptt_microphone=True),
+            ptt_source_factory=lambda: ControlledSource(clock, [(10000, 8), (0, 24)]),
+            ptt_transcriber=lambda *_a, **_kw: "PRIVATE QUESTION", ptt_trace=True,
+            ptt_speech_safe=True, completed_turn_store=store)
+        self.addCleanup(host.close)
+        host.bind_runtime_identity('d' * 32)
+        for number in (1, 2):
+            clock.now += .3
+            self.assertTrue(host.ptt_button())
+            deadline = time.monotonic() + 3
+            while host.session.busy and time.monotonic() < deadline:
+                host.heartbeat(); host.poll(); time.sleep(.002)
+            host.poll()
+            self.assertFalse(host.session.busy)
+            self.assertEqual(store.snapshot()["retained"], number)
+            row = self.read()["records"][-1]
+            self.assertEqual((row["turn"], row["terminal"]), (number, "ok"))
+            self.assertEqual(row['runtime_revision'], host.snapshot()['runtime_provenance']['source_revision_at_start'])
+            self.assertEqual(row['run_id'], 'd' * 32)
+            self.assertEqual(row['turn_id'], f'{host.session.session_id}:{number}')
+            self.assertEqual(row['playback_path'], 'fish_wav')
+            self.assertEqual(row['answer_onset_evidence'], 'body_player_boundary')
+            self.assertEqual(row["timings"]["last_voiced_to_player_start_ms"]["status"], "MEASURED")
+            self.assertEqual(row['timings']['last_voiced_to_answer_start_ms']['status'], 'MEASURED')
+            self.assertIsNotNone(row['terminal_elapsed_ms'])
+            self.assertEqual(row["timings"]["tts_to_first_byte_ms"]["status"], "UNMEASURED")
+        self.assertNotIn("PRIVATE QUESTION", (self.directory / "completed-turns.json").read_text())
+        self.assertEqual(len(client.requests), 2)
+
+
+class WorktreeRevisionTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(TemporaryDirectory()))
+        self.checkout = self.root / 'candidate'; self.checkout.mkdir()
+        self.common = self.root / 'main' / '.git'
+        self.admin = self.common / 'worktrees' / 'candidate'; self.admin.mkdir(parents=True)
+        (self.common / 'HEAD').write_text('ref: refs/heads/main\n')
+        self.branch = 'refs/heads/feature/bmo-character-life-v1'
+        (self.admin / 'HEAD').write_text('ref: ' + self.branch + '\n')
+        (self.admin / 'commondir').write_text('../..\n')
+        self.marker = self.checkout / '.git'
+        self.marker.write_text('gitdir: ../main/.git/worktrees/candidate\n')
+        self.enterContext(patch('bmo_ai.completed_turn_diagnostics.__file__',
+            str(self.checkout / 'software/bmo_ai/completed_turn_diagnostics.py')))
+        self.enterContext(patch('subprocess.Popen', side_effect=AssertionError('No git subprocess')))
+        self.enterContext(patch('socket.socket.connect', side_effect=AssertionError('No network')))
+
+    def branch_file(self, value):
+        path = self.common / self.branch
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(value + '\n')
+        return path
+
+    def test_relative_and_absolute_worktree_gitdir_use_its_head_and_common_loose_ref(self):
+        path = self.branch_file('b' * 40)
+        (self.common / 'refs/heads/main').write_text('a' * 40 + '\n')
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in (self.marker, path, self.admin / 'HEAD')}
+        self.assertEqual(source_revision(), 'b' * 40)
+        self.assertEqual(before, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in before})
+        self.marker.write_text('gitdir: ' + str(self.admin) + '\n')
+        self.assertEqual(source_revision(), 'b' * 40)
+
+    def test_worktree_shared_packed_refs_and_detached_head(self):
+        (self.common / 'packed-refs').write_text('# pack-refs\n' + 'c' * 40 + ' ' + self.branch + '\n')
+        self.assertEqual(source_revision(), 'c' * 40)
+        (self.admin / 'HEAD').write_text('d' * 40 + '\n')
+        self.assertEqual(source_revision(), 'd' * 40)
+
+    def test_normal_directory_checkout_and_gitfile_without_commondir_still_work(self):
+        self.branch_file('e' * 40)
+        (self.admin / 'commondir').unlink()
+        (self.admin / 'HEAD').write_text('f' * 40 + '\n')
+        self.assertEqual(source_revision(), 'f' * 40)
+        self.marker.unlink(); self.marker.mkdir()
+        (self.marker / 'HEAD').write_text('a' * 40 + '\n')
+        self.assertEqual(source_revision(), 'a' * 40)
+
+    def test_symlinks_invalid_refs_redirections_and_oversized_metadata_stay_unknown(self):
+        original_head = (self.admin / 'HEAD').read_text()
+        self.branch_file('b' * 40)
+        for text in ('ref: refs/heads/../../private', 'ref: refs/heads//invalid', 'SECRET VALUE', 'a' * 4097):
+            with self.subTest(head=text[:40]):
+                (self.admin / 'HEAD').write_text(text)
+                self.assertIsNone(source_revision())
+        (self.admin / 'HEAD').write_text(original_head)
+        (self.admin / 'commondir').write_text('../../../../candidate')
+        self.assertIsNone(source_revision())
+        (self.admin / 'commondir').write_text('../..')
+        path = self.common / self.branch
+        path.unlink(); path.symlink_to(self.common / 'HEAD')
+        self.assertIsNone(source_revision())
+        path.unlink(); self.branch_file('b' * 40)
+        pointer = self.marker.read_bytes()
+        self.marker.unlink(); self.marker.symlink_to(self.admin / 'gitdir')
+        self.assertIsNone(source_revision())
+        self.marker.unlink(); self.marker.write_bytes(pointer)
+        linked = self.root / 'linked-admin'; linked.symlink_to(self.admin, target_is_directory=True)
+        self.marker.write_text('gitdir: ' + str(linked))
+        self.assertIsNone(source_revision())
+        self.marker.write_text('gitdir: ' + 'a' * 4097)
+        self.assertIsNone(source_revision())
+
+
+if __name__ == "__main__":
+    unittest.main()

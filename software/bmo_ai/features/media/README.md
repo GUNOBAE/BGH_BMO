@@ -1,8 +1,8 @@
-# Media feature v1
+# Local media
 
 `MediaFeature(content_root)` defaults to an empty catalogue and `ASSET_PENDING`.
-The user's songs have not been provided. No song selection, download, scraping,
-singing synthesis or voice conversion is performed. `make_fixture_media(root)`
+The default remains empty until private media is explicitly imported. No song
+download, scraping, singing synthesis or voice conversion is performed. `make_fixture_media(root)`
 is an explicit simulation helper: it creates two short generated PCM files in an
 existing private test directory and never overwrites existing files.
 
@@ -71,3 +71,64 @@ Actual user media, codec availability, audible volume and on-device playback are
 not tested in this task. Tests use generated private fixtures and mocked player
 boundaries; no real ALSA playback occurs. Cleanup failure remains `unknown` with
 the resource retained, so the host must not start overlapping sound.
+
+## Supplied Space Potatoes seed
+
+`MEDIA_SEED.json` in the private handoff is **not** loaded as a runtime manifest.
+The explicit adapter recognizes the reviewed MP3, PCM WAV and H264/AAC MP4 by
+their independent SHA-256 values. It validates the bounded archive without
+following links or executing its Python/HTML, probes/decodes local files with
+timeouts and resource limits, then creates a private v2 library entry. No new
+Python package is needed; import requires installed `ffmpeg` and `ffprobe`.
+
+```sh
+python -m bmo_ai.media_assets \
+  --media-seed /absolute/private/BMO_Media_Seed_SpacePotatoes_v1.zip \
+  --sha256 5de21e50e275e37207f185247f7062f14bd58d46686eb92c8b7fd0f78ff2cde2 \
+  --dry-run
+
+python -m bmo_ai.media_assets \
+  --media-seed /absolute/private/BMO_Media_Seed_SpacePotatoes_v1.zip \
+  --sha256 5de21e50e275e37207f185247f7062f14bd58d46686eb92c8b7fd0f78ff2cde2 \
+  --content-root /absolute/private/music \
+  --private-use-confirmed --install
+```
+
+Both commands are import-only: no speaker/device/network/provider call, no
+listening approval and no runtime enablement. `--private-use-confirmed` records
+local import permission; source remains `user_provided` and public distribution
+rights `NOT_VERIFIED`. It does not invent a copyright licence. Originals remain
+unchanged, existing library files are never overwritten, and retirement hides
+only the matching manifest while retaining all assets/provenance.
+
+There is one catalogue ID, `space_potatoes`, with `face` and `video` variants.
+Face plays the supplied PCM. Video uses PCM decoded **from that MP4's embedded
+audio**, through the same owned Python output; the browser video stays muted.
+The separate MP3 is retained as source evidence and is never layered on Video.
+`open_video()` duplicates a pinned verified MP4 descriptor for the existing
+bounded HTTP Range bridge; there is no external player or full-video RAM buffer.
+
+Prepared energy metadata is used only when bound to the exact face WAV hash and
+sample zero with a supported ordered numeric format. Other handoff layouts are
+preserved, and a bounded 20ms RMS envelope is measured from the verified WAV.
+Both paths are labelled `whole_mix_energy_approximation`: accompaniment can
+move the mouth, and this is not phoneme/lyric lip-sync. No timed instructions
+from a seed script or label are executed. Cues are sampled at the owned audio
+position; pause closes the mouth, seek selects the current cue without replaying
+old events, and stop releases the descriptor/cues.
+
+`SampleClockWavBackend` uses the installed system `libasound` with nonblocking
+PCM IO. Its position is accepted PCM frames minus ALSA's queued frame delay,
+not a process-spawn timer. `output_started` remains false until consumed frames
+advance; muted video and face cues wait for this observation. A stopped/paused
+stream is fully closed before seek/resume creates its replacement. Native pause
+support is not required. MasterVolume scales each small block once at raw gain
+1.0; mute also drops queued output. ALSA progress is not proof of audible output
+or the correct physical MAX98357A route: those require supervised Pi listening.
+An underrun, invalid delay or stalled output is a visible failure rather than a
+guessed synchronization clock. The previous `AlsaWavBackend` is retained for
+legacy adapters, where `clock_quality=process_start_approximation` is explicit.
+
+The private seed itself was not available in the Cloud checkout. Synthetic
+short H264/AAC/MP3/PCM fixtures verify decode/import/hash/seek/ownership; actual
+seed registration, browser playback and listening on the Pi remain separate.

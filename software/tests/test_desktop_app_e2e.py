@@ -220,13 +220,16 @@ class DesktopAppEndToEndTests(unittest.TestCase):
         self.assertNotIn("Private backend", error)
 
     def test_face_timeout_stops_loading_and_stays_diagnostic_until_explicit_exit(self):
-        fixture = self.fixture()
+        fixture = self.fixture(scenario="clock_control")
         fixture.set_clock(0)
         staged, release, failures = Event(), Event(), []
         real_replace = os.replace
 
         def publish(source, target):
-            # The actual child keeps polling clock.txt throughout this gate.
+            # Hold the owner before its next complete poll. Atomic publication
+            # alone allowed the injected +20s jump between the startup timeout
+            # check and heartbeat check, legitimately reporting disconnect.
+            self.assertEqual((self.root / "owner-poll-paused").read_text(), "before DesktopRuntime.poll")
             # A partially written new offset must never replace its old value.
             self.assertEqual(Path(source).read_text(), "20.0")
             self.assertEqual(Path(target), self.root / "clock.txt")
@@ -235,7 +238,9 @@ class DesktopAppEndToEndTests(unittest.TestCase):
             real_replace(source, target)
 
         def update():
-            try:fixture.set_clock(20)
+            try:
+                with fixture.pause_owner_poll():
+                    fixture.set_clock(20)
             except BaseException as error:failures.append(error)
 
         with patch("checks.check_desktop_app_browser.os.replace", side_effect=publish):

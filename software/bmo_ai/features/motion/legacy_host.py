@@ -4,6 +4,8 @@ import math
 from pathlib import Path
 import re
 import time
+from collections import deque
+from threading import Event, RLock
 
 from bmo_ai.features.contracts import FeatureError, FeatureEvent, HostResult, request_id_ok
 from .arm_serial_posix_v2 import MOUNT
@@ -14,12 +16,22 @@ IDENT = re.compile(r"[A-Za-z0-9_]{1,32}\Z", re.ASCII)
 NAMED_GESTURES = frozenset(("wave", "celebrate", "shrug", "raise_left_arm",
                             "raise_right_arm", "both_up", "both_down"))
 MODEL_ONLY = frozenset(("wave", "celebrate", "shrug"))
+RESPONSE_CODES = frozenset(("READY", "DISABLED", "STOPPED", "ALIVE", "HELD",
+    "ACCEPTED", "REQUEST_CONFLICT", "INVALID", "STALE_BOOT", "INVALID_REQUEST_ID",
+    "STALE_REQUEST", "BUSY", "DENIED", "RECOVERABLE", "FAULT_STOPPED", "PREPARED",
+    "PERFORMANCE_READY", "PERFORM_ENTER", "PERFORM_HOLD", "PERFORM_RETURN", "PERFORM_IDLE",
+    "POSE_UNSUITABLE", "STALE_PERFORMANCE"))
 MAX_REQUEST_SEQUENCE = 99999999999999999999
 # B1 has no position/completion ACK. Keep heartbeats through the firmware's
 # 15-second hard gesture budget; the host finally HOLDs rather than abandoning
 # a possibly unfinished gesture. This is not proof of a physical end position.
 ACTIVE_BUDGET_S = 15.2
 LEDGER_LIMIT = 4096
+PERFORMANCE_PROFILES = {("wave", "greeting"): "greeting", ("shrug", "surprise"): "surprise",
+    ("celebrate", "achievement"): "celebration", ("shrug", "playful"): "playful",
+    ("shrug", "hesitation"): "playful"}
+PERFORMANCE_PHASES = {"PERFORM_ENTER":"entering", "PERFORM_HOLD":"holding",
+                      "PERFORM_RETURN":"returning", "PERFORM_IDLE":"idle"}
 
 
 def _finite_time(value):
@@ -51,6 +63,18 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
     if hashlib.sha256(original).hexdigest() != "fdc65bebef17b78b945281549ddce80fb749e1a94262751d8d2f0146c394a01e":
         raise LegacyArmError("original_source_mismatch")
     template = (root / "code.py").read_bytes()
+    # The daily receipt pins exact enabled bytes. A separately reviewed v2
+    # receipt may select the recovery candidate; v1 bytes and receipts stay valid.
+    expected_digest = hashlib.sha256(template.replace(
+        b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)).hexdigest()
+    if expected_digest != reviewed_sha and root.name == "bmo_arm_legacy_bridge_v1":
+        for name in ("bmo_arm_legacy_bridge_v2", "bmo_arm_legacy_bridge_v3", "bmo_arm_legacy_bridge_v4"):
+            candidate = root.with_name(name)
+            if candidate.is_dir():
+                candidate_bytes = (candidate/"code.py").read_bytes().replace(
+                    b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)
+                if hashlib.sha256(candidate_bytes).hexdigest() == reviewed_sha:
+                    return validate_legacy_install(candidate, reviewed_sha, mount=mount)
     if template.count(b"\nREMOTE_ENABLED = False\n") != 1:
         raise LegacyArmError("invalid_reviewed_template")
     expected = template.replace(b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)
@@ -58,6 +82,9 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
             or expected != (Path(mount) / "code.py").read_bytes()
             or (root / "bmo_arm_bridge.py").read_bytes() != (Path(mount) / "bmo_arm_bridge.py").read_bytes()):
         raise LegacyArmError("bridge_sha_or_dependency_mismatch")
+    if root.name == 'bmo_arm_legacy_bridge_v4':
+        if (root/'bmo_imu.py').read_bytes() != (Path(mount)/'bmo_imu.py').read_bytes():
+            raise LegacyArmError('bridge_sha_or_dependency_mismatch')
     boot = (Path(mount) / "boot.py").read_text(encoding="utf-8")
     if "usb_cdc.enable(console=True, data=True)" not in boot:
         raise LegacyArmError("dedicated_data_disabled")
@@ -66,9 +93,13 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
 
 class LegacyArmLink:
     """One outstanding B1 request. Require exact ACK and fresh boot token."""
-    def __init__(self, port, *, motor_permission=None, sequence_clock=None):
+    def __init__(self, port, *, motor_permission=None, sequence_clock=None,
+                 permission_code="physical_supervision_required"):
         if not callable(getattr(port, "write", None)) or not callable(getattr(port, "read_until", None)):
             raise LegacyArmError("owned_cdc_port_required")
+        if permission_code not in ("physical_supervision_required", "daily_arm_permission_required"):
+            raise LegacyArmError("invalid_permission_code")
+        self.permission_code = permission_code
         self.port, self.boot = port, None
         self.motor_permission = motor_permission or (lambda: False)
         # Linux monotonic_ns is shared across processes during the same Pi boot,
@@ -80,9 +111,79 @@ class LegacyArmLink:
         self.unknown = False
         self.stopped = False
         self.closed = False
+        self.last_response_code = None
+        self.last_request_id = None
+        self.prepare_code = None
+        self.performance_supported = None
+        self.performance_capability_code = None
+        self._port_lock = RLock()
+        self._motor_waiting = Event()
+        self._imu_counter = 0
+        self._imu_ids = deque(maxlen=8)
 
-    def _request(self, command, *, is_hello=False, before_write=None):
-        if self.closed or self.unknown or self.stopped:
+    def _read_arm_reply(self):
+        # A timed-out sensor query can arrive after its 25ms budget. Route only
+        # that exact known request away from a later arm ACK, never arbitrary
+        # unknown serial traffic. Keep the original arm IO deadline overall.
+        bound = 256 if self._imu_ids else REPLY_MAX
+        deadline = time.monotonic()+getattr(self.port,'timeout',.45)
+        for _ in range(5):
+            bounded = getattr(self.port,'read_until_budget',None)
+            raw = (bounded(b'\n',bound,deadline) if callable(bounded)
+                   else self.port.read_until(b'\n',bound))
+            fields = raw.split(b' ',3) if type(raw) is bytes else ()
+            if (len(fields)==4 and fields[:2]==[b'B1',b'IMU']
+                    and fields[2] in tuple(value.encode('ascii') for value in self._imu_ids)):
+                continue
+            return raw
+        raise LegacyArmError('invalid_ack')
+
+    def imu_snapshot(self):
+        """Read cached sensor registers without changing any motor state."""
+        from .imu_transport import IMUTransportError,parse_imu_reply
+        if self.closed:raise IMUTransportError('imu_port_closed')
+        if self._motor_waiting.is_set() or not self._port_lock.acquire(blocking=False):
+            raise IMUTransportError('imu_arm_transaction_priority')
+        try:
+            exchange = getattr(self.port,'exchange_imu',None)
+            if not callable(exchange):raise IMUTransportError('imu_port_budget_unavailable')
+            self._imu_counter += 1
+            rid='imu_'+str(self._imu_counter)
+            self._imu_ids.append(rid)
+            deadline=time.monotonic()+.025
+            raw=exchange(('B1 IMU '+rid+'\n').encode('ascii'))
+            for _ in range(4):
+                fields=raw.split(b' ',3) if type(raw) is bytes else ()
+                if (len(fields)==4 and fields[:2]==[b'B1',b'IMU']
+                        and fields[2].decode('ascii','ignore') in self._imu_ids
+                        and fields[2]!=rid.encode('ascii')):
+                    read=getattr(self.port,'read_until_budget',None)
+                    if not callable(read) or time.monotonic()>=deadline:
+                        raise IMUTransportError('imu_reply_stale')
+                    raw=read(b'\n',256,deadline)
+                    continue
+                return parse_imu_reply(raw,rid)
+            raise IMUTransportError('imu_reply_stale')
+        except IMUTransportError:
+            raise
+        except Exception as error:
+            code=getattr(error,'code',None)
+            raise IMUTransportError(code if code in ('imu_write_timeout','imu_partial_write',
+                'imu_invalid_query','imu_port_closed') else 'imu_transport_error') from None
+        finally:
+            self._port_lock.release()
+
+    def _request(self, command, *, is_hello=False, before_write=None, recovery=False):
+        self._motor_waiting.set()
+        try:
+            with self._port_lock:
+                return self._request_locked(command,is_hello=is_hello,before_write=before_write,recovery=recovery)
+        finally:
+            self._motor_waiting.clear()
+
+    def _request_locked(self, command, *, is_hello=False, before_write=None, recovery=False):
+        known_stop = self.stopped and self.last_response_code == "STOPPED"
+        if self.closed or (self.unknown and not (recovery and known_stop)) or (self.stopped and not recovery):
             raise LegacyArmError("bridge_unavailable")
         try:
             sequence = self.sequence_clock()
@@ -96,6 +197,7 @@ class LegacyArmLink:
             self.unknown = True
             raise LegacyArmError("request_counter_exhausted")
         rid = "bmo_%d" % self.counter
+        self.last_request_id = rid
         data = ("B1 " + command.format(rid=rid, boot=self.boot) + "\n").encode("ascii")
         if len(data) > FRAME_MAX:
             raise LegacyArmError("frame_too_long")
@@ -104,10 +206,11 @@ class LegacyArmLink:
         # an otherwise known transport UNKNOWN.
         if before_write is not None and before_write() is not True:
             raise LegacyArmError("stale_playback_start")
+        self.last_response_code = None
         try:
             if self.port.write(data) != len(data):
                 raise LegacyArmError("partial_write")
-            raw = self.port.read_until(b"\n", REPLY_MAX)
+            raw = self._read_arm_reply()
             if (type(raw) is not bytes or not 1 <= len(raw) <= REPLY_MAX or
                     not raw.endswith(b"\n") or b"\r" in raw or b"\n" in raw[:-1]):
                 raise LegacyArmError("ack_missing_or_incomplete")
@@ -119,6 +222,9 @@ class LegacyArmLink:
                 raise LegacyArmError("invalid_ack")
             if self.boot is not None and parts[3] != self.boot:
                 raise LegacyArmError("boot_changed")
+            self.last_response_code = parts[4] if parts[4] in RESPONSE_CODES else "UNRECOGNIZED"
+            if parts[4] == "STOPPED":
+                self.stopped = True
             if is_hello:
                 self.boot = parts[3]
             return parts[4]
@@ -133,8 +239,55 @@ class LegacyArmLink:
             raise LegacyArmError("already_connected")
         code = self._request("HELLO {rid}", is_hello=True)
         if code != "READY":
+            if code == "STOPPED":
+                # A new Desktop/HELLO cannot clear the board's STOP, GP7 or
+                # watchdog latch. Preserve this explicit remote observation
+                # separately from an unverified transport failure.
+                self.stopped = True
             self.unknown = True
             raise LegacyArmError("firmware_not_ready_" + code.lower())
+        return code
+
+    def prepare(self):
+        """Only an explicit user action may call this. Never emits DO or PWM.
+
+        A new HELLO observes the current latch, then v2's expiring STATUS token
+        guards PREPARE against a later GP7/STOP edge. Unknown transport is not a
+        recovery permission. A v1 STOP remains latched until firmware is reviewed.
+        """
+        try:
+            permission = self.motor_permission()
+        except Exception:
+            permission = False
+        if permission is not True:
+            raise LegacyArmError(self.permission_code)
+        if self.closed or (self.unknown and not (
+                self.stopped and self.last_response_code == "STOPPED")):
+            raise LegacyArmError("arm_prepare_connection_unverified")
+        code = self._request("HELLO {rid}", is_hello=True, recovery=True)
+        if code == "READY":
+            self.stopped = self.unknown = False
+            self.prepare_code = "arm_ready_position_unverified"
+            return code
+        if code != "STOPPED":
+            self.prepare_code = "arm_prepare_board_unavailable"
+            raise LegacyArmError(self.prepare_code)
+        # A valid STOPPED ACK is a known stopped connection, not a timeout.
+        self.unknown = False
+        code = self._request("STATUS {rid} {boot}", recovery=True)
+        token = self.last_request_id
+        if code in ("STOPPED", "INVALID"):
+            self.prepare_code = "arm_prepare_firmware_required"
+            raise LegacyArmError(self.prepare_code)
+        if code != "RECOVERABLE":
+            self.prepare_code = "arm_prepare_fault_requires_review"
+            raise LegacyArmError(self.prepare_code)
+        code = self._request("PREPARE {rid} {boot} " + token, recovery=True)
+        if code != "PREPARED":
+            self.prepare_code = "arm_prepare_not_acknowledged"
+            raise LegacyArmError(self.prepare_code)
+        self.stopped = self.unknown = False
+        self.prepare_code = "arm_prepared_position_unverified"
         return code
 
     def gesture(self, name, *, before_write=None):
@@ -145,11 +298,49 @@ class LegacyArmLink:
         except Exception:
             permission = False
         if permission is not True:
-            raise LegacyArmError("physical_supervision_required")
+            raise LegacyArmError(self.permission_code)
         code = self._request("DO {rid} {boot} " + name, before_write=before_write)
         if code != "ACCEPTED":
             raise LegacyArmError("gesture_" + code.lower())
         return code
+
+    def performance_capability(self):
+        if self.performance_supported is None:
+            code = self._request("CAPS {rid} {boot}")
+            self.performance_capability_code = code
+            self.performance_supported = code == "PERFORMANCE_READY"
+        return self.performance_supported
+
+    def performance_start(self, profile, *, before_write):
+        if profile not in PERFORMANCE_PROFILES.values():
+            raise LegacyArmError("invalid_performance")
+        try:
+            permission = self.motor_permission()
+        except Exception:
+            permission = False
+        if permission is not True:
+            raise LegacyArmError(self.permission_code)
+        code = self._request("ACT {rid} {boot} " + profile, before_write=before_write)
+        token = self.last_request_id
+        if code != "PERFORM_ENTER":
+            raise LegacyArmError("performance_" + code.lower())
+        return token
+
+    def performance_end(self, token):
+        if IDENT.fullmatch(token or "") is None:
+            raise LegacyArmError("invalid_performance_token")
+        code = self._request("END {rid} {boot} " + token)
+        if code not in PERFORMANCE_PHASES:
+            raise LegacyArmError("performance_" + code.lower())
+        return PERFORMANCE_PHASES[code]
+
+    def performance_pulse(self, token):
+        if IDENT.fullmatch(token or "") is None:
+            raise LegacyArmError("invalid_performance_token")
+        code = self._request("PULSE {rid} {boot} " + token)
+        if code not in PERFORMANCE_PHASES:
+            raise LegacyArmError("performance_" + code.lower())
+        return PERFORMANCE_PHASES[code]
 
     def ping(self):
         if self.boot is None or self._request("PING {rid} {boot}") != "ALIVE":
@@ -183,7 +374,8 @@ class LegacyArmLink:
 
 class LegacyMotionFeature:
     """Plug into FeatureHost without altering model/GPT or approved R10."""
-    def __init__(self, link, *, clock=None, ttl=1.0, cooldown=2.0):
+    def __init__(self, link, *, clock=None, ttl=1.0, cooldown=2.0,
+                 telemetry_only=False, imu_binding=None):
         if not isinstance(link, LegacyArmLink):
             raise FeatureError("legacy_arm_link_required")
         if (not _finite_time(ttl) or not 0 < ttl <= 5
@@ -207,6 +399,39 @@ class LegacyMotionFeature:
         self.closed = False
         self.fault = None
         self.last_error = None
+        self.performance = None
+        self.last_performance = None
+        if type(telemetry_only) is not bool:raise FeatureError('invalid_motion_configuration')
+        self.telemetry_only=telemetry_only
+        self.imu_binding=imu_binding
+        self._imu_poller=None
+
+    def configure_imu(self, enabled=True, *, binding=None):
+        from .imu_transport import IMUPoller,validated_binding
+        if type(enabled) is not bool:raise FeatureError('invalid_imu_configuration')
+        if binding is not None:self.imu_binding=validated_binding(binding)
+        if enabled:
+            self.imu_binding=validated_binding(self.imu_binding)
+            if self.closed:raise FeatureError('feature_closed')
+            if self._imu_poller is None:self._imu_poller=IMUPoller(self.link,clock=self.clock)
+        elif self._imu_poller is not None:
+            self._imu_poller.close();self._imu_poller=None
+
+    def poll_imu(self):
+        if self._imu_poller is None or self.closed:return
+        if self.pending is not None:return
+        if self.performance is not None:
+            if (self.performance['phase']=='queued'
+                    or self.performance['next_pulse']-self.clock()<.05):return
+        if self.active_until is not None and self.next_ping-self.clock()<.05:return
+        self._imu_poller.request()
+
+    def drain_imu(self):
+        return self._imu_poller.drain() if self._imu_poller is not None else ()
+
+    def imu_transport_snapshot(self):
+        return (self._imu_poller.snapshot() if self._imu_poller is not None else
+                dict(enabled=False,code='imu_not_requested',shared_b1_owner=True,synthetic=False))
 
     def set_context(self, session_id, turn_id, mode_generation):
         if type(turn_id) is int and turn_id >= 0:
@@ -224,8 +449,10 @@ class LegacyMotionFeature:
                mode_generation, started_at, explicit=False):
         if not request_id_ok(request_id):
             raise FeatureError("invalid_request_id")
+        if self.telemetry_only:
+            return HostResult(request_id,'rejected','imu_read_only_transport',simulated=False)
         if (self.closed or self.stopped or self.fault or self.pending is not None
-                or self.active_until is not None or request_id in self.seen):
+                or self.active_until is not None or self.performance is not None or request_id in self.seen):
             return HostResult(request_id, "rejected", "arm_unavailable", simulated=False)
         if len(self.seen) >= LEDGER_LIMIT:
             return HostResult(request_id, "rejected", "motion_ledger_full", simulated=False)
@@ -247,13 +474,151 @@ class LegacyMotionFeature:
         self.pending = (request_id, gesture_id, started_at, self.context, explicit, now)
         return HostResult(request_id, "accepted", "gesture_queued", simulated=False)
 
+    def start_performance(self, gesture_id, *, performance_context, request_id, session_id,
+                          turn_id, mode_generation, started_at, explicit=False):
+        """Queue a speech-linked performance, never wait for arrival.
+
+        A validated current named request is separate from automatic decoration.
+        It still needs a fresh player boundary, this same owner, the device
+        cooldown, permission and the full token-bound stop/return lifecycle.
+        """
+        profile = PERFORMANCE_PROFILES.get((gesture_id, performance_context))
+        if profile is None:
+            return HostResult(request_id, "rejected", "invalid_performance_context", simulated=False)
+        now = _clock_value(self.clock)
+        if (not _finite_time(now) or not _finite_time(started_at)
+                or not 0 <= now-started_at <= self.ttl):
+            return HostResult(request_id, "rejected", "stale_playback_start", simulated=False)
+        # Reuse all existing admission/dedup/current-turn restrictions, then
+        # reserve this controller's one slot for the token-bound lifecycle.
+        result = self.submit(gesture_id, request_id=request_id, session_id=session_id,
+            turn_id=turn_id, mode_generation=mode_generation, started_at=started_at,
+            explicit=explicit)
+        if result.status != "accepted":
+            return result
+        pending, self.pending = self.pending, None
+        self.performance = dict(pending=pending, profile=profile, phase="queued", token=None,
+                                finish_reason=None, next_pulse=0., deadline=None, path='speech_profile')
+        return HostResult(request_id, "accepted", "performance_queued", simulated=False)
+
+    def finish_performance(self, turn_id=None, reason="playback_ended"):
+        """Queue a normal bounded return. STOP/manual/fault can never enter here."""
+        current = self.performance
+        if current is None or (turn_id is not None and str(turn_id) != current['pending'][3][1]):
+            return False
+        if reason not in ('playback_ended', 'new_turn', 'cancel', 'listening', 'thinking', 'mode_change'):
+            raise FeatureError('invalid_performance_finish_reason')
+        if self.closed or self.stopped or self.fault or self.link.closed or self.link.stopped or self.link.unknown:
+            self._retire_performance('performance_return_suppressed', 'cancelled')
+            return False
+        current['finish_reason'] = current['finish_reason'] or reason
+        if (current['token'] is None and current['phase'] == 'queued'
+                and not (current['pending'][4] and reason == 'playback_ended')):
+            self._retire_performance('performance_cancelled_before_start', 'cancelled')
+        return True
+
+    def _performance_fresh(self, current, *, allow_ended=False):
+        pending = current['pending']; now = _clock_value(self.clock)
+        return (self.performance is current and (current['finish_reason'] is None
+                or allow_ended and pending[4] and current['finish_reason'] == 'playback_ended')
+                and self.context == pending[3] and _finite_time(now)
+                and 0 <= now-pending[2] <= self.ttl)
+
+    def _retire_performance(self, code, status, *, executed=None):
+        current, self.performance = self.performance, None
+        if current is None:
+            return
+        self.last_performance = dict(profile=current['profile'], phase='ended' if status=='succeeded' else 'interrupted',
+            code=code, finish_reason=current['finish_reason'], turn_id=current['pending'][3][1],
+            position_verified=False, path=current['path'])
+        self._event(current['pending'], status, code,
+                    executed=current['token'] is not None if executed is None else executed)
+
+    def _poll_performance(self):
+        current = self.performance
+        if current is None:
+            return
+        try:
+            now = _clock_value(self.clock)
+            if not _finite_time(now):
+                raise LegacyArmError('invalid_motion_clock')
+            if current['phase'] == 'queued':
+                if not self._performance_fresh(current, allow_ended=True):
+                    self._retire_performance('stale_playback_start', 'rejected')
+                    return
+                if self.link.boot is None:
+                    self.link.hello()
+                if not self.link.performance_capability():
+                    if (current['pending'][4] and self.link.performance_capability_code == 'INVALID'
+                            and self._performance_fresh(current, allow_ended=True)
+                            and not (self.link.stopped or self.link.unknown)):
+                        # v1/v2 have no ACT. Preserve an explicitly requested
+                        # existing named DO once; its own finite firmware plan
+                        # is not the v3 speech entry/hold/return contract. An
+                        # automatic decoration never takes this fallback.
+                        self.pending = current['pending']
+                        self.performance = None
+                        self.last_performance = dict(profile=current['profile'], phase='legacy_named',
+                            path='legacy_named_gesture', code='legacy_named_gesture',
+                            finish_reason=current['finish_reason'], turn_id=current['pending'][3][1],
+                            position_verified=False)
+                        return
+                    self._retire_performance('arm_performance_firmware_required', 'rejected')
+                    return
+                if current['finish_reason'] == 'playback_ended':
+                    self._retire_performance('performance_cancelled_before_start', 'cancelled')
+                    return
+                if not self._performance_fresh(current):
+                    self._retire_performance('stale_playback_start', 'rejected')
+                    return
+                current['phase'] = 'starting'
+                def before_write():
+                    if not self._performance_fresh(current):
+                        return False
+                    current['token'] = self.link.last_request_id
+                    return True
+                token = self.link.performance_start(current['profile'], before_write=before_write)
+                if self.performance is not current:
+                    # A STOP while ACK was in flight already retired this token;
+                    # never follow it with an automatic return or fresh ACT.
+                    return
+                current['token'] = token
+                current['phase'] = 'entering'
+                self.last_gesture = now
+                current['deadline'] = now+4.2
+                self._event(current['pending'], 'running', 'performance_ack_position_unverified', executed=True)
+            if self.performance is not current or current['token'] is None:
+                return
+            if self.link.stopped or self.link.unknown:
+                raise LegacyArmError('performance_stopped_or_unknown')
+            if current['finish_reason'] and current['phase'] not in ('returning', 'idle'):
+                current['phase'] = self.link.performance_end(current['token'])
+                current['next_pulse'] = now+.14
+            elif now >= current['next_pulse']:
+                current['phase'] = self.link.performance_pulse(current['token'])
+                current['next_pulse'] = now+.14
+            if current['phase'] == 'idle':
+                self._retire_performance('performance_return_commanded', 'succeeded')
+            elif now >= current['deadline']:
+                self.link.hold()
+                self._retire_performance('performance_budget_held', 'unknown')
+        except LegacyArmError as error:
+            self.last_error = error.code
+            if error.code in ('stale_playback_start', 'performance_pose_unsuitable', 'performance_busy'):
+                self._retire_performance(error.code, 'rejected')
+            else:
+                # A missing ACK/STOP/GP7/fault never earns an automatic return.
+                self.fault = 'arm_link_unknown'
+                self._retire_performance(error.code, 'unknown')
+
     def _pending_fresh(self, expected=None):
         if self.pending is None or expected is not None and self.pending is not expected:
             return False
         _, _, started_at, context, explicit, queued_at = self.pending
         now = _clock_value(self.clock)
         return (_finite_time(now) and now >= queued_at and self.context == context
-                and (explicit or _finite_time(started_at) and 0 <= now - started_at <= self.ttl))
+                and (explicit and started_at is None
+                     or _finite_time(started_at) and 0 <= now - started_at <= self.ttl))
 
     def _expire_pending(self):
         request_id = self.pending[0]
@@ -274,9 +639,15 @@ class LegacyMotionFeature:
         self._active_pending = None
 
     def poll(self):
+        self.poll_imu()
         if self.closed or self.stopped or self.fault:
             result, self.events = tuple(self.events), []
             return result
+        if self.performance is not None:
+            self._poll_performance()
+            if self.performance is not None or self.pending is None:
+                result, self.events = tuple(self.events), []
+                return result
         pending = self.pending
         attempted_pending = None
         dispatched_pending = None
@@ -373,6 +744,10 @@ class LegacyMotionFeature:
         return result
 
     def cancel(self, request_id=None):
+        if self.performance is not None:
+            if request_id in (None, self.performance['pending'][0]):
+                self.finish_performance(reason='cancel')
+            return
         if self.pending is not None and request_id not in (None, self.pending[0]):
             return
         if (self.pending is None and self._active_pending is not None
@@ -394,8 +769,20 @@ class LegacyMotionFeature:
         self._clear_active()
 
     def stop(self):
+        if self.telemetry_only:
+            self.stopped=True
+            return
         if self.stopped:
             return
+        if self.performance is not None:
+            self._retire_performance('performance_stopped', 'cancelled')
+            # HOLD/STOP has priority over queued normal returns, including while
+            # the start acknowledgement is in flight. No END is sent here.
+            if self.link.boot is not None and not self.link.unknown and not self.link.stopped:
+                try:
+                    self.link.hold()
+                except LegacyArmError as error:
+                    self.fault = 'arm_link_unknown'; self.last_error = error.code
         self.cancel()
         self.stopped = True
         try:
@@ -404,8 +791,26 @@ class LegacyMotionFeature:
             self.fault = "stop_unverified"
             self.last_error = error.code
 
+    def prepare(self):
+        if self.telemetry_only:raise FeatureError('imu_read_only_transport')
+        if self.closed or self.pending is not None or self.active_until is not None or self._inflight_pending is not None or self.performance is not None:
+            raise FeatureError("arm_prepare_busy_or_closed")
+        try:
+            self.link.prepare()
+        except LegacyArmError as error:
+            self.last_error = error.code
+            raise FeatureError(error.code) from None
+        # Request and turn ledgers survive preparation. No obsolete gesture is
+        # resurrected and no new gesture is scheduled by this state transition.
+        self.stopped = False
+        self.fault = self.last_error = None
+        self.context = None
+        return self.snapshot()
+
     def close(self):
         if not self.closed:
+            if self._imu_poller is not None:
+                self._imu_poller.close();self._imu_poller=None
             self.stop()
             try:
                 self.link.close()
@@ -421,14 +826,58 @@ class LegacyMotionFeature:
                 "physical_release_verified": False}
 
     def snapshot(self):
+        closed = self.closed or self.link.closed
+        stopped = self.stopped or self.link.stopped
+        unknown = self.fault or self.link.unknown
+        usable = not (closed or stopped or unknown) and self.link.boot is not None
+        reason = ("arm_closed" if closed else "arm_stopped" if stopped else
+                  self.fault or "arm_link_unknown" if unknown else
+                  "position_unverified" if usable else "hello_required")
+        transport = ("CLOSED" if self.link.closed else "STOPPED" if self.link.stopped else
+                     "UNKNOWN" if self.link.unknown else
+                     "ACKNOWLEDGED" if self.link.boot is not None else "NOT_CONNECTED")
+        blocked = []
+        if self.link.last_response_code == 'DISABLED':
+            blocked.append('arm_board_disabled')
+        if self.last_error == 'physical_supervision_required':
+            blocked.append('arm_operator_condition_missing')
+        elif self.last_error == 'daily_arm_permission_required':
+            blocked.append('arm_runtime_not_ready')
+        if closed:
+            blocked.append('arm_closed')
+        elif stopped:
+            blocked.append('arm_stopped')
+        if unknown and not blocked:
+            blocked.append('arm_transport_error')
+        operation = ('closed' if closed else 'stopped' if stopped else 'fault' if unknown
+                     else 'queued' if self.pending is not None or self.performance is not None and self.performance['phase']=='queued'
+                     else 'active' if self.active_until is not None or self.performance is not None else 'idle')
         return {"simulated": False, "real_enabled": True,
-                "readiness": "UNVERIFIED" if self.fault else "READY",
-                "reason_code": self.fault or "position_unverified",
+                "readiness": "BLOCKED" if closed or stopped else "READY" if usable else "UNVERIFIED",
+                "reason_code": reason,
                 "last_error_code": self.last_error,
                 "queued": int(self.pending is not None),
-                "active": self.pending is not None or self.active_until is not None,
-                "stopped": self.stopped, "closed": self.closed,
-                "position_verified": False,
+                "active": self.pending is not None or self.active_until is not None or self.performance is not None,
+                "stopped": stopped, "closed": closed,
+                "supported_gestures": sorted(NAMED_GESTURES), "side_reference": "bmo_own",
+                "blocked_reasons": blocked, "operation": operation,
+                "cancel_semantics": "hold_current_commanded_position",
+                "speech_cancel_semantics": "bounded_return_only_with_known_active_token",
+                "performance": (dict(profile=self.performance['profile'], phase=self.performance['phase'],
+                    finish_reason=self.performance['finish_reason'], turn_id=self.performance['pending'][3][1],
+                    position_verified=False, path=self.performance['path']) if self.performance is not None else self.last_performance),
+                "performance_supported": self.link.performance_supported,
+                "stop_semantics": "board_latch_not_cleared_by_host_restart_not_power_cut",
+                "position_verified": False, "physical_verified": False,
+                "prepare_code": self.link.prepare_code,
+                "prepare_requires_explicit_user_action": True,
+                "preflight": {"status": "BLOCKED" if closed or stopped or unknown else "CONFIGURED",
+                              "scope": "software_adapter",
+                              "code": reason if closed or stopped or unknown else "supervised_launcher_required"},
+                "transport": {"protocol": "bmo_legacy_b1", "status": transport,
+                              "negotiated": self.link.boot is not None,
+                              "last_response_code": self.link.last_response_code,
+                              "usable": usable},
                 "controller": {"protocol": "bmo_legacy_b1",
                                "negotiated": self.link.boot is not None,
                                "link_unknown": self.link.unknown}}

@@ -10,6 +10,7 @@ import ipaddress
 import json
 import math
 from pathlib import Path
+import re
 import struct
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -184,6 +185,29 @@ def _public_snapshot(value):
     # Prepared/terminal snapshots cannot accidentally hand out old cues.
     if out["playback"] != "started":
         out["cues"] = []
+    if (out['source'] == 'cached_idle' and out['playback'] == 'started'
+            and out['phase'] == 'speaking' and type(value.get('performance_plan')) is dict):
+        from .voice_pack_context import validated_performance
+        plan = value['performance_plan']
+        identity = {key: plan.get(key) for key in ('clip_id', 'candidate_id', 'sha256')}
+        safe = validated_performance(plan, identity)
+        if safe is not None:
+            out['performance_plan'] = safe
+    if 'caption' in value:
+        from .captions import clean_caption, MODES
+        caption = value.get('caption')
+        mode = caption.get('mode') if type(caption) is dict else 'off'
+        mode = mode if mode in MODES else 'off'
+        visible = out['playback'] == 'started' and out['phase'] == 'speaking' and mode != 'off'
+        out['caption'] = dict(mode=mode, language=mode if mode != 'off' else '',
+            text=clean_caption(caption.get('text')) if visible else '')
+        asset = value.get('caption_asset')
+        if (visible and out['caption']['text'] and type(asset) is dict
+                and set(asset) == {'clip_id','candidate_id','sha256'}
+                and all(type(asset.get(key)) is str and re.fullmatch(r'[A-Za-z0-9_-]{1,96}',asset[key])
+                        for key in ('clip_id','candidate_id'))
+                and type(asset.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}',asset['sha256'])):
+            out['caption_asset'] = dict(asset)
     return out
 
 

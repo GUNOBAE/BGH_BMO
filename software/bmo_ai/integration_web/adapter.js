@@ -25,16 +25,22 @@
       this.pollGeneration = 0;
       this.raf = null;
       this.frameWindow = null;
+      this.entrance = null;
+      this.visualOwner = null;
+      this.visualConflict = null;
+      this.entranceState = {status: "idle", target: "expression_layers"};
       this.resetFace();
       this.onFramePageHide = () => this.close();
       this.onLoad = () => {
         if (this.closed) return;
+        this.cancelEntrance("frame_reloaded");
         this.resetFace();
         this.bindFrame();
         if (this.state) this.applyFace();
       };
       this.onVisibility = () => {
         // Poll before rendering after a suspended tab; never replay old cues.
+        this.cancelEntrance("visibility_changed");
         this.suspend();
         this.pollGeneration++;
         clearTimeout(this.timer);
@@ -58,6 +64,86 @@
 
     get face() {
       try { return this.frame.contentWindow?.BMOFace; } catch (_) { return null; }
+    }
+
+    presentExpression({reducedMotion = false, duration = 550} = {}) {
+      // The approved background rectangle is a SIBLING of lookRoot. A temporary
+      // external SVG group moves only that expression subtree: native gaze,
+      // blinking, mouth, brows and tears retain every original transform/path.
+      this.cancelEntrance("superseded");
+      let doc, svg, root, version;
+      try {
+        doc = this.frame.contentDocument;
+        svg = doc?.getElementById("face");
+        root = doc?.getElementById("lookRoot");
+        version = this.face?.getState().version;
+      } catch (_) {}
+      if (this.closed || !svg || !root || root.parentNode !== svg
+          || svg.namespaceURI !== "http://www.w3.org/2000/svg"
+          || version !== "13.2") {
+        this.entranceState = {status: "artwork_unavailable", target: "expression_layers"};
+        return Promise.resolve({...this.entranceState});
+      }
+      if (reducedMotion || doc.defaultView?.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+        this.entranceState = {status: "reduced_motion", target: "expression_layers"};
+        return Promise.resolve({...this.entranceState});
+      }
+      let layer, offset;
+      const originalNext = root.nextSibling;
+      const restore = () => {
+        if (layer && root.parentNode === layer) {
+          svg.insertBefore(root, originalNext?.parentNode === svg ? originalNext : null);
+        }
+        layer?.remove();
+      };
+      try {
+        layer = doc.createElementNS(svg.namespaceURI, "g");
+        layer.setAttribute("data-bmo-expression-entrance", "v1");
+        svg.insertBefore(layer, root);
+        layer.appendChild(root);
+        // R10 owns its viewBox/zoom. No canvas/iframe/body/main transform or
+        // zoom is added; setup errors restore the original tree too.
+        const box = svg.viewBox.baseVal, bounds = layer.getBBox();
+        // A full viewBox also covers native blink/emotion shape expansion.
+        offset = Math.max(box.height, box.y + box.height - bounds.y + 8);
+        if (!Number.isFinite(offset) || offset <= 0) throw Error("Expression geometry unavailable");
+      } catch (_) {
+        restore();
+        this.entranceState = {status: "animation_unavailable", target: "expression_layers"};
+        return Promise.resolve({...this.entranceState});
+      }
+      const milliseconds = Number.isFinite(duration) ? Math.max(0, Math.min(550, duration)) : 550;
+      this.entranceState = {status: "running", target: "expression_layers", duration_ms: milliseconds,
+                            offset_units: offset};
+      return new Promise(resolve => {
+        let settled = false, animation;
+        const finish = status => {
+          if (settled) return;
+          settled = true;
+          // Restore the exact original parent/order, never the gaze transform.
+          restore();
+          animation?.cancel();
+          this.entrance = null;
+          this.entranceState = {...this.entranceState, status};
+          resolve({...this.entranceState});
+        };
+        this.entrance = {layer, finish, animation: null};
+        try {
+          animation = layer.animate([{transform: `translateY(${offset}px)`}, {transform: "translateY(0px)"}],
+            {duration: milliseconds, easing: "cubic-bezier(.2,.7,.2,1)", fill: "both"});
+          this.entrance.animation = animation;
+          animation.finished.then(() => finish("completed"), () => finish("cancelled"));
+        } catch (_) {
+          finish("animation_unavailable");
+        }
+      });
+    }
+
+    cancelEntrance(reason = "cancelled") {
+      const entrance = this.entrance;
+      if (!entrance) return;
+      entrance.finish(reason);
+      entrance.animation?.cancel();
     }
 
     bindFrame() {
@@ -107,6 +193,10 @@
       if (terminal.has(next.playback)) this.terminal.add(key);
       this.sequence = next.sequence;
       this.state = {...next, cues: next.playback === "started" ? next.cues.map(c => ({...c})) : []};
+      if (this.visualOwner !== null && (["listening", "thinking"].includes(next.phase)
+          || next.phase === "speaking" && next.playback === "started" && next.source !== "provided_media_cues")) {
+        this.visualConflict?.();
+      }
       this.received = performance.now();
       this.lastSuccess = this.received;
       if (this.status) this.status.textContent = "";
@@ -114,7 +204,35 @@
       return true;
     }
 
+    claimVisual(owner, onConflict = null) {
+      if (this.closed || typeof owner !== "string" || !owner || this.visualOwner && this.visualOwner !== owner) return false;
+      const current = this.state;
+      if (current && (["listening", "thinking"].includes(current.phase)
+          || current.phase === "speaking" && current.playback === "started" && current.source !== "provided_media_cues")) {
+        onConflict?.();
+        return false;
+      }
+      if (this.visualOwner === owner) return true;
+      this.cancelEntrance("visual_owner");
+      this.suspend();
+      this.visualOwner = owner;
+      this.visualConflict = onConflict;
+      return true;
+    }
+
+    releaseVisual(owner) {
+      if (this.visualOwner !== owner) return false;
+      this.visualOwner = null;
+      this.visualConflict = null;
+      this.resetFace();
+      // Polling continued under the music layer: apply the CURRENT conversation,
+      // never the emotion saved when the song first started.
+      if (!this.closed) this.applyFace();
+      return true;
+    }
+
     applyFace() {
+      if (this.visualOwner !== null) return;
       const face = this.face, state = this.state;
       if (!face || !state || this.closed) return;
       const active = state.playback === "started" && state.phase === "speaking" && !!state.utterance_id;
@@ -148,7 +266,7 @@
     }
 
     renderMouth(now) {
-      if (!this.speaking || !this.face || !this.state) return;
+      if (this.visualOwner !== null || !this.speaking || !this.face || !this.state) return;
       const state = this.state;
       const position = state.position + Math.max(0, now - this.received) / 1000;
       let lo = 0, hi = state.cues.length - 1, index = -1;
@@ -167,7 +285,7 @@
     }
 
     suspend() {
-      this.face?.stop();
+      if (this.visualOwner === null) this.face?.stop();
       this.speaking = false;
       this.mouth = null;
     }
@@ -205,6 +323,7 @@
 
     close() {
       if (this.closed) return;
+      this.cancelEntrance("closed");
       this.suspend();
       this.closed = true;
       this.pollGeneration++;

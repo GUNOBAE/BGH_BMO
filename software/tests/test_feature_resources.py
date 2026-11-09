@@ -227,6 +227,22 @@ class FeatureResourceTests(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises(FeatureError):
                 gaze.offer("camera", *values, generation=3, expires_at=4)
 
+    def test_cached_presence_gaze_yields_to_tracking_input_and_stale_generations(self):
+        now = [1.]
+        gaze = GazeArbiter(clock=lambda: now[0])
+        gaze.offer('idle', -.05, 0., generation=3, expires_at=5.)
+        gaze.offer('presence', .08, -.04, generation=3, expires_at=2.)
+        self.assertEqual(gaze.resolve(phase='speaking',generation=3)['owner'], 'presence')
+        for owner in ('camera','dialogue','reaction','manual'):
+            gaze.offer(owner, .1, 0., generation=3, expires_at=2.)
+            self.assertEqual(gaze.resolve(phase='speaking',generation=3)['owner'], owner)
+            gaze.clear(owner)
+        for phase in ('listening','thinking'):
+            self.assertEqual(gaze.resolve(phase=phase,generation=3)['owner'], 'native')
+        self.assertEqual(gaze.resolve(phase='speaking',generation=4)['owner'], 'idle')
+        now[0] = 2.01
+        self.assertEqual(gaze.resolve(phase='speaking',generation=3)['owner'], 'idle')
+
 
 if __name__ == "__main__":
     unittest.main()

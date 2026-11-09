@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+"""Actual product music decoder, transport keys, and explicit v10 review UI.
+
+Only short synthetic PCM/MP4 are used. Providers, microphone, hardware and
+browser audio remain forbidden; this does not approve the private user media.
+"""
+import argparse
+from contextlib import contextmanager
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from unittest.mock import patch
+
+SOFTWARE = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SOFTWARE))
+from checks import check_desktop_app_browser as desktop
+from checks.check_full_batch_browser import replace_once
+from bmo_ai.screen_profiles import SCREEN_PROFILES
+
+
+def publish_media_clock(directory, value):
+    """Publish a complete fake clock; the owner must never read a truncation."""
+    if type(value) not in (int, float) or not math.isfinite(value):
+        raise ValueError('Fixture media clock must be finite')
+    staged = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='ascii', dir=directory,
+                                         prefix='.media-clock-', delete=False) as output:
+            staged = Path(output.name)
+            output.write(repr(float(value)))
+        os.replace(staged, Path(directory)/'media-clock.txt')
+        staged = None
+    finally:
+        if staged is not None:
+            staged.unlink(missing_ok=True)
+
+
+def child_source():
+    source = replace_once(desktop.CHILD,
+        "    process=real_popen(command,**options);players.append(process);counts['players']+=1",
+        "    if (root/'fail-next-player').exists():\n        (root/'fail-next-player').unlink();command=[sys.executable,'-c','raise SystemExit(7)']\n    process=real_popen(command,**options);players.append(process);counts['players']+=1")
+    source = replace_once(source, "    counts['hosts']+=1", r'''
+    counts['hosts']+=1
+    from bmo_ai.features.media import MediaFeature,FakeMediaBackend
+    from bmo_ai.features.media.assets import MediaAsset
+    media_root=root/'music';meta=json.loads((media_root/'fixture.json').read_text())
+    def media_clock():
+        try:return float((root/'media-clock.txt').read_text())
+        except FileNotFoundError:return 0.
+    asset=MediaAsset(**meta)
+    settings['media']=MediaFeature(media_root,(asset,),backend=FakeMediaBackend(clock=media_clock,pausable=True),clock=clock)
+    settings['voice_pack_directory']=root/'organized-pack'
+    from bmo_ai.voice_pack import OrganizedVoicePack
+    pack=OrganizedVoicePack(settings['voice_pack_directory'])
+    archive=root/'synthetic-v10.zip'
+    pack.import_zip(archive,expected_sha256=hashlib.sha256(archive.read_bytes()).hexdigest())
+''')
+    return source
+
+
+def prepare(directory):
+    """Local deterministic media generation, with no output device or network."""
+    sys.path.insert(0,str(SOFTWARE/'tests'))
+    from test_voice_pack_v10 import pcm, V10_IDS
+    from bmo_ai import fish_tts
+    import zipfile
+    root=Path(directory);music=root/'music';music.mkdir(mode=0o700)
+    wav=pcm(8.,rate=44100);(music/'face.wav').write_bytes(wav)
+    cues=json.dumps([dict(time=0.,mouth='closed'),dict(time=.1,mouth='low'),
+                     dict(time=.3,mouth='wide'),dict(time=.7,mouth='low')]).encode()
+    (music/'energy.json').write_bytes(cues)
+    command=[shutil.which('ffmpeg'),'-nostdin','-hide_banner','-loglevel','error','-f','lavfi','-i',
+        'testsrc2=size=160x90:rate=25','-f','lavfi','-i','sine=frequency=440:sample_rate=44100',
+        '-t','8','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-c:a','aac','-movflags','+faststart',str(music/'video.mp4')]
+    subprocess.run(command,check=True,timeout=20,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    subprocess.run([shutil.which('ffmpeg'),'-nostdin','-hide_banner','-loglevel','error','-i',str(music/'video.mp4'),
+        '-vn','-acodec','pcm_s16le','-ac','1','-ar','44100',str(music/'video-audio.wav')],
+        check=True,timeout=15,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+    import wave
+    with wave.open(str(music/'video-audio.wav'),'rb') as audio:video_duration=audio.getnframes()/audio.getframerate()
+    sha=lambda name:hashlib.sha256((music/name).read_bytes()).hexdigest()
+    meta=dict(id='space_potatoes',title='Synthetic two-mode song',source='synthetic_test_only',path='face.wav',
+        sha256=sha('face.wav'),media_type='audio/wav',duration=8.,cue_path='energy.json',cue_sha256=sha('energy.json'),
+        cue_kind='whole_mix_energy_approximation',video_path='video.mp4',video_sha256=sha('video.mp4'),
+        video_audio_path='video-audio.wav',video_audio_sha256=sha('video-audio.wav'),video_audio_duration=video_duration)
+    (music/'fixture.json').write_text(json.dumps(meta))
+    rows=[];payloads={}
+    for clip in V10_IDS:
+        seconds={'PH_COUNTDOWN_05S':5.,'wake_ack_01':1.76}.get(clip,.1)
+        text=('' if clip=='RX01' else "Yeah? What's up?" if clip=='wake_ack_01' else
+              'Five. Four. Three. Two. One.' if clip=='PH_COUNTDOWN_05S' else 'Synthetic fixture.')
+        raw=pcm(seconds);path='audio/'+clip+'.wav';payloads[path]=raw
+        rows.append(dict(clip_id=clip,spoken_text=text,file=path,sha256=hashlib.sha256(raw).hexdigest(),baked_gain=1.,
+            requested_model='drama-3',voice_id=fish_tts.AARON_BMO_VOICE_ID,
+            provenance=dict(requested_model='drama-3',server_model_attestation='NOT_AVAILABLE'),approvals=dict(listening_approved=False)))
+    with zipfile.ZipFile(root/'synthetic-v10.zip','w') as archive:
+        archive.writestr('catalogue.json',json.dumps(dict(schema='bmo.voice_asset_handoff.v10',not_runtime_compatible_manifest=True,entries=rows)))
+        for name,raw in payloads.items():archive.writestr(name,raw)
+    for file in root.rglob('*'):
+        if file.is_file():file.chmod(0o600)
+
+
+@contextmanager
+def fixture_for(directory,profile,face):
+    prepare(directory)
+    with patch.object(desktop,'CHILD',child_source()):
+        fixture=desktop.DesktopFixture(directory,profile=profile,face=face,scenario='character',extra_args=('--character-life','--voice-bank-directory',str(Path(directory)/'character-bank')))
+    try:yield fixture
+    except Exception as error:
+        if fixture.process.poll() is not None:
+            output,stderr=fixture.process.communicate(timeout=3)
+            error.add_note('Fixture exited '+str(fixture.process.returncode)+'\n'+stderr+'\n'+''.join(fixture._lines)+output)
+        raise
+    finally:fixture.close()
+
+
+def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
+    from playwright.sync_api import sync_playwright
+    face=desktop.FIXTURE if profile=='ci-synthetic' else Path(SCREEN_PROFILES[profile]['default_path'])
+    before=hashlib.sha256(face.read_bytes()).hexdigest();checks=[]
+    with tempfile.TemporaryDirectory(prefix='bmo-v10-music-browser-') as directory,fixture_for(directory,profile,face) as fixture:
+        with sync_playwright() as pw:
+            browser=pw.chromium.launch(executable_path=chromium,headless=True,
+                env={'PATH':os.defpath,'HOME':directory,'LC_ALL':'C.UTF-8'},args=['--no-sandbox','--disable-gpu','--mute-audio',
+                    '--disable-audio-output','--disable-background-networking','--disable-component-update','--disable-sync','--no-first-run'])
+            try:
+                page=browser.new_page(viewport={'width':800,'height':480});page.set_default_timeout(12000)
+                errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
+                transport_actions=[]
+                def observe_transport(request):
+                    if request.method=='POST' and request.url.endswith('/api/control'):
+                        payload=request.post_data_json.get('payload',{})
+                        action=payload.get('action')
+                        if action=='media_command':action=payload.get('value',{}).get('action')
+                        if action in ('pause','resume'):transport_actions.append(action)
+                page.on('request',observe_transport)
+                page.route('**/*',lambda route:route.continue_() if route.request.url.startswith(fixture.url) else route.abort())
+                page.add_init_script("""window.__browserAudioCalls=0;window.__musicPlays=0;
+                    const NativeWorker=window.Worker;
+                    window.Worker=class extends NativeWorker{constructor(...args){super(...args);window.__pollWorker=this;}};
+                    const nativePlay=HTMLMediaElement.prototype.play;
+                    HTMLMediaElement.prototype.play=function(){
+                      if(this.tagName==='VIDEO'&&this.muted){window.__musicPlays++;
+                        if(this.id==='music-video'&&window.__injectMusicPlayRejection){
+                          window.__injectMusicPlayRejection=false;
+                          return Promise.reject(new DOMException('Synthetic decoder rejection','NotSupportedError'));}
+                        if(this.id==='music-video'&&window.__injectLateMusicRejection){
+                          window.__injectLateMusicRejection=false;window.__musicLateRejectStarted=true;
+                          nativePlay.call(this).catch(()=>{});
+                          return new Promise((resolve,reject)=>{window.__rejectMusicPlay=()=>{
+                            window.__rejectMusicPlay=null;reject(Error('Synthetic retired play promise'));};});
+                        }
+                        return nativePlay.call(this);}
+                      window.__browserAudioCalls++;throw Error('Browser audio forbidden');};""")
+                def wait(predicate,timeout=12):
+                    deadline=time.monotonic()+timeout
+                    while time.monotonic()<deadline:
+                        state=fixture.features()
+                        if predicate(state):return state
+                        page.wait_for_timeout(25)
+                    raise AssertionError('Product state did not settle: '+json.dumps({k:state.get(k) for k in
+                        ('mode','media','voice_pack','last_result','requests','test_fixture')}))
+                def panel(button):
+                    page.evaluate('()=>BMODesktop.menu()')
+                    if button in ('voice-menu','system-menu'):
+                        page.locator('#settings-menu').click()
+                    elif button=='video-menu':
+                        page.locator('#camera-menu').click()
+                    page.locator('#'+button).click()
+                def start(mode):
+                    panel('music-menu');page.locator('[data-song-id=space_potatoes] [data-media-mode='+mode+']').click()
+                    wait(lambda state:state['mode']=='music' and state['media']['variant']==mode)
+                    page.wait_for_function('mode=>BMODesktop.features?.mode==="music"&&BMODesktop.features.media.variant===mode',arg=mode)
+                def music_state(expected):
+                    # fixture.features() can see an applied command before the
+                    # product's separate poll renders it. Click the displayed
+                    # Play/Pause action only after that UI and decoder agree.
+                    wait(lambda state:state['mode']=='music' and state['media']['state']==expected)
+                    page.wait_for_function("""expected=>{
+                        const media=BMODesktop.features?.media,button=document.querySelector('#music-toggle');
+                        return BMODesktop.features?.mode==='music'&&media?.state===expected
+                          &&button.textContent===(expected==='playing'?'Pause':'Play')&&!button.disabled
+                          &&(media.variant!=='video'||document.querySelector('#music-video').paused===(expected==='paused'));
+                    }""",arg=expected)
+                def toggle_music(expected):
+                    music_state('paused' if expected=='playing' else 'playing')
+                    before=len(transport_actions)
+                    page.locator('#music-toggle').click()
+                    music_state(expected)
+                    assert transport_actions[before:]==['resume' if expected=='playing' else 'pause'],transport_actions[before:]
+                def reject_retired_play():
+                    before=len(transport_actions)
+                    page.evaluate("""async()=>{
+                        window.__rejectMusicPlay();
+                        await Promise.resolve();await Promise.resolve();
+                    }""")
+                    assert len(transport_actions)==before,transport_actions[before:]
+                def reveal():
+                    page.locator('#music-surface').click(position={'x':5,'y':5})
+                    page.wait_for_timeout(80)
+                    evidence=page.evaluate("""() => ({
+                        mode:BMODesktop.features?.mode,
+                        currentMode:BMODesktop.features?.mode,
+                        rootHidden:document.querySelector('#music-surface').hidden,
+                        controlFlag:document.querySelector('#music-surface').dataset.controlsVisible,
+                        computedVisibility:getComputedStyle(document.querySelector('#music-toolbar')).visibility,
+                        computedOpacity:getComputedStyle(document.querySelector('#music-toolbar')).opacity,
+                        target:document.elementFromPoint(5,5)?.id,
+                        videoHidden:document.querySelector('#music-video-view').hidden
+                    })""")
+                    assert page.locator('#music-toolbar').is_visible(), evidence
+                page.goto(fixture.url,wait_until='domcontentloaded')
+                try:
+                    page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'&&BMODesktop.features?.mode==='conversation'")
+                except Exception as error:
+                    error.add_note(json.dumps(dict(desktop=fixture.state(),features=fixture.features(),browser_errors=errors),ensure_ascii=False))
+                    raise
+                panel('voice-menu')
+                page.locator('[data-candidate=RX01]').wait_for(state='visible')
+                assert page.locator('.voice-candidate').count()==142
+                bank=fixture.features()['voice_pack']
+                assert bank['version']==10 and bank['approved']==bank['listened']==bank['played']==0
+                assert '등록됨' in page.locator('[data-candidate=RX01] .voice-status').inner_text()
+                preview=page.locator('[data-candidate=RX01] [data-variant=raw]')
+                assert preview.get_by_role('button',name='이 SHA 승인',exact=True).is_disabled()
+                baseline=fixture.features()['test_fixture']
+                preview.get_by_role('button',name='이 SHA 미리 듣기',exact=True).click()
+                wait(lambda state:state['test_fixture']['players']==baseline['players']+1)
+                wait(lambda state:not state['conversation_busy'] and state['audio_owner'] is None)
+                after=fixture.features();assert after['voice_pack']['approved']==0
+                assert after['test_fixture']['brain']==baseline['brain'] and after['test_fixture']['synthesis']==baseline['synthesis']
+                checks.append('v10 RX01 empty speech imports; explicit unapproved per-SHA review uses one cached player without approval or GPT/TTS')
+                # Complete this session's real owned previews before explicit release.
+                page.locator('#voice-batch-preview').click()
+                page.wait_for_function("()=>document.querySelector('#voice-batch-preview-stop').disabled",timeout=20000)
+                page.locator('#voice-batch-consent').check()
+                page.wait_for_function("()=>!document.querySelector('#voice-batch-enable').disabled")
+                page.locator('#voice-batch-enable').click()
+                bank=wait(lambda state:state['voice_pack']['batch']['batch_user_accepted'])['voice_pack']
+                assert bank['candidates']==142 and bank['batch_released']==61
+                assert bank['approved']==bank['listened']==0
+                page.locator('#voice-batch-event-name').select_option('music_selected')
+                page.locator('#voice-batch-event-disable').click()
+                wait(lambda state:'music_selected' in state['voice_pack']['batch']['disabled_events'])
+                page.locator('#voice-batch-event-enable').click()
+                wait(lambda state:'music_selected' not in state['voice_pack']['batch']['disabled_events'])
+                page.locator('#voice-batch-disable').click()
+                wait(lambda state:not state['voice_pack']['batch']['batch_user_accepted'])
+                assert fixture.features()['voice_pack']['batch_released']==0
+                # Historical played=true cannot complete a newly cancelled/failed sample.
+                for failure in ('cancel','player_error'):
+                    before_players=fixture.features()['test_fixture']['players']
+                    if failure=='player_error':(Path(directory)/'fail-next-player').touch()
+                    page.locator('#voice-batch-preview').click()
+                    wait(lambda state:state['test_fixture']['players']==before_players+1)
+                    if failure=='cancel':page.evaluate("()=>BMODesktop.control('cancel')")
+                    page.wait_for_function("()=>document.querySelector('#voice-batch-preview-stop').disabled",timeout=12000)
+                    page.locator('#voice-batch-consent').check()
+                    page.wait_for_timeout(200)
+                    assert page.locator('#voice-batch-enable').is_disabled(),failure+' completed the batch'
+                    assert fixture.features()['test_fixture']['players']==before_players+1,failure+' advanced to another sample'
+                    bank=fixture.features()['voice_pack']
+                    assert bank['approved']==bank['listened']==bank['batch_released']==0
+                checks.append('142 synthetic entries: explicit bundle release61/revoke/event OFF-ON; cancelled or failed new preview never reuses historic played evidence')
+                page.locator('#voice-dialog .dialog-close').click()
+                panel('music-menu')
+                assert page.locator('[data-song-id=space_potatoes]').count()==1
+                assert page.locator('[data-song-id=space_potatoes] button').count()==2
+                page.locator('#music-dialog .dialog-close').click()
+                start('video')
+                player=page.locator('#music-video');player.wait_for(state='visible')
+                assert page.locator('#music-toolbar').is_hidden(), 'The showcase toolbar must not remain visible'
+                assert page.locator('#notice').is_hidden(), 'Stale camera notices must not cover playback'
+                box=page.locator('#music-video-view').bounding_box()
+                assert box and box['height']>=479 and box['width']>=799,box
+                page.wait_for_function("()=>document.querySelector('#music-video').readyState>=2")
+                decoded=player.evaluate('v=>({w:v.videoWidth,h:v.videoHeight,duration:v.duration,muted:v.muted,volume:v.volume,error:v.error?.code||null})')
+                assert decoded['w']==160 and decoded['h']==90 and decoded['duration']>7.9 and decoded['muted'] and decoded['volume']==0 and decoded['error'] is None,decoded
+                media=fixture.features()['media'];assert media['variant']=='video' and fixture.features()['audio_owner']=='music'
+                response=page.request.get(fixture.url.rstrip('/')+media['video_url'],headers={'Range':'bytes=0-31'})
+                assert response.status==206 and response.headers['content-type']=='video/mp4' and len(response.body())==32
+                assert b'ftyp' in response.body()
+                checks.append('one stable song offers face/video; actual embedded-audio MP4 decodes through muted product video and verified Range route')
+                # The face iframe receives ordinary browser focus. This must
+                # release key state, not send an unrequested music pause.
+                before_focus=len(transport_actions)
+                page.locator('#face').focus()
+                page.wait_for_timeout(150)
+                assert fixture.features()['media']['state']=='playing'
+                assert len(transport_actions)==before_focus,transport_actions[before_focus:]
+                assert page.evaluate('()=>BMODesktop.pollEvidence.owner')=='dedicated_worker'
+                checks.append('ordinary iframe focus preserves music and uses one page-owned poll worker')
+                baseline=fixture.features()['test_fixture']
+                reveal()
+                page.locator('#music-volume').fill('0');page.locator('#music-volume').dispatch_event('change')
+                wait(lambda state:state['volume']['level']==0)
+                page.locator('#music-mute').check();wait(lambda state:state['volume']['muted'])
+                page.locator('#music-volume').fill('0.35');page.locator('#music-volume').dispatch_event('change')
+                page.locator('#music-mute').uncheck();wait(lambda state:state['volume']['level']==.35 and not state['volume']['muted'])
+                assert player.evaluate('v=>v.muted&&v.volume===0')
+                page.locator('#music-toggle').focus()
+                page.keyboard.down('Enter');page.keyboard.down('Enter')
+                assert fixture.features()['media']['state']=='playing', 'GP8 should act on release, not keydown'
+                page.keyboard.up('Enter')
+                music_state('paused')
+                page.wait_for_function("()=>document.querySelector('#music-video').paused")
+                page.locator('#music-seek').fill('2');page.locator('#music-seek').dispatch_event('change')
+                wait(lambda state:state['media']['state']=='paused' and abs(state['media']['position']-2)<.01)
+                page.wait_for_function("()=>Math.abs(document.querySelector('#music-video').currentTime-2)<.15")
+                page.locator('#music-replay').click()
+                wait(lambda state:state['media']['position']<.01 and state['media']['state']=='playing')
+                publish_media_clock(directory,.5)
+                wait(lambda state:abs(state['media']['position']-.5)<.01)
+                page.wait_for_function("()=>Math.abs(document.querySelector('#music-video').currentTime-.5)<.4")
+                page.keyboard.down('Enter');page.keyboard.up('Enter')
+                music_state('paused')
+                page.wait_for_function("()=>document.querySelector('#music-video').paused")
+                page.evaluate('()=>{window.__injectLateMusicRejection=true;}')
+                toggle_music('playing')
+                page.wait_for_function('()=>window.__musicLateRejectStarted===true')
+                toggle_music('paused')
+                reject_retired_play()
+                toggle_music('playing')
+                page.wait_for_function("()=>!document.querySelector('#music-video').paused")
+                # A real rejected play promise pauses the single PCM owner,
+                # retains a fixed browser error, and permits an explicit retry.
+                toggle_music('paused')
+                page.evaluate('()=>{window.__injectMusicPlayRejection=true;}')
+                page.locator('#music-toggle').click()
+                wait(lambda state:any(row['source']=='video_play_rejected' for row in state['media_diagnostics']['events']))
+                music_state('paused')
+                evidence=fixture.features()['media_diagnostics']['events']
+                assert any(row['source']=='video_play_rejected' and row['error_code']=='video_src_not_supported' for row in evidence),evidence
+                toggle_music('playing')
+                page.wait_for_function("()=>!document.querySelector('#music-video').paused")
+                checks.append('decoder rejection retains its cause, pauses exactly one owner, and explicit Play recovers without automatic retries')
+                # Deterministically expose the CI boundary: the server is
+                # paused while the browser still renders playing / Pause.
+                held=[]
+                def hold_features(route):held.append(route)
+                page.route('**/api/features',hold_features)
+                action_offset=len(transport_actions)
+                try:
+                    wait(lambda _:bool(held))
+                    page.locator('#music-toggle').click()
+                    wait(lambda state:state['media']['state']=='paused')
+                    stale=page.evaluate("""()=>({state:BMODesktop.features.media.state,
+                        label:document.querySelector('#music-toggle').textContent,
+                        videoPaused:document.querySelector('#music-video').paused})""")
+                    assert stale==dict(state='playing',label='Pause',videoPaused=False),stale
+                    assert transport_actions[action_offset:]==['pause'],transport_actions[action_offset:]
+                finally:
+                    page.unroute('**/api/features',hold_features)
+                    for route in held:route.continue_()
+                music_state('paused')
+                page.evaluate('()=>{window.__injectLateMusicRejection=true;window.__musicLateRejectStarted=false;}')
+                toggle_music('playing')
+                page.wait_for_function('()=>window.__musicLateRejectStarted===true')
+                page.keyboard.press('Escape');wait(lambda state:state['mode']=='conversation')
+                page.wait_for_function("""()=>BMODesktop.features?.mode==='conversation'
+                    &&document.querySelector('#music-video').paused&&!document.querySelector('#music-video').hasAttribute('src')""")
+                page.keyboard.up('Enter');reject_retired_play()
+                assert page.locator('#notice').is_hidden(), 'A retired decoder play promise changed the new conversation'
+                assert fixture.features()['test_fixture']['mic_sources']==baseline['mic_sources']
+                assert player.evaluate("v=>v.paused&&!v.hasAttribute('src')")
+                checks.append('real GP8 edges pause once; seek/replay follow owner clock; pause retires a pending decoder play attempt and resumes video; Escape detaches decoder, ignores its delayed play rejection, and held key release cannot start PTT')
+                checks.append('delayed feature delivery exposes backend paused / rendered Pause; toggle waits for rendered Play and decoder pause, then sends exactly one resume')
+                publish_media_clock(directory,0)
+                start('face')
+                assert page.locator('#music-toolbar').is_hidden()
+                reveal()
+                assert page.locator('#music-video-view').is_hidden()
+                assert player.evaluate("v=>!v.hasAttribute('src')")
+                # Keep the live owner polling while an unpublished stage is
+                # empty or incomplete. Only rename publishes the new clock;
+                # catching float errors/defaulting to zero would hide this bug.
+                replace_clock=os.replace
+                published=[]
+                def inspect_clock_publication(staged,target):
+                    staged,target=Path(staged),Path(target)
+                    complete,previous=staged.read_bytes(),target.read_bytes()
+                    assert staged.parent==target.parent and staged!=target
+                    for partial in (b'',b'.'):
+                        staged.write_bytes(partial)
+                        before=fixture.features()['sequence']
+                        stable=wait(lambda state:state['sequence']>before)
+                        assert stable['mode']=='music' and stable['media']['state']=='playing'
+                        assert stable['media']['position']==0 and target.read_bytes()==previous
+                    staged.write_bytes(complete)
+                    replace_clock(staged,target)
+                    published.append(float(target.read_text()))
+                with patch.object(os,'replace',inspect_clock_publication):
+                    publish_media_clock(directory,.35)
+                assert published==[.35]
+                page.wait_for_function("()=>document.querySelector('#face').contentWindow.BMOFace.getState().mouth==='wide'")
+                checks.append('atomic fixture clock publication keeps the running owner at its prior value while staging is empty/partial, then drives the unchanged mouth cue from the complete new value')
+                toggle_music('paused')
+                page.wait_for_function("()=>document.querySelector('#face').contentWindow.BMOFace.getState().mouth==='closed'")
+                page.locator('#music-back').click();wait(lambda state:state['mode']=='conversation')
+                page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
+                page.locator('#face').focus();page.keyboard.press('Enter')
+                wait(lambda state:state['test_fixture']['brain']==baseline['brain']+1 and not state['conversation_busy'])
+                assert page.evaluate('()=>window.__browserAudioCalls')==0
+                # Long GP8 must stop exactly once and consume its own key-up.
+                start('video')
+                previous_brain=fixture.features()['test_fixture']['brain']
+                page.keyboard.down('Enter')
+                page.wait_for_timeout(1650)
+                wait(lambda state:state['mode']=='conversation')
+                page.keyboard.up('Enter')
+                page.wait_for_timeout(250)
+                assert fixture.features()['test_fixture']['brain']==previous_brain,'Long GP8 release leaked into PTT'
+                assert player.evaluate("v=>v.paused&&!v.hasAttribute('src')")
+                assert not errors,errors
+                checks.append('full-screen video hides controls/notice until touched; short GP8 pause, long GP8 stop without PTT leak; face mouth and conversation remain functional')
+                code,counts,error=fixture.finish()
+                assert code==0 and counts['forbidden']==0 and counts['players']==counts['reaped'] and counts['max_players']==1,error
+            finally:browser.close()
+    assert hashlib.sha256(face.read_bytes()).hexdigest()==before
+    return dict(status='PASS',checks=checks,not_run=['private song/voice playback','Pi speaker routing/listening','actual lyric lip sync'])
+
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--profile',choices=('ci-synthetic',*SCREEN_PROFILES),default='ci-synthetic')
+    parser.add_argument('--chromium',nargs='?',const=None,default='/usr/bin/chromium')
+    args=parser.parse_args()
+    print(json.dumps(run(args.profile,args.chromium),ensure_ascii=False,indent=2))

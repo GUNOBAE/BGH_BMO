@@ -92,6 +92,7 @@ class OwnedCdcDataPort:
         self.fd = None
         self.original = None
         self.is_open = False
+        self._read_buffer = bytearray()
 
     def open(self):
         if self.is_open:
@@ -120,11 +121,18 @@ class OwnedCdcDataPort:
         return os.write(self.fd, message)  # no partial-write retry, ever
 
     def read_until(self, delimiter, bound):
-        if not self.is_open or delimiter != b"\n" or bound != 128:
+        if not self.is_open or delimiter != b"\n" or bound not in (128, 256):
             raise ArmPortUnavailable("arm_invalid_ack_boundary")
-        buffer = bytearray()
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline and b"\n" not in buffer:
+        return self._read_line(bound, time.monotonic() + self.timeout)
+
+    def read_until_budget(self, delimiter, bound, deadline):
+        if not self.is_open or delimiter != b'\n' or bound not in (128,256):
+            raise ArmPortUnavailable('arm_invalid_ack_boundary')
+        return self._read_line(bound,min(deadline,time.monotonic()+self.timeout))
+
+    def _read_line(self, bound, deadline, *, preserve_partial=False):
+        buffer = self._read_buffer
+        while time.monotonic() < deadline and b"\n" not in buffer and len(buffer) < bound:
             readable, _, _ = select.select([self.fd], [], [],
                                            max(0, deadline - time.monotonic()))
             if not readable:
@@ -138,7 +146,31 @@ class OwnedCdcDataPort:
             buffer.extend(block)
             if len(buffer) >= bound:
                 break
-        return bytes(buffer)
+        end = buffer.find(b"\n") + 1
+        if preserve_partial and not end and len(buffer) < bound:
+            return b""
+        size = min(bound, end if end else len(buffer))
+        result = bytes(buffer[:size])
+        del buffer[:size]
+        return result
+
+    def exchange_imu(self, message):
+        """One read-only query with a shared 25ms IO budget, never an arm retry.
+
+        The link serializes this with arm commands. IMU responses contain cached
+        sensor data; sensor acquisition cannot extend this host-side deadline.
+        A late complete reply is retained/routed by its exact request ID.
+        """
+        if (not self.is_open or type(message) is not bytes or len(message) > 64
+                or not message.startswith(b"B1 IMU ") or not message.endswith(b"\n")):
+            raise ArmPortUnavailable("imu_invalid_query")
+        deadline = time.monotonic() + .025
+        _, writable, _ = select.select([], [self.fd], [], max(0, deadline-time.monotonic()))
+        if not writable:
+            raise ArmPortUnavailable("imu_write_timeout")
+        if os.write(self.fd,message) != len(message):
+            raise ArmPortUnavailable('imu_partial_write')
+        return self._read_line(256, deadline, preserve_partial=True)
 
     def close(self):
         if self.fd is not None:
@@ -149,3 +181,4 @@ class OwnedCdcDataPort:
                 os.close(self.fd)
         self.fd = self.original = None
         self.is_open = False
+        self._read_buffer.clear()

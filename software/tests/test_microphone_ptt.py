@@ -85,7 +85,7 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(self.sources[0].closed, 1)
         snapshot = recorder.snapshot()
         self.assertEqual(snapshot["silence_seconds"], .9)
-        self.assertEqual(snapshot["max_seconds"], 12.)
+        self.assertEqual(snapshot["max_seconds"], 30.)
         self.assertEqual(snapshot["calibration_seconds"], .4)
         self.assertFalse(snapshot["microphone_open"])
         self.assertEqual([s["state"] for s in self.states], ["calibrating", "listening", "speech", "ready"])
@@ -347,13 +347,65 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "stale_transcript")
         self.assertEqual(run.call_count, 1)
 
-    def test_continuous_speech_stops_at_total_twelve_second_wall_budget(self):
-        recorder = self.recorder([(0, 10), (10000, 400)])
-        capture = recorder.capture("ptt:1", generation=1)
-        self.assertEqual((capture.status, capture.code), ("ready", "max_duration"))
-        self.assertLessEqual(len(capture.pcm), 384000)
-        self.assertLessEqual(self.clock() - 100., 12.05)
+    def test_continuous_unfinished_speech_rejects_total_thirty_second_budget(self):
+        recorder = self.recorder([(0, 10), (10000, 800)])
+        with self.assertRaises(MicError) as caught:
+            recorder.capture("ptt:1", generation=1)
+        self.assertEqual(caught.exception.code, "capture_limit_reached")
+        self.assertIsNone(recorder._ready)
+        self.assertLessEqual(recorder.snapshot()["captured_bytes"], 960000)
+        self.assertLessEqual(self.clock() - 100., 30.05)
         self.assertEqual(self.sources[0].closed, 1)
+        self.assertFalse(recorder.snapshot()["microphone_open"])
+
+    def test_long_question_keeps_first_phrase_middle_pause_and_tail_after_twelve_seconds(self):
+        patterns = [(10000, 200), (0, 15), (12000, 200), (0, 24)]
+        recorder = self.recorder(patterns, speech_safe=True)
+        capture = recorder.capture("ptt:long", generation=1)
+        self.assertEqual((capture.status, capture.code), ("ready", "silence"))
+        expected = b"".join(struct.pack("<h", amplitude) * (640 * count)
+                            for amplitude, count in patterns[:-1])
+        self.assertTrue(capture.pcm.startswith(expected))
+        self.assertGreater(len(capture.pcm), 384000)
+        self.assertLess(self.clock() - 100., 18.)
+        sent = []
+        def transcribe(client, path, **kwargs):
+            with wave.open(str(path), "rb") as source:
+                sent.append(source.readframes(source.getnframes()))
+            return "injected complete long question"
+        self.assertEqual(recorder.transcribe_capture(capture, None, transcriber=transcribe),
+                         "injected complete long question")
+        self.assertEqual(sent, [capture.pcm])
+
+    def test_fast_pcm_limit_is_rejected_without_transcribing_and_next_question_recovers(self):
+        recorder = self.recorder([(10000, 800)], speech_safe=True)
+        class Fast(SequenceSource):
+            def frames(source, *args, **kwargs):
+                for sequence in range(751):
+                    kwargs["cancel_check"]()
+                    yield PcmFrame(struct.pack("<h", 10000)*640, sequence, self.clock(), kwargs["generation"])
+        with self.assertRaises(MicError) as caught:
+            recorder.capture("ptt:fast", generation=1, source_factory=lambda: Fast(self.clock))
+        self.assertEqual(caught.exception.code, "capture_limit_reached")
+        self.assertIsNone(recorder._ready)
+        self.assertEqual(recorder.snapshot()["captured_bytes"], 960000)
+        capture = recorder.capture("ptt:next", generation=2,
+            source_factory=lambda: SequenceSource(self.clock, [(10000, 8), (0, 24)]))
+        self.assertEqual((capture.status, capture.code), ("ready", "silence"))
+        self.assertLess(len(capture.pcm), 64000)
+
+    def test_cancel_during_long_question_discards_prefix_then_next_turn_is_accepted(self):
+        recorder = self.recorder([(10000, 700)], speech_safe=True)
+        def transform(frame):
+            if frame.sequence == 350:
+                recorder.cancel()
+            return frame
+        recorder.source_factory = lambda: SequenceSource(self.clock, [(10000, 700)], transform)
+        capture = recorder.capture("ptt:cancel", generation=1)
+        self.assertEqual((capture.status, capture.code, capture.pcm), ("cancelled", "user_cancelled", b""))
+        capture = recorder.capture("ptt:after", generation=2,
+            source_factory=lambda: SequenceSource(self.clock, [(10000, 8), (0, 24)]))
+        self.assertEqual((capture.status, capture.code), ("ready", "silence"))
 
     def test_wav_cleanup_failure_is_reported_and_stt_result_is_not_returned(self):
         recorder = self.recorder()
@@ -445,7 +497,7 @@ class RecorderTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
 
     def test_invalid_settings_and_capture_identity_never_start_source(self):
-        for settings in ({"calibration": .2}, {"calibration": float("nan")}, {"max_duration": 13},
+        for settings in ({"calibration": .2}, {"calibration": float("nan")}, {"max_duration": 31},
                          {"noise_multiplier": .5}, {"max_noise": True}, {"min_speech": -1}):
             with self.subTest(settings=settings), self.assertRaises(Exception):
                 self.recorder(**settings)
@@ -663,7 +715,7 @@ class MicPcmSourceTests(unittest.TestCase):
 
     def test_invalid_native_configuration_is_rejected_before_any_spawn(self):
         for settings in ({"live_opt_in": 1}, {"frame_ms": 10}, {"frame_ms": 101},
-                         {"frame_ms": True}, {"max_duration": 13}, {"max_duration": float("nan")},
+                         {"frame_ms": True}, {"max_duration": 31}, {"max_duration": float("nan")},
                          {"device": "bad\nalsa"}):
             with self.subTest(settings=settings), self.assertRaises(MicError):
                 MicPcmSource(**settings)

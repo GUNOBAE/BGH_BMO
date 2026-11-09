@@ -161,10 +161,19 @@ class MusicDirectoryIntegrationTests(unittest.TestCase):
         self.import_songs(count=1)
         asset, = load_library(self.library)
         (self.library / asset.path).write_bytes(b"changed synthetic asset")
-        with patch("bmo_ai.features.media.FakeMediaBackend.start", side_effect=AssertionError("No start")) as start, \
-             self.assertRaises(FeatureError) as caught:
-            self.host()
-        self.assertEqual(caught.exception.code, "media_hash_mismatch")
+        before = self.snapshot_files()
+        with patch("bmo_ai.features.media.FakeMediaBackend.start", side_effect=AssertionError("No start")) as start:
+            host = self.host()
+            # Optional-library failure is isolated; the changed file is never
+            # admitted and other app menus remain usable without repairing it.
+            self.assertEqual(host.snapshot()['media']['setup_error'], 'media_hash_mismatch')
+            self.assertEqual(host.snapshot()['media']['catalog'], [])
+            self.assertEqual(host.execute(HostIntent('play_song', asset.id)).code, 'unknown_media')
+            host.execute(HostIntent('open_game_menu'))
+            self.assertEqual(host.modes.mode, 'game_menu')
+            host.execute(HostIntent('return_to_face'))
+            self.assertEqual(host.modes.mode, 'conversation')
+        self.assertEqual(before, self.snapshot_files())
         start.assert_not_called()
 
     def test_asset_changed_after_catalog_load_is_reverified_and_recovers_mode_focus(self):

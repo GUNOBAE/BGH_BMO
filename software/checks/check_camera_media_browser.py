@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Product camera/video/game/music routes against synthetic broker/backends only."""
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import stat
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 SOFTWARE=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(SOFTWARE))
@@ -36,6 +38,18 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     page=browser.new_page(viewport={'width':800,'height':480},accept_downloads=True)
                     page.set_default_timeout(8000)
                     page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
+                    preview_requests={'latest':0,'legacy':0}
+                    music_commands=[]
+                    def music_requested(request):
+                        if request.method=='POST' and request.url.endswith('/api/control'):
+                            payload=request.post_data_json.get('payload',{})
+                            if payload.get('action') in ('media_command','next'):music_commands.append(payload)
+                    page.on('request',music_requested)
+                    def preview_requested(request):
+                        path=urlsplit(request.url).path
+                        if path=='/api/preview/frame':preview_requests['latest']+=1
+                        elif path=='/api/preview':preview_requests['legacy']+=1
+                    page.on('request',preview_requested)
                     page.add_init_script("""window.__audioCalls=0;HTMLMediaElement.prototype.play=function(){
                         window.__audioCalls++;throw Error('Browser audio forbidden')};
                         window.__padCalls=0;window.__padButtons=[];window.__padConnected=true;
@@ -49,12 +63,35 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                             value=fixture.features()
                             if predicate(value):return value
                             page.wait_for_timeout(25)
-                        raise AssertionError('Synthetic media state timeout: '+json.dumps({
-                            k:value.get(k) for k in ('mode','camera_video','last_result')}))
+                        raise AssertionError('Synthetic media state timeout: '+json.dumps(dict(
+                            {k:value.get(k) for k in ('mode','camera_video','last_result')},
+                            browser=page.evaluate("()=>({input:BMODesktop.inputEvidence,mode:BMODesktop.features?.mode,active:document.activeElement.id,dialogs:[...document.querySelectorAll('dialog[open]')].map(e=>e.id)})"))))
                     def panel(button,dialog):
                         page.evaluate('()=>BMODesktop.menu()')
+                        if button=='system-menu':
+                            page.locator('#settings-menu').click()
+                        elif button=='video-menu':
+                            page.locator('#camera-menu').click()
                         page.locator('#'+button).click()
                         page.locator('#'+dialog).wait_for(state='visible')
+                    @contextmanager
+                    def frozen_features():
+                        held=[]
+                        def hold(route):held.append(route)
+                        page.route('**/api/features',hold)
+                        try:
+                            wait_state(lambda _:bool(held))
+                            yield
+                        finally:
+                            page.unroute('**/api/features',hold)
+                            for route in held:route.continue_()
+                    def stops():
+                        return [item['value'] for item in music_commands if item.get('action')=='media_command'
+                            and item.get('value',{}).get('action')=='stop']
+                    def first_song():
+                        panel('music-menu','music-dialog');page.locator('#music-list button').first.click()
+                        wait_state(lambda s:s['mode']=='music' and s['media']['active_id']=='fixture_song_a')
+                        page.wait_for_function("()=>BMODesktop.features?.mode==='music'&&BMODesktop.features.media.active_id==='fixture_song_a'")
                     page.goto(fixture.url,wait_until='domcontentloaded')
                     page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'")
                     initial=fixture.features()
@@ -194,8 +231,70 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     assert fixture.features()['media']['cue_kind']=='none'
                     page.locator('#music-pause').click();wait_state(lambda s:s['media']['state']=='paused')
                     page.locator('#music-resume').click();wait_state(lambda s:s['media']['state']=='playing')
-                    page.locator('#music-next').click();wait_state(lambda s:s['media']['active_id']=='fixture_song_b')
-                    page.locator('#music-stop').click();wait_state(lambda s:s['mode']=='conversation')
+                    page.wait_for_function("()=>BMODesktop.features?.media?.active_id==='fixture_song_a'")
+                    before_stops=len(stops())
+                    old_generation=page.evaluate('()=>BMODesktop.features.media.playback_generation')
+                    with frozen_features():
+                        with page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/api/control')
+                                and response.request.post_data_json.get('payload',{}).get('action')=='next') as admitted:
+                            page.locator('#music-next').click()
+                        next_request=admitted.value.json()['request_id']
+                        advanced=wait_state(lambda s:s['media']['active_id']=='fixture_song_b')
+                        assert advanced['media']['playback_generation']>old_generation
+                        assert page.evaluate('()=>BMODesktop.features.media.playback_generation')==old_generation
+                        for control in ('music-next','music-pause','music-resume','music-toggle','music-seek','music-replay'):
+                            assert page.locator('#'+control).is_disabled(),control
+                        assert page.locator('#music-stop').is_enabled()
+                        page.locator('#music-stop').click()
+                        page.evaluate('()=>Promise.resolve()')
+                        assert len(stops())==before_stops,'Stop used the previous rendered track generation'
+                    wait_state(lambda s:s['mode']=='conversation')
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
+                    assert len(stops())==before_stops+1
+                    assert stops()[-1]['generation']==advanced['media']['playback_generation']
+                    assert any(row['request_id']==next_request and row['status'] in ('running','simulated','succeeded')
+                        for row in advanced['requests'])
+                    checks.append('actual Next receipt and frozen old track render cannot send stale Stop; one human Stop waits for the acknowledged new playback generation while other track controls are disabled')
+
+                    # A generation change not initiated by this browser can
+                    # still reject a Stop. Its later receipt must unlock the
+                    # latch, with no automatic retry, for a new human request.
+                    first_song();before_stops=len(stops())
+                    with frozen_features():
+                        fixture.request('/api/control',payload={'action':'next','value':None})
+                        advanced=wait_state(lambda s:s['media']['active_id']=='fixture_song_b')
+                        with page.expect_response(lambda response:response.request.method=='POST' and response.url.endswith('/api/control')
+                                and response.request.post_data_json.get('payload',{}).get('action')=='media_command'
+                                and response.request.post_data_json['payload']['value']['action']=='stop') as stop_admitted:
+                            page.locator('#music-stop').click()
+                        stop_request=stop_admitted.value.json()['request_id']
+                        rejected=wait_state(lambda s:any(row['request_id']==stop_request and row['code']=='stale_mode' for row in s['requests']))
+                        assert rejected['mode']=='music'
+                    page.wait_for_function("()=>BMODesktop.features?.media?.active_id==='fixture_song_b'&&document.querySelector('#music-surface').dataset.stopping==='false'&&!document.querySelector('#music-back').disabled")
+                    assert len(stops())==before_stops+1,'Rejected Stop was automatically retried'
+                    page.locator('#music-surface').click(position={'x':5,'y':5})
+                    page.locator('#music-back').click();wait_state(lambda s:s['mode']=='conversation')
+                    page.wait_for_function("()=>BMODesktop.features?.mode==='conversation'")
+                    assert len(stops())==before_stops+2
+                    assert stops()[-1]['generation']==advanced['media']['playback_generation']
+                    checks.append('terminal stale Stop rejection clears the busy latch without retry; a new explicit Back uses the fresh generation and returns to conversation')
+
+                    # A queued Stop must not survive a distinct activity that
+                    # was started while this browser's features were delayed.
+                    first_song();before_stops=len(stops())
+                    original_mode=page.evaluate('()=>BMODesktop.features.mode_generation')
+                    with frozen_features():
+                        page.locator('#music-next').click();wait_state(lambda s:s['media']['active_id']=='fixture_song_b')
+                        page.locator('#music-stop').click()
+                        fixture.request('/api/intent',payload={'name':'return_to_face','target':None})
+                        wait_state(lambda s:s['mode']=='conversation')
+                        fixture.request('/api/intent',payload={'name':'play_song','target':'fixture_song_a'})
+                        newer=wait_state(lambda s:s['mode']=='music' and s['mode_generation']>original_mode and s['media']['active_id']=='fixture_song_a')
+                    page.wait_for_function('generation=>BMODesktop.features?.mode_generation===generation&&document.querySelector("#music-surface").dataset.stopping==="false"',arg=newer['mode_generation'])
+                    assert len(stops())==before_stops,'Deferred Stop crossed into a new activity'
+                    panel('music-menu','music-dialog');page.locator('#music-stop').click()
+                    wait_state(lambda s:s['mode']=='conversation')
+                    checks.append('a deferred Stop is retired on a newer activity generation; it cannot stop a newly started song')
                     assert fixture.features()['emotion']=='sad' and fixture.features()['audio_owner'] is None
                     assert fixture.features()['test_fixture']['brain']==0
                     page.locator('#music-dialog').wait_for(state='hidden')
@@ -204,17 +303,35 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     panel('camera-menu','camera-dialog')
                     page.locator('#camera-preview').click();wait_state(lambda s:s['camera']['preview_available'])
                     page.locator('#camera-image').wait_for(state='visible')
+                    page.wait_for_function("""()=>{const c=document.querySelector('#camera-image'),p=BMODesktop.previewEvidence;
+                        return c instanceof HTMLCanvasElement&&c.dataset.frameId&&c.width>0&&c.height>0
+                          &&p.displayed>0&&p.last_displayed_id===c.dataset.frameId
+                          &&c.getContext('2d').getImageData(0,0,1,1).data[3]>0;}""")
+                    assert preview_requests['latest']>0 and preview_requests['legacy']==0
+                    assert page.evaluate('()=>BMODesktop.previewEvidence.max_pending')==1
                     page.locator('#camera-track').click()
                     wait_state(lambda s:s['camera']['tracking'] and s['gaze']['owner']=='camera')
                     page.locator('#camera-off').click();wait_state(lambda s:not s['camera']['on'])
+                    page.wait_for_function('()=>!BMODesktop.previewEvidence.active&&BMODesktop.previewEvidence.pending===0')
                     page.locator('#photo-take').click();wait_state(lambda s:s['mode']=='photo')
+                    countdown=wait_state(lambda s:s['photo_phase']=='countdown')
+                    page.wait_for_function("""()=>{const c=document.querySelector('#photo-preview-image');
+                        return !c.hidden&&c instanceof HTMLCanvasElement&&c.dataset.frameId
+                          &&BMODesktop.previewEvidence.last_displayed_id===c.dataset.frameId
+                          &&c.getContext('2d').getImageData(0,0,1,1).data[3]>0;}""")
+                    assert countdown['photo_countdown']>4
                     state=wait_state(lambda s:bool(s['photo'] and s['photo']['completed']))
                     assert state['photo']['simulated'] and not state['photo']['executed']
                     status,png=fixture.request('/api/photo/'+state['photo']['photo_id'])
                     assert status==200 and png.startswith(b'\x89PNG')
+                    state=wait_state(lambda s:s['photo_phase']=='photo_review' and not s['conversation_busy']
+                                     and s['audio_owner'] is None and s['test_fixture']['synthesis']==1)
+                    assert not state['camera']['on']
+                    page.locator('#photo-result-image').wait_for(state='visible')
+                    page.wait_for_function("()=>document.querySelector('#photo-result-image').naturalWidth>0&&!BMODesktop.previewEvidence.active&&BMODesktop.previewEvidence.pending===0")
                     page.locator('#foreground-back').click();wait_state(lambda s:s['mode']=='conversation')
                     assert fixture.features()['emotion']=='sad'
-                    checks.append('requested synthetic preview/tracking/photo use the same broker and outer shell; photo countdown/return preserve emotion')
+                    checks.append('cached binary latest frames are drawn to canvas with one pending fetch; visible paint gates five-second countdown, OFF/review stop the pipeline, saved PNG review and one feedback TTS then Back preserve emotion')
 
                     panel('system-menu','system-dialog')
                     assert '실행하지 않았어요' in page.locator('#system-readiness').inner_text()
@@ -223,11 +340,11 @@ def run(profile='ci-synthetic',chromium='/usr/bin/chromium'):
                     page.locator('#system-dialog .dialog-close').click()
                     assert page.evaluate('()=>window.__audioCalls')==0
                     audit=fixture.features()['test_fixture']
-                    assert audit['brain']==audit['synthesis']==audit['stt']==0 and audit['greeting_calls']==1
+                    assert audit['brain']==audit['stt']==0 and audit['synthesis']==1 and audit['greeting_calls']==1
                     checks.append('diagnostics distinguish unmeasured power/current-firmware status and never run telemetry, mic, paid API or browser audio')
                     code,counts,error=fixture.finish()
                     assert code==0,error
-                    assert counts['players']==counts['reaped']==1
+                    assert counts['players']==counts['reaped']==2
                     assert counts['browsers']==counts['browser_reaped']==1 and counts['forbidden']==0
                     assert saved.read_bytes()==payload
                     checks.append('normal app exit cleans owned mock processes while keeping the completed selected-directory video unchanged')

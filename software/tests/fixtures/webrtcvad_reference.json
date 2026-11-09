@@ -1,0 +1,14 @@
+{
+  "source_repository": "https://github.com/wiseman/py-webrtcvad",
+  "commit": "e283ca41df3a84b0e87fb1f5cb9b21580a286b09",
+  "source_file": "test-audio.raw",
+  "sha256": "3dbb730b90e0266d78d4fe03f00aba37a83780a6a5240d9084b5c01266194c1e",
+  "sample_rate": 8000,
+  "channels": 1,
+  "sample_width": 2,
+  "sample_format": "S16_LE",
+  "upstream_rate_evidence": "https://github.com/wiseman/py-webrtcvad/blob/e283ca41df3a84b0e87fb1f5cb9b21580a286b09/test_webrtcvad.py#L55",
+  "license_file": "webrtcvad_reference.LICENSE",
+  "purpose": "Upstream VAD regression reference only; not BMO/user voice approval",
+  "user_human_acceptance": "NOT_RUN"
+}

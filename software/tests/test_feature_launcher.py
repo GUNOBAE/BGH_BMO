@@ -49,7 +49,7 @@ if accelerate:
     arguments = arguments[1:]
 
 from bmo_ai.feature_launcher import main
-from bmo_ai.features.host import FeatureHost
+from bmo_ai.features.host import FeatureHost, HostControl
 
 children, hosts, spies, wire = [], [], [], []
 original_popen, original_open = subprocess.Popen, os.open
@@ -113,7 +113,7 @@ with ExitStack() as guards:
         spy = guards.enter_context(patch.object(host.client.responses, "create", wraps=host.client.responses.create))
         spies.append(spy)
         host.audit = {"modes": [], "intent_names": [], "control_names": [], "photo_saved": False,
-                      "history_sizes": [], "brain_ids": set(), "rejected": 0}
+                      "history_sizes": [], "brain_ids": set(), "rejected": 0, "preview_shown": 0}
         real_poll, real_execute, real_control = host.poll, host.execute, host.control
         def execute(intent, **kwargs):
             host.audit["intent_names"].append(intent.name)
@@ -127,9 +127,27 @@ with ExitStack() as guards:
             return result
         def poll():
             if accelerate:
-                fixture_clock.now += 1.1 if host.modes.mode == "photo" else .01
+                fixture_clock.now += 2. if host.modes.mode == "photo" else .01
             result = real_poll()
             state = host.snapshot()
+            if (accelerate and state.get('photo_phase') == 'preparing'
+                    and state.get('photo_preview_token')):
+                # This non-browser CLI driver explicitly consumes the preview
+                # and acknowledges it; elapsed preparation is not a ready frame.
+                assert host.preview_bytes(), 'No preview image was available'
+                real_control(HostControl('photo_preview_ready', {
+                    'generation': state['mode_generation'],
+                    'request_id': state['photo_request_id'],
+                    'preview_token': state['photo_preview_token']}), 'cli-preview-presented')
+                host.audit['preview_shown'] += 1
+            if accelerate and state.get('photo_phase') == 'photo_review':
+                # Broad command routing is tested after the outcome feedback;
+                # dedicated Host tests cover interruption during that playback.
+                deadline = time.monotonic()+3
+                while host.session.busy or host.audio.owner is not None:
+                    assert time.monotonic()<deadline, 'Photo feedback did not finish'
+                    real_poll();time.sleep(.002)
+                state = host.snapshot()
             if not host.audit["modes"] or host.audit["modes"][-1] != state["mode"]:
                 host.audit["modes"].append(state["mode"])
             host.audit["photo_saved"] |= bool(state.get("photo") and state["photo"].get("completed"))
@@ -307,7 +325,7 @@ class FeatureLauncherTests(unittest.TestCase):
                     "/game fixture_game_b\n/face\n/track\n/photo\n/key UP down\n/key UP up\n/key DOWN down\n"
                     "/face\n/camera-off\n/song fixture_song_a\n/media pause\n/media resume\n/media next\n/media stop\n"
                     "/gesture wave\n/stop\n/emotion crying\n/emotion auto\n/cancel\n/repeat\n/reset\n"
-                    "/unknown\n/game ../private\n/face\n/quit\n")
+                    "/unknown\n/game missing_game\n/game ../private\n/face\n/quit\n")
         result = self.launch("__fixture_clock__", "--simulate", "--no-web", "--demo-assets", stdin=commands)
         audit = self.audit(result)
         for mode in ("game_menu", "game", "photo", "music", "conversation"):
@@ -321,7 +339,9 @@ class FeatureLauncherTests(unittest.TestCase):
         self.assertGreaterEqual(audit["rejected"], 1)
         self.assertIn("Unknown command.", result.stdout)
         self.assertIn("The requested feature is unavailable.", result.stdout)
-        self.assertEqual(audit["players"], 0)
+        self.assertGreaterEqual(audit["players"], 1)  # New post-save feedback is real owned playback.
+        self.assertEqual(audit["players"], audit["reaped"])
+        self.assertEqual(audit["delegated_calls"], 0)  # Feedback is not a second GPT response.
         self.assertTrue(audit["closed"])
 
     def test_launch_script_honors_private_bmo_python_override_from_another_cwd(self):
