@@ -473,15 +473,25 @@ class LegacyMotionFeature:
         return HostResult(request_id, "accepted", "gesture_queued", simulated=False)
 
     def start_performance(self, gesture_id, *, performance_context, request_id, session_id,
-                          turn_id, mode_generation, started_at):
-        """Queue one dialogue decoration on this same B1 owner, never wait for pose."""
+                          turn_id, mode_generation, started_at, explicit=False):
+        """Queue a speech-linked performance, never wait for arrival.
+
+        A validated current named request is separate from automatic decoration.
+        It still needs a fresh player boundary, this same owner, the device
+        cooldown, permission and the full token-bound stop/return lifecycle.
+        """
         profile = PERFORMANCE_PROFILES.get((gesture_id, performance_context))
         if profile is None:
             return HostResult(request_id, "rejected", "invalid_performance_context", simulated=False)
+        now = _clock_value(self.clock)
+        if (not _finite_time(now) or not _finite_time(started_at)
+                or not 0 <= now-started_at <= self.ttl):
+            return HostResult(request_id, "rejected", "stale_playback_start", simulated=False)
         # Reuse all existing admission/dedup/current-turn restrictions, then
         # reserve this controller's one slot for the token-bound lifecycle.
         result = self.submit(gesture_id, request_id=request_id, session_id=session_id,
-            turn_id=turn_id, mode_generation=mode_generation, started_at=started_at)
+            turn_id=turn_id, mode_generation=mode_generation, started_at=started_at,
+            explicit=explicit)
         if result.status != "accepted":
             return result
         pending, self.pending = self.pending, None

@@ -165,13 +165,19 @@ class ExpressionResponses:
     def __init__(self, responses):
         self._responses = responses
         self.last_reply: ExpressionReply | None = None
+        self.last_call_metrics = {}
 
     def reset(self) -> None:
         self.last_reply = None
+        self.last_call_metrics = {}
 
     def create(self, **request):
         self.reset()
-        response = self._responses.create(**expression_request(request))
+        from .provider_evidence import request_evidence, response_evidence
+        adapted = expression_request(request)
+        self.last_call_metrics = request_evidence(adapted)
+        response = self._responses.create(**adapted)
+        self.last_call_metrics.update(response_evidence(response))
         status = getattr(response, "status", None)
         incomplete = getattr(response, "incomplete_details", None)
         error = getattr(response, "error", None)
@@ -188,6 +194,9 @@ class ExpressionResponses:
                     part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
                     if part_type == "refusal":
                         raise ExpressionFormatError()
+        output_text = getattr(response, "output_text", None)
+        if type(output_text) is not str or not output_text.strip():
+            return response  # Preserve the distinct no-reply cause at the brain.
         reply = decode_expression(getattr(response, "output_text", None))
         self.last_reply = reply
         # BMOBrain currently consumes exactly these four fields. Neither

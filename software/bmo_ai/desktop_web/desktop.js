@@ -251,7 +251,9 @@ async function modes(){if(!canTalk())return;const r=await fetch('/api/features',
  $('ptt-finish').hidden=next.mode!=='conversation'||!['listening','speech'].includes(capture)||!!document.querySelector('dialog[open]');
  $('ptt-finish').disabled=pttFinishPending;
  $('ptt-state').hidden=!inputFailed&&!wakeHint&&!['calibrating','listening','speech','transcribing'].includes(capture);
- const failures={no_speech:'말소리를 감지하지 못했어요. 버튼을 누르고 다시 말해 주세요.',stt_empty:'말을 알아듣지 못했어요. 다시 말해 주세요.'};
+ const cap=next.ptt?.max_seconds;
+ $('capture-limit').textContent=Number.isFinite(cap)?'Ask naturally, up to '+cap+' seconds. Short questions finish when you stop speaking.':'';
+ const failures={capture_limit_reached:'That question reached the recording limit. Please try it in smaller parts.',no_speech:'말소리를 감지하지 못했어요. 버튼을 누르고 다시 말해 주세요.',stt_empty:'말을 알아듣지 못했어요. 다시 말해 주세요.'};
  $('ptt-state').textContent=inputFailed?(next.ptt?.cleanup_fault?'녹음 정리를 확인해 주세요. 앱을 종료한 뒤 검수해 주세요.':failures[failure?.code]||(capture==='failed'&&failure?.stage!=='stt'?'녹음을 완료하지 못했어요. 마이크 설정과 연결을 확인해 주세요.':'대화를 완료하지 못했어요. 준비 상태에서 실패 단계를 확인해 주세요.')):
   wakeHint||({calibrating:'주변 소리를 확인해요',listening:'듣고 있어요',speech:'말소리를 감지했어요',transcribing:'말을 확인하고 있어요'})[capture]||'';
  if(next.mode==='game_menu'&&!document.querySelector('dialog[open]:not(#game-menu)')){

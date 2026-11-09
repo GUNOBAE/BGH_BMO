@@ -16,7 +16,7 @@ import stat
 from threading import RLock
 import time
 
-from .turn_diagnostics import CODES, STAGES, MARKER_NAMES, PLAYBACK_PATHS, ANSWER_ONSET_EVIDENCE, _SPANS, _RUN_ID, _TURN_ID
+from .turn_diagnostics import CODES, STAGES, MARKER_NAMES, PLAYBACK_PATHS, ANSWER_ONSET_EVIDENCE, _SPANS, _RUN_ID, _TURN_ID, safe_stage_metadata
 
 
 CAPACITY = 32
@@ -178,6 +178,8 @@ def numeric_receipt(trace, *, revision, profile, mode, speech_safe, recorded_at,
             result[name] = round(value, 1) if _number(value) else None
         result['cancellation'] = _stage(trace.get('cancellation'))
         result['cleanup_failure'] = _stage(trace.get('cleanup_failure'))
+        if 'stage_metadata' in trace:
+            result['stage_metadata'] = safe_stage_metadata(trace.get('stage_metadata'))
     return result
 
 

@@ -201,6 +201,45 @@ class CharacterExpressionTests(unittest.TestCase):
         voice.repeat()
         self.assertEqual(len(seen), 1)
 
+    def test_actual_fish_request_and_player_metadata_distinguish_cry_fiction_empathy_and_facts(self):
+        # This inspects injected synthesis arguments and real voice/player events,
+        # not the sound of a provider-generated utterance.
+        rows = [
+            ("Cry for me please.", "crying", "tearful", "theatrical_crying", "crying", "sobbing"),
+            ("A moving fictional ending.", "crying", "tearful", "tearful", "crying", "restrained tears"),
+            ("My father died.", "crying", "tearful", "empathetic", "sad", "calm, attentive"),
+            ("What is fourteen minus four?", "neutral", "calm", "calm", "neutral", "natural phrasing"),
+        ]
+        for message, emotion, proposed, expected, face, direction in rows:
+            with self.subTest(delivery=expected):
+                requests, events = [], []
+                config = integration_config()
+                def synth(text, **kwargs):
+                    requests.append((text, kwargs)); return synthetic_wav()
+                def player(_command, *, on_start, cancel_check, **_):
+                    cancel_check(); on_start(); cancel_check()
+                voice = IntegrationVoice(config, None, fish_synthesizer=synth, player=player,
+                    expressive=True, character_life=True,
+                    emit=lambda kind, **fields: events.append((kind, fields)))
+                try:
+                    plan = CharacterDirector().resolve(emotion, metadata={'delivery_id':proposed}, message=message)
+                    voice.expression_metadata = self.metadata(plan)
+                    voice.speak("Beemo shares a short answer.")
+                    self.assertEqual(len(requests), 1)
+                    text, sent = requests[0]
+                    self.assertIn(direction, text)
+                    self.assertNotIn(SOFT_AARON_DIRECTION, text)
+                    self.assertEqual((sent['model'], sent['reference_id']), (config.fish_model, config.fish_voice_id))
+                    started = next(fields for kind, fields in events if kind == 'started')
+                    self.assertEqual((started['emotion'], started['tts_delivery_id']), (face, expected))
+                    self.assertEqual(started['tts_model'], config.fish_model)
+                    self.assertTrue(started['tts_override_soft'])
+                    self.assertFalse(started['tts_soft_applied'])
+                    self.assertEqual(started['tts_fallback_reason'], 'none')
+                    self.assertEqual(events[-1][0], 'ended')
+                finally:
+                    voice.close()
+
     def test_synthetic_and_piper_fallback_never_report_fish_audio_ready(self):
         def player(_command, *, on_start, cancel_check, **_):
             cancel_check(); on_start(); cancel_check()

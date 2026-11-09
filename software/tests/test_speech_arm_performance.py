@@ -64,6 +64,28 @@ class SpeechArmTests(unittest.TestCase):
         self.assertEqual(self.verbs().count(b'ACT'),1)
         self.assertNotIn(b'END',self.verbs())  # firmware normal finite hold, not watchdog
 
+    def test_explicit_speech_performance_keeps_freshness_and_device_cooldown(self):
+        # A model/user action does not inherit automatic decoration eligibility,
+        # but it also cannot reuse old audio or bypass the actuator's spacing.
+        self.motion._auto_contexts.add(self.motion.context)
+        args = dict(performance_context='achievement', request_id='explicitCelebration',
+            session_id='session', turn_id='turn1', mode_generation=1, explicit=True)
+        stale = self.motion.start_performance('celebrate', started_at=self.clock()-1., **args)
+        self.assertEqual(stale.code, 'stale_playback_start')
+        self.motion.cooldown = 3.
+        self.motion.last_gesture = self.clock()
+        blocked = self.motion.start_performance('celebrate', started_at=self.clock(), **args)
+        self.assertEqual(blocked.code, 'gesture_cooldown')
+        self.clock.advance(3.)
+        accepted = self.motion.start_performance('celebrate', started_at=self.clock(), **args)
+        self.assertEqual(accepted.code, 'performance_queued')
+        self.motion.poll(); self.step(.6)
+        self.assertEqual(self.verbs().count(b'ACT'), 1)
+        self.assertTrue(self.motion.finish_performance('turn1', 'playback_ended'))
+        self.motion.poll(); self.step(1.)
+        self.assertEqual(self.board.positions, {'left':0, 'right':0})
+        self.assertFalse(self.motion.snapshot()['position_verified'])
+
     def test_cancel_during_entry_atomically_replaces_entry_and_new_turn_does_not_drop_return(self):
         self.start();self.motion.poll();self.step(.12)
         height=self.board.positions['right']

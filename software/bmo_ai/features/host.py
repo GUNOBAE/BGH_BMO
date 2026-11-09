@@ -1353,6 +1353,57 @@ class FeatureHost(ProductVideoFlow):
                 changed()
         return self.volume.snapshot()
 
+    def _submit_explicit_arm(self, intent, request, *, started_at=None):
+        """One readiness/owner path for menu and validated spoken arm requests."""
+        self.runtime.require('arms')
+        if self.arm_usage is not None and not self.arm_usage.enabled:
+            raise FeatureError('arm_usage_off')
+        turn = self.session.snapshot()['turn_id'] or 'idle'
+        self.motion.set_context(self.session.session_id, turn, self.modes.generation)
+        profiles = {'wave': 'greeting', 'celebrate': 'achievement', 'shrug': 'playful'}
+        perform = getattr(self.motion, 'start_performance', None)
+        if started_at is not None and intent.target in profiles and callable(perform):
+            return perform(intent.target, performance_context=profiles[intent.target],
+                request_id=request, session_id=self.session.session_id, turn_id=turn,
+                mode_generation=self.modes.generation, started_at=started_at, explicit=True)
+        return self.motion.submit(intent.target, request_id=request,
+            session_id=self.session.session_id, turn_id=turn,
+            mode_generation=self.modes.generation, started_at=started_at, explicit=True)
+
+    def _start_spoken_arm(self, intent, turn, at, *, fresh):
+        """Consume one current semantic request at the actual speech boundary.
+
+        Reserving the ordinary explicit request ID also fences the legacy
+        end-of-answer route and duplicate/late player notifications.
+        """
+        request = 'spoken_device_' + uuid5(self._namespace, turn).hex
+        self._arm_turn_state['request_id'] = request
+        try:
+            entry = self.journal.begin(request, intent.public())
+        except Exception as error:
+            code = error.code if isinstance(error, FeatureError) else 'journal_unavailable'
+            # No reservation means no movement and no overwrite of a different
+            # operation's existing receipt.
+            return HostResult(request, 'rejected', code)
+        if entry['duplicate']:
+            return self._result_history.get(request) or HostResult(request, 'rejected', 'arm_request_duplicate')
+        try:
+            # Explain an unavailable device even if a very short notice already
+            # ended. The admission check itself performs no motor IO.
+            self.runtime.require('arms')
+            if self.arm_usage is not None and not self.arm_usage.enabled:
+                raise FeatureError('arm_usage_off')
+            performance = intent.target in ('wave', 'celebrate', 'shrug')
+            if not fresh or performance and self.session.snapshot()['playback'] != 'started':
+                result = HostResult(request, 'rejected', 'stale_playback_start')
+            else:
+                result = self._submit_explicit_arm(intent, request, started_at=at)
+        except FeatureError as error:
+            result = HostResult(request, 'rejected', error.code)
+        except Exception:
+            result = HostResult(request, 'failed', 'motion_admission_failed')
+        return self._finish_result(result)
+
     def execute(self, intent, *, request_id=None, expected_generation=None):
         if not isinstance(intent, HostIntent) or self._closed:
             raise FeatureError("invalid_request")
@@ -1521,12 +1572,7 @@ class FeatureHost(ProductVideoFlow):
                 self.gaze.clear("camera")
                 self._queue_local_event('tracking_stopped')
             elif name == "arm_gesture":
-                if self.arm_usage is not None and not self.arm_usage.enabled:
-                    raise FeatureError('arm_usage_off')
-                turn = self.session.snapshot()["turn_id"] or "idle"
-                self.motion.set_context(self.session.session_id, turn, self.modes.generation)
-                result = self.motion.submit(intent.target, request_id=request, session_id=self.session.session_id,
-                    turn_id=turn, mode_generation=self.modes.generation, started_at=None, explicit=True)
+                result = self._submit_explicit_arm(intent, request)
                 return self._finish_result(result)
             if name in ("start_face_tracking", "stop_face_tracking") and not self.runtime.simulate:
                 result = HostResult(request, "succeeded", "ok", simulated=False,
@@ -2539,6 +2585,11 @@ class FeatureHost(ProductVideoFlow):
                     player_start_seen=False, player_start_fresh=False)
                 proposal = self._proposals[turn]
                 if (proposal['human_device_request'] and not proposal['action_plan']
+                        and proposal['intent'] is not None and proposal['intent'].name == 'arm_gesture'):
+                    proposal['explicit_arm_request'] = proposal['intent']
+                    self._arm_turn_state.update(explicit_request=True, semantic_validated=True,
+                        gesture_id=proposal['intent'].target, intent_name='arm_gesture')
+                if (proposal['human_device_request'] and not proposal['action_plan']
                         and proposal['intent'] is not None and proposal['intent'].name == 'stop_arms'):
                     # A validated current stop need not wait for the spoken
                     # acknowledgement to finish. Dispatch on this owner thread
@@ -2549,6 +2600,10 @@ class FeatureHost(ProductVideoFlow):
             elif kind == "started" and turn in self._proposals:
                 proposal = self._proposals[turn]
                 fresh = 0 <= self.clock() - at <= .5
+                # A second player-start cannot replay an explicit action or
+                # overwrite its ACK with the automatic-decoration projection.
+                if proposal.get('explicit_arm_consumed'):
+                    continue
                 if self.character_life:
                     plan = proposal.get("character_plan")
                     proposal["gesture"] = "none"
@@ -2588,13 +2643,26 @@ class FeatureHost(ProductVideoFlow):
                     stage='player_started' if fresh else 'stale',
                     player_start_seen=True, player_start_fresh=fresh,
                     gesture_id=proposal['gesture'], playback_emotion=self.session.snapshot()['emotion'])
-                if ((self.runtime.simulate or self.runtime.arms_enabled)
+                explicit_arm = proposal.get('explicit_arm_request')
+                if explicit_arm is not None:
+                    # Consume even a stale/rejected boundary: finishing speech
+                    # cannot silently retry it later or turn it into a DO.
+                    proposal['explicit_arm_consumed'] = True
+                    proposal['intent'] = None
+                    self._arm_turn_state.update(explicit_request=True, semantic_validated=True,
+                        gesture_id=explicit_arm.target, automatic_reason='explicit_request',
+                        readiness_code=self._arm_action_status().get('code'))
+                    result = self._start_spoken_arm(explicit_arm, turn, at, fresh=fresh)
+                    self._arm_turn_state.update(stage='submitted' if fresh else 'stale',
+                        result_status=result.status, result_code=result.code)
+                if (explicit_arm is None and (self.runtime.simulate or self.runtime.arms_enabled)
                         and (self.arm_usage is None or self.arm_usage.enabled and self.arm_usage.conversation_gestures)
                         and (self._emotion_arms or self.runtime.simulate and not self.character_life)
                         and automatic_reason == "eligible"
                         and proposal["gesture"] != "none" and self.clock() - at <= .5
                         and self.session.snapshot()["playback"] == "started"):
                     request = "gesture_" + uuid5(self._namespace, turn).hex
+                    self._arm_turn_state['request_id'] = request
                     try:
                         entry = self.journal.begin(request, {"gesture": proposal["gesture"], "turn": turn})
                     except Exception:
@@ -2813,7 +2881,8 @@ class FeatureHost(ProductVideoFlow):
             if event.kind == "motion_result":
                 data = event.data
                 current_turn = self._arm_turn_state.get('turn_id')
-                if (current_turn and event.request_id == 'gesture_' + uuid5(self._namespace, current_turn).hex
+                if (current_turn and event.request_id == self._arm_turn_state.get('request_id',
+                        'gesture_' + uuid5(self._namespace, current_turn).hex)
                         and event.mode_generation == self.modes.generation):
                     self._arm_turn_state.update(result_status=data['status'], result_code=event.code)
                 result = HostResult(event.request_id, data["status"], event.code,

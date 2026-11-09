@@ -198,12 +198,25 @@ class RealLocalVadReferenceTests(unittest.TestCase):
         self.assertGreaterEqual(result["retained_bytes"],len(both)*2)
         self.assertEqual(result["retained_pcm_sha256"],sha256(pcm[:result["retained_bytes"]]).hexdigest())
 
+    def test_long_quiet_reference_with_mid_question_hesitation_preserves_full_input(self):
+        phrase = reference(.004)
+        # Existing published reference only: repeated locally to exercise a
+        # >12s question, not presented as human pronunciation validation.
+        speech = phrase * 8 + [0] * 7680 + phrase * 8
+        pcm = pack(speech + [0] * 24000)
+        result = replay_pcm(pcm, vad_mode="webrtc")
+        self.assertGreater(len(speech) / 16000, 12.)
+        self.assertEqual((result["capture_status"], result["capture_code"]), ("ready", "silence"))
+        self.assertGreaterEqual(result["retained_bytes"], len(speech) * 2)
+        self.assertEqual(result["retained_pcm_sha256"], sha256(pcm[:result["retained_bytes"]]).hexdigest())
+        self.assertLess(result["replay_clock_seconds"], 18.)
+
     def test_generic_stationary_low_frequency_noise_reproduces_rms_cap_but_not_new_entry(self):
         samples=[round(850*math.sin(2*math.pi*60*i/16000)+200*math.sin(2*math.pi*120*i/16000)) for i in range(64000)]
         pcm=pack(samples)
         old=replay_pcm(pcm,vad_mode="rms")
         new=replay_pcm(pcm,vad_mode="webrtc")
-        self.assertEqual(old["capture_code"],"max_duration")
+        self.assertEqual(old["capture_code"],"capture_limit_reached")
         self.assertEqual((new["capture_status"],new["capture_code"]),("cancelled","no_speech"))
         self.assertEqual(new["replay_clock_seconds"],3.)
 
@@ -267,7 +280,7 @@ class RealLocalVadReferenceTests(unittest.TestCase):
     def test_short_saved_source_does_not_fabricate_no_speech_or_padding(self):
         result=replay_pcm(bytes(1280*10),vad_mode="webrtc")
         self.assertEqual(result["capture_status"],"INCOMPLETE_SAVED_SOURCE")
-        self.assertEqual(result["capture_code"],"pcm_duration_limit")
+        self.assertEqual(result["capture_code"],"capture_limit_reached")
         self.assertEqual(result["retained_bytes"],0)
 
 

@@ -15,6 +15,7 @@ from bmo_ai.features.runtime import RuntimePolicy
 from bmo_ai.integration_profile import integration_config
 from bmo_ai.integration_voice import IntegrationVoice
 from test_legacy_arm_host import FakePort, core as v1
+from test_semantic_requests import Provider, envelope
 
 _FIRMWARE = Path(__file__).resolve().parents[2] / "firmware/staging/bmo_arm_legacy_bridge_v3/bmo_arm_bridge.py"
 _SPEC = importlib.util.spec_from_file_location("character_speech_arm_fixture", _FIRMWARE)
@@ -43,12 +44,18 @@ class CharacterArmRuntimeTests(unittest.TestCase):
             self.host.close()
 
     def make_host(self, *, gesture="wave", emotion_arms=True, permitted=True, clock=None,
-                  board_module=core, context="greeting", emotion="happy", reaction="none"):
+                  board_module=core, context="greeting", emotion="happy", reaction="none",
+                  explicit_target=None):
         clock = clock or time.monotonic
         config = integration_config()
         self.client = FeatureSimulatedClient([dict(version=3, speech="Good morning, friend.",
             emotion=emotion, gesture=gesture, intent=None, reaction=reaction,
             character=dict(delivery_id="warm", intensity="low", gaze_id="none", source="dialogue", gesture_context=context))])
+        if explicit_target is not None:
+            self.client = Provider([envelope(kind='arm', disposition='execute',
+                intent={'name':'arm_gesture', 'target':explicit_target},
+                model_emotion=emotion, delivery='warm', source='acting')])
+            self.client.close = lambda: None
         self.board = board_module.LegacyBridge(None, "fixtureBoard", lambda *_: None, lambda *_: None,
                                       lambda: 0, enabled=True, clock=clock)
         self.board.enabled = True  # Pure memory fixture, never a mounted device.
@@ -274,6 +281,79 @@ class CharacterArmRuntimeTests(unittest.TestCase):
         self.pump(lambda: self.arms()["conversation"]["stage"] == "stale")
         self.assertIn("stale_playback_start", self.arms()["conversation"]["blocked_reasons"])
         self.assertEqual(self.do_packets(), [])
+
+    def test_explicit_celebration_starts_with_speech_and_bypasses_only_automatic_policy(self):
+        self.make_host(explicit_target='celebrate', emotion_arms=False)
+        now = self.host.clock()
+        self.host._automatic_gestures.started('old1', now-10)
+        self.host._automatic_gestures.started('old2', now-5)
+        quota = self.host._automatic_gestures.snapshot(now)
+        self.assertTrue(self.host.start_question('Please celebrate with me while moving your arms.'))
+        self.assertTrue(self.prepared.wait(2))
+        self.pump(lambda: self.arms()['conversation']['stage'] == 'planned')
+        planned = self.arms()['conversation']
+        self.assertEqual(planned['request_origin'], 'explicit')
+        self.assertTrue(planned['semantic_validated'])
+        self.assertEqual(planned['gesture_id'], 'celebrate')
+        self.assertNotIn('emotion_arms_off', planned['blocked_reasons'])
+        self.assertEqual(self.port.sent, [])
+        self.start()
+        self.pump(lambda: len(self.act_packets()) == 1)
+        self.assertTrue(self.host.session.busy)  # The body did not wait for arms.
+        self.assertTrue(self.act_packets()[0].endswith(b' celebration\n'))
+        self.assertEqual(self.do_packets(), [])
+        self.assertEqual(self.host._automatic_gestures.snapshot(now), quota)
+        current = self.arms()['conversation']
+        self.assertEqual(current['automatic_reason'], 'explicit_request')
+        self.assertEqual(current['result_code'], 'performance_ack_position_unverified')
+        self.assertFalse(self.arms()['board']['physical_verified'])
+        turn = self.host.session.snapshot()['turn_id']
+        self.host._playback('started', turn, self.host.clock())
+        self.host.poll()
+        self.assertEqual(len(self.act_packets()), 1)
+        self.release.set()
+        self.pump(lambda: not self.host.session.busy and not self.motion.snapshot()['active'])
+        self.assertEqual(self.board.positions, {'left':0, 'right':0})
+        self.host.control(HostControl('repeat'), request='repeatExplicitArm')
+        self.pump(lambda: not self.host.session.busy)
+        self.assertEqual(len(self.act_packets()), 1)
+        self.assertEqual(len(self.client.requests), 1)
+
+    def test_explicit_stale_start_cannot_fall_back_to_end_of_speech_motion(self):
+        self.make_host(explicit_target='celebrate', clock=lambda: self.clock_value)
+        self.assertTrue(self.host.start_question('팔을 움직이며 축하해 줘.'))
+        self.assertTrue(self.prepared.wait(2))
+        self.pump(lambda: self.arms()['conversation']['stage'] == 'planned')
+        self.start(); self.clock_value += .6
+        self.pump(lambda: self.arms()['conversation']['stage'] == 'stale')
+        self.release.set(); self.pump(lambda: not self.host.session.busy)
+        self.assertEqual(self.act_packets(), [])
+        self.assertEqual(self.do_packets(), [])
+        self.assertEqual(self.arms()['conversation']['result_code'], 'stale_playback_start')
+
+    def test_explicit_request_preserves_stop_and_never_prepares_or_retries(self):
+        self.make_host(explicit_target='celebrate')
+        self.assertTrue(self.host.start_question('Celebrate while moving your arms.'))
+        self.assertTrue(self.prepared.wait(2))
+        self.pump(lambda: self.arms()['conversation']['stage'] == 'planned')
+        self.motion.stop()
+        self.start(); self.pump(lambda: self.arms()['conversation']['stage'] == 'submitted')
+        self.assertEqual(self.arms()['conversation']['result_status'], 'rejected')
+        self.release.set(); self.pump(lambda: not self.host.session.busy)
+        self.assertEqual(self.act_packets(), [])
+        self.assertEqual(self.do_packets(), [])
+        self.assertFalse(any(b' PREPARE ' in packet for packet in self.port.sent))
+
+    def test_explicit_ordinary_named_arm_action_uses_same_admission_without_auto_performance(self):
+        self.make_host(explicit_target='raise_left_arm', emotion_arms=False)
+        self.assertTrue(self.host.start_question('Raise your left arm.'))
+        self.assertTrue(self.prepared.wait(2))
+        self.pump(lambda: self.arms()['conversation']['stage'] == 'planned')
+        self.start(); self.pump(lambda: len(self.do_packets()) == 1)
+        self.assertTrue(self.host.session.busy)
+        self.assertTrue(self.do_packets()[0].endswith(b' raise_left_arm\n'))
+        self.assertEqual(self.arms()['conversation']['gesture_id'], 'raise_left_arm')
+        self.assertEqual(self.act_packets(), [])
 
 
 if __name__ == "__main__":

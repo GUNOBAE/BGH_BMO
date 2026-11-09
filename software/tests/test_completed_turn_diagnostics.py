@@ -85,6 +85,54 @@ class CompletedTurnDiagnosticTests(unittest.TestCase):
         self.assertEqual(row["timings"]["llm_ms"], dict(status="UNMEASURED", value_ms=None))
         self.assertFalse(row["contains_audio"] or row["contains_transcript"])
 
+    def test_safe_capture_and_provider_counts_survive_reload_without_original_payloads(self):
+        store = self.store()
+        trace = TurnDiagnostics(enabled=True, clock=lambda: self.now, completed_sink=store.record)
+        trace.begin(1)
+        trace.record("capture_close", "capture_ready", captured_bytes=560000, duration_ms=17500,
+                     capture_end_reason="silence", capture_limit_ms=30000, pcm=b"PRIVATE PCM")
+        trace.record("stt", "ok", transcript_chars=900, transcript="PRIVATE QUESTION")
+        trace.record("ai", "started", max_output_tokens=900, request_input_chars=1200,
+                     request_instruction_chars=6000, request_schema_chars=4500)
+        trace.record("ai", "llm_incomplete_output", outcome="error", response_status="incomplete",
+                     incomplete_reason="max_output_tokens", input_tokens=2000, output_tokens=900,
+                     reasoning_tokens=700, response_output_chars=55, output="PRIVATE JSON")
+        trace.finish("llm_incomplete_output")
+        original = (self.directory / "completed-turns.json").read_bytes()
+        row, = self.read()["records"]
+        self.assertEqual(row["stage_metadata"]["capture_close"], dict(captured_bytes=560000,
+            duration_ms=17500, capture_end_reason="silence", capture_limit_ms=30000))
+        self.assertEqual(row["stage_metadata"]["ai"]["max_output_tokens"], 900)
+        self.assertEqual(row["stage_metadata"]["ai"]["incomplete_reason"], "max_output_tokens")
+        self.assertNotIn(b"PRIVATE", original)
+        store.close()
+        self.assertEqual(self.store().snapshot()["retained"], 1)
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), original)
+        trace.begin(2)
+        self.assertEqual(trace.snapshot()["stage_metadata"], {})
+
+    def test_legacy_v3_without_stage_metadata_is_preserved_and_unknown_fields_are_not_saved(self):
+        store = self.store()
+        trace = self.trace()
+        trace.finish("ok")
+        value = trace.snapshot()
+        value.pop("stage_metadata")
+        self.assertTrue(store.record(value))
+        before = (self.directory / "completed-turns.json").read_bytes()
+        self.assertNotIn(b"stage_metadata", before)
+        store.close()
+        reopened = self.store()
+        self.assertEqual(reopened.snapshot()["retained"], 1)
+        self.assertEqual((self.directory / "completed-turns.json").read_bytes(), before)
+        value["turn"] = 2
+        value["stage_metadata"] = {"ai": {"response_status": "PRIVATE", "incomplete_reason": "PRIVATE",
+            "input_tokens": float("inf"), "output_tokens": True, "request_schema_chars": -1,
+            "api_key": "PRIVATE", "response_output_chars": 20}, "PRIVATE": {"input_tokens": 10}}
+        self.assertTrue(reopened.record(value))
+        row = self.read()["records"][-1]
+        self.assertEqual(row["stage_metadata"], {"ai": {"response_output_chars": 20}})
+        self.assertNotIn("PRIVATE", json.dumps(row))
+
     def test_oldest_completed_records_are_bounded_across_sessions(self):
         store = self.store()
         for number in range(1, CAPACITY + 9):

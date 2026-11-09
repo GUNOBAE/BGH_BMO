@@ -7,6 +7,7 @@ here, and callers can inject a fake client for offline tests.
 import os
 
 from .cloud import call_cloud
+from .provider_evidence import request_evidence, response_evidence
 
 
 SYSTEM_PROMPT = """You are BMO, a cheerful, curious, tiny robot companion inspired by a friendly game console.
@@ -34,6 +35,9 @@ VOICE_LANGUAGE_INSTRUCTIONS = {
 
 class BrainResponseError(ValueError):
     """The cloud returned no complete reply; the local conversation is unchanged."""
+    def __init__(self, message, code="llm_incomplete"):
+        super().__init__(message)
+        self.code = code
 
 
 def _positive_integer(name, value):
@@ -100,10 +104,12 @@ class BMOBrain:
         self.max_history_chars = max_history_chars
         self.max_output_tokens = max_output_tokens
         self.history = []
+        self.last_call_metrics = {}
 
     def reset(self):
         """Forget all local context without making a cloud request."""
         self.history = []
+        self.last_call_metrics = {}
 
     @staticmethod
     def _characters(messages):
@@ -119,11 +125,13 @@ class BMOBrain:
         return trimmed
 
     def ask(self, message):
+        self.last_call_metrics = {}
         if not isinstance(message, str):
             raise TypeError("message must be a string")
         # Check raw input too: padding cannot bypass the request budget.
         if len(message) > self.max_input_chars:
-            raise ValueError(f"message exceeds max_input_chars ({self.max_input_chars})")
+            self.last_call_metrics = {'request_input_chars': min(len(message), 1000000)}
+            raise BrainResponseError("The question exceeded the text input limit.", "llm_input_too_long")
         message = message.strip()
         if not message:
             return ""
@@ -143,17 +151,31 @@ class BMOBrain:
         }
         if self.reasoning_effort is not None:
             request["reasoning"] = {"effort": self.reasoning_effort}
-        response = call_cloud(lambda: self.client.responses.create(**request))
+        self.last_call_metrics = request_evidence(request)
+        try:
+            response = call_cloud(lambda: self.client.responses.create(**request))
+            self.last_call_metrics.update(response_evidence(response))
+        finally:
+            # Structured adapters observe the final provider request and original
+            # response, including schema failures; do not overwrite their counts
+            # with the later clean-speech-only envelope.
+            evidence = getattr(self.client.responses, "last_call_metrics", None)
+            if type(evidence) is dict:
+                self.last_call_metrics.update(evidence)
         # Require the API completion marker even if partial text is present.
         # Injectable clients should return the same status as the SDK contract.
         status = getattr(response, "status", None)
         if status != "completed" or getattr(response, "incomplete_details", None):
-            raise BrainResponseError("Cloud response was not complete; please retry.")
+            reason = self.last_call_metrics.get("incomplete_reason")
+            code = ("llm_incomplete_output" if reason == "max_output_tokens" else
+                    "llm_content_filter" if reason == "content_filter" else
+                    "llm_response_failed" if status == "failed" else "llm_incomplete")
+            raise BrainResponseError("Cloud response was not complete; please retry.", code)
         if getattr(response, "error", None):
-            raise BrainResponseError("Cloud response failed; please retry.")
+            raise BrainResponseError("Cloud response failed; please retry.", "llm_response_failed")
         text = getattr(response, "output_text", None)
         if not isinstance(text, str) or not text.strip():
-            raise BrainResponseError("Cloud response contained no reply; please retry.")
+            raise BrainResponseError("Cloud response contained no reply; please retry.", "llm_empty_reply")
         answer = text.strip()
         # Commit only after every response check succeeds. Earlier history must
         # survive failed requests, even when outbound context was trimmed.

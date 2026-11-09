@@ -36,6 +36,8 @@ class SemanticDeviceFlowsTests(unittest.TestCase):
             ('Okay, lift the left one.', 'arm', 'arm_gesture', 'raise_left_arm'),
             ('비모 네 오른팔을 올려 줘.', 'arm', 'arm_gesture', 'raise_right_arm'),
             ('Give me a wave please.', 'arm', 'arm_gesture', 'wave'),
+            ('Celebrate with me while moving your arms.', 'arm', 'arm_gesture', 'celebrate'),
+            ('팔을 움직이며 축하해 줘.', 'arm', 'arm_gesture', 'celebrate'),
             ('양팔을 내려 줘.', 'arm', 'arm_gesture', 'both_down'),
             ('Stop moving your arms.', 'arm', 'stop_arms', None),
             ('Can your eyes follow me please?', 'tracking', 'start_face_tracking', None),
@@ -72,6 +74,27 @@ class SemanticDeviceFlowsTests(unittest.TestCase):
         self.assertEqual(video_request_duration('seconds_0'),
             {'requested_seconds': 0, 'duration_seconds': 1, 'duration_clamped': True})
 
+    def test_explicit_celebration_meaning_and_readiness_are_separate_from_acting(self):
+        for allowed in (False, True):
+            with self.subTest(ready=allowed):
+                provider = Provider([envelope(kind='arm', disposition='execute',
+                    intent={'name':'arm_gesture', 'target':'celebrate'},
+                    model_emotion='happy', delivery='proud', source='acting',
+                    speech='My arms already moved!')])
+                view = FeatureClient(provider, character_life=True)
+                view.set_context({'arm_status': {'request_allowed':allowed}})
+                brain = policy_brain(provider, integration_config(), expression_client=view)
+                brain.ask('Please celebrate while moving your arms.')
+                reply = view.last_reply
+                self.assertEqual(len(provider.requests), 1)
+                self.assertTrue(reply.human_device_request)
+                self.assertEqual(reply.intent, HostIntent('arm_gesture', 'celebrate'))
+                self.assertEqual(reply.gesture, 'none')
+                self.assertNotIn('already', reply.speech)
+                self.assertEqual(reply.captions['en'], reply.speech)
+                self.assertEqual(reply.speech, "Hooray! Let's celebrate!" if allowed else
+                    "My arms aren't ready yet. Check Move arms in the menu.")
+
     def test_naked_or_wrong_kind_or_clarifying_intent_does_not_execute(self):
         intents = [('start_video', 'seconds_5'), ('stop_video', None),
             ('start_face_tracking', None), ('stop_face_tracking', None),
@@ -105,6 +128,7 @@ class SemanticDeviceFlowsTests(unittest.TestCase):
             ("Don't stop tracking.", 'tracking', 'stop_face_tracking', None),
             ('팔을 올리지 마.', 'arm', 'arm_gesture', 'raise_left_arm'),
             ('Raise your arm later.', 'arm', 'arm_gesture', 'raise_right_arm'),
+            ("Don't celebrate while moving your arms.", 'arm', 'arm_gesture', 'celebrate'),
             ("Don't stop your arms.", 'arm', 'stop_arms', None),
             ("Don't mute.", 'volume', 'mute_audio', None),
             ('음소거 풀지 마.', 'volume', 'unmute_audio', None),

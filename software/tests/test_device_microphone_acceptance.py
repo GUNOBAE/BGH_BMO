@@ -241,15 +241,16 @@ class PlannedSourceDeadlineTests(unittest.TestCase):
         self.assertEqual(source.snapshot()["discarded_partial_bytes"], 640)
         self.assertFalse(source.snapshot()["microphone_open"])
 
-    def test_existing_recorder_returns_bounded_max_duration_without_padding_partial_frame(self):
+    def test_existing_recorder_rejects_incomplete_wall_cap_without_padding_partial_frame(self):
         source = self.source()
         recorder = PttRecorder(AudioFocus(), lambda: source, clock=lambda: self.clock.now,
                                speech_safe=True, threshold=.008)
         self.addCleanup(recorder.close)
-        capture = recorder.capture("planned-host-cap", generation=1)
-        self.assertEqual((capture.status, capture.code), ("ready", "max_duration"))
-        self.assertEqual(len(capture.pcm), 6 * 1280)
-        self.assertEqual(capture.pcm, struct.pack("<h", 3000) * (6 * 640))
+        with self.assertRaises(MicError) as caught:
+            recorder.capture("planned-host-cap", generation=1)
+        self.assertEqual(caught.exception.code, "capture_limit_reached")
+        self.assertIsNone(recorder._ready)
+        self.assertEqual(recorder.snapshot()["captured_bytes"], 6 * 1280)
         self.assertEqual(source.snapshot()["discarded_partial_bytes"], 640)
 
     def test_unexpected_midframe_eof_remains_truncated_without_planned_end(self):

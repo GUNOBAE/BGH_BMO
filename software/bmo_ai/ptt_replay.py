@@ -17,7 +17,8 @@ import struct
 from types import SimpleNamespace
 import wave
 
-from .features.input.microphone import MicError, PcmFrame, PttRecorder, ptt_vad_settings
+from .features.input.microphone import (MicError, PcmFrame, PttRecorder, ptt_vad_settings,
+                                        MAX_CAPTURE_SECONDS, MAX_CAPTURE_BYTES)
 from .features.resources import AudioFocus
 from .turn_diagnostics import TurnDiagnostics
 
@@ -87,12 +88,12 @@ def load_public_reference_pcm16k(*, target_rms=.004):
 def load_saved_pcm(path):
     try:
         source = Path(path)
-        if source.stat().st_size > 450000:
+        if source.stat().st_size > MAX_CAPTURE_BYTES + 65536:
             raise ReplayError()
         with wave.open(str(source), "rb") as recorded:
             count = recorded.getnframes()
             if ((recorded.getframerate(), recorded.getnchannels(), recorded.getsampwidth()) != (16000, 1, 2)
-                    or count < 640 or count > 16000 * 12 or recorded.getcomptype() != "NONE"):
+                    or count < 640 or count > 16000 * MAX_CAPTURE_SECONDS or recorded.getcomptype() != "NONE"):
                 raise ReplayError()
             pcm = recorded.readframes(count)
             if len(pcm) != count * 2:
@@ -139,10 +140,10 @@ class _SavedSource:
 
 def replay_pcm(pcm, *, vad_mode="rms", threshold=.008, silence_timeout=.9,
                cancel_at=None, state_callback=None):
-    if type(pcm) is not bytes or not 1280 <= len(pcm) <= 384000 or len(pcm) % 2:
+    if type(pcm) is not bytes or not 1280 <= len(pcm) <= MAX_CAPTURE_BYTES or len(pcm) % 2:
         raise ReplayError("invalid_replay_pcm")
     if cancel_at is not None and (type(cancel_at) not in (int, float) or not math.isfinite(cancel_at)
-                                  or not 0 < cancel_at <= 12):
+                                  or not 0 < cancel_at <= MAX_CAPTURE_SECONDS):
         raise ReplayError("invalid_replay_cancel")
     clock = _Clock()
     source = _SavedSource(pcm, clock, cancel_at=cancel_at)
@@ -157,7 +158,7 @@ def replay_pcm(pcm, *, vad_mode="rms", threshold=.008, silence_timeout=.9,
         try:
             capture = recorder.capture("saved-pcm-replay", generation=1)
         except MicError as error:
-            if error.code != "pcm_duration_limit":
+            if error.code not in ("pcm_duration_limit", "capture_limit_reached"):
                 raise
             capture = SimpleNamespace(status="INCOMPLETE_SAVED_SOURCE", code=error.code, pcm=b"")
         state = recorder.snapshot()

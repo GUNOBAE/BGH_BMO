@@ -59,6 +59,12 @@ def _timing(observer, stage, code, *, at, **metrics):
             pass
 
 
+# One bounded product limit shared by source, coordinator and STT handoff.
+# VAD still ends short turns immediately after their existing silence window.
+MAX_CAPTURE_SECONDS = 30.
+MAX_CAPTURE_BYTES = int(16000 * 2 * MAX_CAPTURE_SECONDS)
+
+
 VAD_PROFILES = {"baseline": {"silence_timeout": .9},
                 "balanced": {"silence_timeout": .6},
                 "quick": {"silence_timeout": .45}}
@@ -91,10 +97,10 @@ class MicPcmSource:
     simulated = False
 
     def __init__(self, device="plughw:CARD=Device,DEV=0", *, live_opt_in=False,
-                 frame_ms=40, max_duration=12., clock=time.monotonic,
+                 frame_ms=40, max_duration=MAX_CAPTURE_SECONDS, clock=time.monotonic,
                  process_factory=None, on_timing=None):
         if (type(live_opt_in) is not bool or type(frame_ms) is not int
-                or not 20 <= frame_ms <= 100 or not _positive(max_duration, 12)):
+                or not 20 <= frame_ms <= 100 or not _positive(max_duration, MAX_CAPTURE_SECONDS)):
             raise MicError("invalid_mic_configuration")
         try:
             self._device_args = audio._device_args(device)
@@ -338,12 +344,12 @@ class PttRecorder:
     def __init__(self, audio_focus, source_factory, *, clock=time.monotonic,
                  playback_active=None, allowed_focus=None, on_state=None,
                  threshold=.02, min_speech=.24, silence_timeout=.9,
-                 no_speech_timeout=3., max_duration=12., calibration=.4,
+                 no_speech_timeout=3., max_duration=MAX_CAPTURE_SECONDS, calibration=.4,
                  noise_multiplier=2.5, max_noise=.12, speech_safe=False, ambient_rms=None,
                  on_timing=None, preroll_seconds=.4, vad_mode="rms"):
         if (not callable(source_factory) or not _positive(calibration, .5) or calibration < .3
                 or not _positive(noise_multiplier, 10) or noise_multiplier < 1
-                or not _positive(max_noise, .5) or not _positive(max_duration, 12)
+                or not _positive(max_noise, .5) or not _positive(max_duration, MAX_CAPTURE_SECONDS)
                 or type(speech_safe) is not bool
                 or vad_mode not in ("rms", "webrtc")
                 or not _positive(preroll_seconds, .5) or preroll_seconds < .3
@@ -614,7 +620,7 @@ class PttRecorder:
                 if self._captured_bytes >= int(16000 * 2 * self.settings["max_duration"]):
                     gate.release_ptt(generation=generation)
                     pending = gate.poll()
-                    result = replace(pending[0], code="max_buffer") if pending else None
+                    result = PcmCapture(capture_id, generation, "cancelled", "max_buffer", b"", 16000)
                     break
                 desired = "speech" if gate.snapshot()["speech_detected"] else "listening"
                 if self._state != desired:
@@ -632,21 +638,14 @@ class PttRecorder:
             if result is None:
                 result = PcmCapture(capture_id, generation, "cancelled", "no_speech", b"", 16000)
         except _Limit:
-            if gate_started:
-                gate.release_ptt(generation=generation)
-                pending = gate.poll()
-                result = replace(pending[0], code="max_duration") if pending else None
-            if result is None:
-                result = PcmCapture(capture_id, generation, "cancelled", "no_speech", b"", 16000)
+            result = PcmCapture(capture_id, generation, "cancelled", "max_duration", b"", 16000)
         except _NoSpeech:
             result = PcmCapture(capture_id, generation, "cancelled", "no_speech", b"", 16000)
         except _Cancelled:
             result = PcmCapture(capture_id, generation, "cancelled", "user_cancelled", b"", 16000)
         except MicError as error:
-            if error.code == "pcm_duration_limit" and gate is not None and gate.snapshot()["speech_detected"]:
-                gate.release_ptt(generation=generation)
-                pending = gate.poll()
-                result = replace(pending[0], code="max_duration") if pending else None
+            if error.code in ("pcm_duration_limit", "pcm_byte_limit"):
+                result = PcmCapture(capture_id, generation, "cancelled", error.code, b"", 16000)
             else:
                 self._publish("failed", error.code)
                 raise
@@ -689,6 +688,16 @@ class PttRecorder:
         with self._lock:
             if self._cancel.is_set() or self._closed.is_set():
                 result = replace(result, status="cancelled", code="user_cancelled", pcm=b"")
+            if result.code in ("max_duration", "max_buffer", "pcm_duration_limit", "pcm_byte_limit"):
+                # A hard resource boundary is not an utterance boundary. Never
+                # transcribe a sentence cut in the middle or execute its prefix.
+                self._ready = None
+                observed("microphone", "capture_limit_reached", outcome="error",
+                         capture_end_reason=result.code, captured_bytes=self._captured_bytes,
+                         duration_ms=self._captured_bytes / 32,
+                         capture_limit_ms=self.settings["max_duration"] * 1000)
+                self._publish("failed", "capture_limit_reached", microphone_open=False)
+                raise MicError("capture_limit_reached")
             trim_samples = 0
             if result.status == "ready":
                 if speech_safe and first_voiced_sample is not None:
@@ -699,6 +708,8 @@ class PttRecorder:
                         result = replace(result, pcm=result.pcm[trim_samples * 2:])
                 self._ready = result
         observed("capture_close", "capture_ready", captured_bytes=len(result.pcm),
+                 duration_ms=len(result.pcm) / 32, capture_end_reason=result.code,
+                 capture_limit_ms=self.settings["max_duration"] * 1000,
                  preroll_ms=self.preroll_seconds * 1000,
                  trimmed_leading_bytes=trim_samples * 2)
         self._publish("ready" if result.status == "ready" else "idle", result.code, microphone_open=False)
@@ -752,7 +763,7 @@ class PttRecorder:
             check()
             if type(result) is not str or len(result) > 16384:
                 raise MicError("invalid_transcript")
-            _timing(self.on_timing, "stt", "ok", at=_clock_now(self.clock))
+            _timing(self.on_timing, "stt", "ok", at=_clock_now(self.clock), transcript_chars=len(result))
             self._publish("idle", "transcribed" if result.strip() else "stt_empty")
             return result
         except (TurnCancelled, KeyboardInterrupt):

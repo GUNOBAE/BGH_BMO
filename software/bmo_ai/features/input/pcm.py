@@ -138,7 +138,7 @@ class PcmTurnGate:
         elif not self._speech_seen and now - self._began >= self.no_speech_timeout:
             self._finish("no_speech")
         elif now - self._began >= self.max_duration:
-            self._finish("max_duration", ready=True)
+            self._finish("max_duration")
 
     def feed(self, pcm, *, sequence, timestamp, generation, voiced=None, voiced_seconds=None):
         self.tick()
@@ -175,7 +175,7 @@ class PcmTurnGate:
         remaining = self.max_buffer_bytes - len(self._buffer)
         if len(pcm) > remaining:
             self._buffer.extend(pcm[:remaining])
-            self._finish("max_buffer", ready=True)
+            self._finish("max_buffer")
             return False
         frame_start = len(self._buffer) // 2
         self._buffer.extend(pcm)

@@ -48,7 +48,7 @@ _ENUMS = frozenset((
     'stored_voice', 'offline', 'repeat', 'body_player_boundary', 'body_pcm_submission',
     'unlocated_vocal_cue', 'cached_only', 'unknown',
     'selected_stream', 'selected_full_wav', 'format_omitted', 'unavailable_or_off',
-    'too_long_inline', 'too_long_omitted',
+    'too_long_inline', 'too_long_omitted', 's2.1-pro-free', 's2.1-pro', 'drama-3', 'plain_policy',
 ))
 _ENUM_FIELDS = frozenset((
     'requested_emotion', 'model_emotion', 'resolved_emotion', 'emitted_emotion',
@@ -60,12 +60,12 @@ _ENUM_FIELDS = frozenset((
     'model_reaction', 'resolved_reaction', 'reaction_reason', 'model_gesture',
     'resolved_gesture', 'gesture_context', 'gesture_reason', 'proposed_reaction',
     'reaction_policy_reason', 'played_reaction', 'playback_path', 'answer_onset_evidence',
-    'reaction_cache_status',
+    'reaction_cache_status', 'tts_model', 'tts_delivery_id', 'tts_fallback_reason',
 ))
 _BOOL_FIELDS = frozenset((
     'replayed', 'character_life', 'character_life_enabled', 'tts_override_soft',
     'override_soft', 'metadata_degraded', 'manual_override',
-    'cached_reaction',
+    'cached_reaction', 'tts_soft_applied',
 ))
 _INT_FIELDS = frozenset(('turn', 'speech_chars', 'stt_chars', 'schema_version', 'generation'))
 

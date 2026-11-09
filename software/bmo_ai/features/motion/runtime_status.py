@@ -6,7 +6,7 @@ permission callback, resets a latch or infers a physical servo position.
 """
 import re
 
-from .legacy_host import MODEL_ONLY
+from .legacy_host import MODEL_ONLY, NAMED_GESTURES
 
 
 STOP_SEMANTICS = "board_latch_not_cleared_by_host_restart_not_power_cut"
@@ -57,8 +57,9 @@ def conversation_arm_status(*, simulate, supervised_requested,
                         commissioned_effective=commissioned_effective is True,
                         usage_enabled=usage_enabled is True, current_supervision_stored=False)
     turn = state.get("turn_id")
+    explicit = state.get('explicit_request') is True and state.get('semantic_validated') is True
     gesture = state.get("gesture_id", "none")
-    gesture = gesture if type(gesture) is str and gesture in MODEL_ONLY else "none"
+    gesture = gesture if type(gesture) is str and gesture in (NAMED_GESTURES if explicit else MODEL_ONLY) else "none"
     stage = state.get("stage", "idle")
     stage = stage if type(stage) is str and stage in _STAGES else "idle"
     started, fresh = state.get("player_start_seen") is True, state.get("player_start_fresh") is True
@@ -71,9 +72,9 @@ def conversation_arm_status(*, simulate, supervised_requested,
         reasons.append("arm_runtime_off")
     if usage_enabled is False:
         reasons.append("arm_usage_off")
-    if emotion_arms_effective is not True:
+    if emotion_arms_effective is not True and not explicit:
         reasons.append("emotion_arms_off")
-    if adapter.get('performance_supported') is False:
+    if adapter.get('performance_supported') is False and (not explicit or gesture in MODEL_ONLY):
         reasons.append('arm_performance_firmware_required')
     if simulate is not True and adapter.get("real_enabled") is not True:
         reasons.append("arm_adapter_unavailable")
@@ -94,7 +95,7 @@ def conversation_arm_status(*, simulate, supervised_requested,
     elif not fresh or stage == "stale":
         reasons.append("stale_playback_start")
     automatic_reason = _code(state.get("automatic_reason"))
-    if automatic_reason and automatic_reason != "eligible" and automatic_reason not in reasons:
+    if automatic_reason and automatic_reason not in ("eligible", "explicit_request") and automatic_reason not in reasons:
         reasons.append(automatic_reason)
     result_code = _code(state.get("result_code"))
     if result_status in ("rejected", "failed", "cancelled", "unknown") and result_code:
@@ -108,6 +109,9 @@ def conversation_arm_status(*, simulate, supervised_requested,
                    physical_verified=False),
         conversation=dict(turn_id=turn if type(turn) is str and _TURN.fullmatch(turn) else None,
                           gesture_id=gesture, stage=stage,
+                          request_origin='explicit' if explicit else 'automatic',
+                          semantic_validated=explicit,
+                          readiness_code=_code(state.get('readiness_code')),
                           plan_emotion=state.get("plan_emotion") if type(state.get("plan_emotion")) is str and state["plan_emotion"] in _EMOTIONS else None,
                           playback_emotion=state.get("playback_emotion") if type(state.get("playback_emotion")) is str and state["playback_emotion"] in _EMOTIONS else None,
                           player_start_seen=started, player_start_fresh=started and fresh,

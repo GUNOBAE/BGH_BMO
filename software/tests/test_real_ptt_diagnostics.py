@@ -122,6 +122,7 @@ class RealPttDiagnosticsTests(unittest.TestCase):
                 trace = self.turn(host)
                 self.assertEqual(trace["failure"]["stage"], stage)
                 self.assertEqual(trace["failure"]["code"], code)
+                self.assertEqual(trace["terminal"], code)
                 self.assertNotIn("PRIVATE", json.dumps(trace))
                 if stage == "stt":
                     self.assertEqual((len(client.requests), calls["fish"]), (0, 0))
@@ -141,6 +142,22 @@ class RealPttDiagnosticsTests(unittest.TestCase):
         trace = self.turn(host)
         self.assertEqual(trace["failure"], dict(stage="microphone", code="microphone_tool_unavailable", outcome="error"))
         self.assertEqual(calls["stt"], 1)
+
+    def test_unfinished_long_input_never_calls_stt_ai_or_fish_and_next_ptt_recovers(self):
+        host, calls, client = self.host()
+        host.microphone.source_factory = lambda: ControlledSource(host.clock, [(10000, 800)])
+        trace = self.turn(host)
+        self.assertEqual(trace["terminal"], "capture_limit_reached")
+        self.assertEqual(trace["failure"], dict(stage="microphone", code="capture_limit_reached", outcome="error"))
+        self.assertEqual(calls, dict(stt=0, fish=0, playback=0))
+        self.assertEqual(client.requests, [])
+        self.assertFalse(host.microphone.snapshot()["microphone_open"])
+        self.assertEqual(trace["stage_metadata"]["microphone"]["capture_end_reason"], "max_duration")
+        self.assertGreater(trace["stage_metadata"]["microphone"]["captured_bytes"], 900000)
+        host.clock.now += .3
+        host.microphone.source_factory = lambda: ControlledSource(host.clock, [(10000, 8), (0, 24)])
+        self.assertEqual(self.turn(host)["terminal"], "ok")
+        self.assertEqual(calls, dict(stt=1, fish=1, playback=1))
 
     def test_trace_is_bounded_and_rejects_text_unknown_codes_and_stale_turn(self):
         trace = TurnDiagnostics(enabled=True, capacity=8)

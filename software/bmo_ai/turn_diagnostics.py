@@ -38,15 +38,61 @@ CODES = frozenset({
     "invalid_name_mode", "invalid_speech_text", "speech_text_too_long", "speech_audio_too_long",
     "audio_storage_failed", "audio_process_failed", "audio_start_failed", "audio_playback_failed",
     "speech_cache_failed",
-    "missing_piper", "piper_failed", "piper_timeout",
+    "missing_piper", "piper_failed", "piper_timeout", "capture_limit_reached",
+    "llm_incomplete_output", "llm_content_filter", "llm_incomplete", "llm_response_failed",
+    "llm_empty_reply", "llm_input_too_long",
 })
 METRICS = {"rms_min": 1., "rms_max": 1., "threshold": 1., "ambient_rms": 1.,
-           "captured_bytes": 384000, "frames": 10000, "duration_ms": 180000,
+           "captured_bytes": 960000, "frames": 10000, "duration_ms": 180000,
            "sample_rate": 48000, "channels": 2, "preroll_ms": 500,
-           "trimmed_leading_bytes": 384000, "prefix_duration_ms": 180000,
-           "answer_offset_frames": 34560000}
+           "trimmed_leading_bytes": 960000, "prefix_duration_ms": 180000,
+           "answer_offset_frames": 34560000,
+           "capture_limit_ms": 30000, "transcript_chars": 16384,
+           "input_tokens": 1000000, "output_tokens": 1000000, "reasoning_tokens": 1000000,
+           "max_output_tokens": 1000000, "request_input_chars": 1000000,
+           "request_instruction_chars": 1000000, "request_schema_chars": 1000000,
+           "response_output_chars": 1000000}
 BOOLEANS = frozenset({"microphone_open", "voice_detected", "close_verified", "ambient_verified",
                       "first_frame_received"})
+
+# Persist only these diagnostic scalar fields, not provider objects, text,
+# exception messages or arbitrary codes. Previous v3 receipts omit this field.
+STAGE_FIELDS = {
+    "ai": frozenset({"input_tokens", "output_tokens", "reasoning_tokens", "max_output_tokens",
+        "request_input_chars", "request_instruction_chars", "request_schema_chars",
+        "response_output_chars", "response_status", "incomplete_reason"}),
+    "stt": frozenset({"captured_bytes", "transcript_chars", "duration_ms"}),
+    "microphone": frozenset({"captured_bytes", "duration_ms", "capture_limit_ms", "capture_end_reason"}),
+    "capture_close": frozenset({"captured_bytes", "duration_ms", "capture_limit_ms", "capture_end_reason"}),
+}
+METRIC_ENUMS = {
+    "response_status": frozenset({"completed", "incomplete", "failed", "cancelled", "in_progress", "queued", "unknown"}),
+    "incomplete_reason": frozenset({"max_output_tokens", "content_filter", "unknown", "none"}),
+    "capture_end_reason": frozenset({"max_duration", "max_buffer", "pcm_duration_limit", "pcm_byte_limit",
+        "silence", "ptt_released", "no_speech", "user_cancelled"}),
+}
+
+
+def safe_stage_metadata(value):
+    if type(value) is not dict:
+        return {}
+    result = {}
+    for stage, fields in STAGE_FIELDS.items():
+        raw = value.get(stage)
+        if type(raw) is not dict:
+            continue
+        clean = {}
+        for name in fields:
+            item = raw.get(name)
+            if name in METRIC_ENUMS and type(item) is str and item in METRIC_ENUMS[name]:
+                clean[name] = item
+            elif (name in METRICS and type(item) in (int, float) and math.isfinite(item)
+                  and 0 <= item <= METRICS[name]):
+                clean[name] = round(item, 4)
+        if clean:
+            result[stage] = clean
+    return result
+
 
 PLAYBACK_PATHS = frozenset({"fish_stream", "fish_reaction_stream", "fish_reaction_wav",
                             "fish_wav", "stored_voice", "offline", "synthetic", "repeat"})
@@ -141,6 +187,7 @@ class TurnDiagnostics:
         self._playback_path = None
         self._answer_onset_evidence = "unknown"
         self._playback_metadata = {}
+        self._stage_metadata = {}
         self.bind_runtime(run_id=run_id, runtime_revision=runtime_revision)
 
     def bind_runtime(self, *, run_id=None, runtime_revision=None):
@@ -188,6 +235,7 @@ class TurnDiagnostics:
             self._events.clear()
             self._markers.clear()
             self._playback_metadata.clear()
+            self._stage_metadata.clear()
             self._answer_onset_evidence = "unknown"
             self._last = self._failure = self._terminal = self._playback_path = None
             self._failure_at = self._terminal_at = self._cancel_at = self._cleanup_failure_at = None
@@ -219,7 +267,9 @@ class TurnDiagnostics:
             safe = {}
             if self.enabled:
                 for name, value in metrics.items():
-                    if name in BOOLEANS and type(value) is bool:
+                    if name in METRIC_ENUMS and type(value) is str and value in METRIC_ENUMS[name]:
+                        safe[name] = value
+                    elif name in BOOLEANS and type(value) is bool:
                         safe[name] = value
                     elif (name in METRICS and type(value) in (int, float)
                           and math.isfinite(value) and 0 <= value <= METRICS[name]):
@@ -228,6 +278,9 @@ class TurnDiagnostics:
                     self._playback_path = playback_path
                 if type(answer_onset_evidence) is str and answer_onset_evidence in ANSWER_ONSET_EVIDENCE:
                     self._answer_onset_evidence = answer_onset_evidence
+                stage_values = safe_stage_metadata({stage: safe}).get(stage)
+                if stage_values:
+                    self._stage_metadata.setdefault(stage, {}).update(stage_values)
                 for name in ('prefix_duration_ms', 'answer_offset_frames'):
                     if name in safe:
                         self._playback_metadata[name] = safe[name]
@@ -298,6 +351,7 @@ class TurnDiagnostics:
                         runtime_revision=self._runtime_revision, run_id=self._run_id, turn_id=self._turn_id,
                         playback_path=self._playback_path, playback_metadata=dict(self._playback_metadata),
                         answer_onset_evidence=self._answer_onset_evidence,
+                        stage_metadata=safe_stage_metadata(self._stage_metadata),
                         terminal_elapsed_ms=self._terminal_at, failure_elapsed_ms=self._failure_at,
                         cancellation=dict(self._cancellation) if self._cancellation else None,
                         cancellation_elapsed_ms=self._cancel_at,

@@ -14,7 +14,9 @@ import time
 
 from .audio import AudioError
 from .cloud import CloudError
+from .core import BrainResponseError
 from .hardware import FaceState
+from .features.contracts import FeatureError
 
 
 class TurnCancelled(Exception):
@@ -36,6 +38,19 @@ _PUBLIC_CODES = frozenset({
     "server", "request", "cloud", "expression_format", "invalid_wav", "audio_timeout", "device_unavailable",
     "audio_cleanup_failed", "invalid_transcription_response", "audio_download_timeout",
     "speech_download_too_large", "invalid_speech_download", "tool_unavailable",
+    "llm_incomplete_output", "llm_content_filter", "llm_incomplete", "llm_response_failed",
+    "llm_empty_reply", "llm_input_too_long",
+    "capture_limit_reached", "pcm_duration_limit", "pcm_byte_limit", "pcm_truncated",
+    "microphone_capture_failed", "microphone_start_failed", "microphone_read_failed",
+    "microphone_stream_closed", "microphone_tool_unavailable", "pcm_audio_format_failed",
+    "pcm_cleanup_failed", "pcm_cleanup_pending", "invalid_pcm_frame", "invalid_pcm_result",
+    "invalid_transcript", "transcription_failed", "vad_backend_missing", "vad_backend_failed",
+    "fish_authentication", "fish_permission", "fish_model", "fish_rate_limit", "fish_balance",
+    "fish_timeout", "fish_connection", "fish_server", "fish_request", "fish_response",
+    "fish_invalid_audio", "fish_missing_key", "fish_invalid_input", "fish_download_failed",
+    "fish_synthesis_failed", "fish_invalid_configuration", "fish_redirect",
+    "speech_audio_too_long", "audio_storage_failed", "audio_process_failed", "audio_start_failed",
+    "audio_playback_failed", "speech_cache_failed",
 })
 
 
@@ -229,7 +244,7 @@ class ConversationWorker:
                 check()
         except TurnCancelled:
             code = "cancelled"
-        except (AudioError, CloudError) as error:
+        except (AudioError, CloudError, FeatureError, BrainResponseError) as error:
             code = error.code if error.code in _PUBLIC_CODES else "operation_failed"
         except TimeoutError:
             code = "timeout"

@@ -13,6 +13,7 @@ from ..character_director import (CharacterDirector, CharacterPlan, DELIVERIES,
                                   INTENSITIES, GAZES, GESTURE_CONTEXTS,
                                   latest_user_text, performance_resolution)
 from ..acting_request import requested_acting
+from ..provider_evidence import request_evidence, response_evidence
 from .motion.gesture_rules_v2 import EXPLICIT_ACTIONS as ARM_INTENT_ACTIONS
 from .camera.request import current_photo_request
 from .request_semantics import request_schema, resolve_interpretation, request_denial
@@ -304,6 +305,93 @@ Tada must not invent a completed device action. Host success cues own that event
 """
 
 
+# Active v5 is self-contained instead of concatenating the v3/v4/v5 prose.
+# Legacy constants and schemas remain available to their compatibility readers.
+COMPACT_COMPOUND_INSTRUCTIONS = """Trusted feature-host contract version 5. Return exactly the required JSON schema;
+this is the one speech/meaning/emotion decision, never a separate classifier.
+Speech is clean spoken dialogue without tags/directions/markup. Usually answer in
+one short sentence (10–25 words); use two or detail only when needed. Preserve
+numbers, units, negations and requested detail. No prefixed filler by default.
+
+Emotion describes BMO's reply. Facts: neutral/calm; good news: happy/warm or proud;
+curiosity: neutral or surprised/curious; play: neutral or happy/playful;
+correction: neutral/gentle_correction; real grief/pain: sad or neutral/empathetic.
+Low intensity still has natural phrasing and expression. A moving fictional scene
+may use crying/tearful with source dialogue. Explicit harmless crying/angry acting
+uses request acting/execute with that emotion, source acting, theatrical_crying or
+theatrical_angry and the matching face. Perform a brief scene, not agreement or
+just Grr. Real distress overrides play with quiet empathy; no comic sob or arms.
+Use a fitting hmm/ooh/aha/oops/chuckle sparingly; avoid the previous opening and
+reactions already in speech. Never spell laughter. Sob only for explicit crying;
+playful_puff only for requested cartoon anger; tada belongs to verified success.
+Delivery works without extra reactions or gaze. No forced emotion or flourish.
+
+Automatic gestures: wave/greeting only for trusted greeting_eligible;
+celebrate/achievement for a clear accomplishment; shrug/playful or hesitation;
+shrug/surprise only for a genuine unexpected event with surprised/curious face.
+A brief gasp can share that surprise beat; quiet hmm/aha can share a gesture.
+Other laughs/puffs remain separate flourishes. Merely explaining surprises or
+ordinary facts is not a surprise event. Put emphasis in one short opening clause;
+the host owns entry/hold/return. Automatic arms: one per answer, at least45 seconds
+between starts, rolling five minutes maximum two. Never fill a quota. Facts,
+serious worries and device/settings commands have decorative gesture/context none.
+Explicit 'celebrate while moving your arms' / '팔을 움직이며 축하해 줘' means
+kind arm, arm_gesture/celebrate, decorative gesture none, NOT merely acting or an
+automatic flourish. Named requests are separate from automatic cooldown. Use only
+wave, celebrate, shrug, raise_left_arm, raise_right_arm, both_up, both_down;
+left/right are BMO's sides. Never invent angles, motion, success or permission.
+
+Interpret only the final CURRENT English/Korean request by meaning, including
+imperfect grammar. request is interpretation, not authorization. Copy the supplied
+turn_token exactly. Ordinary conversation: kind/disposition none, emotion none,
+subtitle_mode unchanged, confirmation_token null, intent null, empty plan.steps.
+Only acting sets request.emotion; only subtitles sets subtitle_mode. Other requests
+use emotion none, subtitle_mode unchanged. Each execute meaning must match its
+intent. Capability questions, quoted/translated commands, negation, history and
+future plans do not execute now. Ambiguity asks one clarification without intent.
+An affirmative photo confirmation requires the matching trusted pending token;
+all other confirmation_token values are null. Never reuse old requests.
+
+Current action mapping (only host catalog IDs, never paths/URLs/shell/angles):
+photo -> take_photo/null; video -> start_video/null (default30s) or seconds_N,
+stop_video/null. Host clamps requested N to1..60. Preparation precedes five-second
+preview countdown; no saved/captured claim. Video has no microphone audio.
+tracking -> start_face_tracking/null or stop_face_tracking/null for Look at me /
+Follow my face; local position only, no identity or automatic photo.
+arm -> named arm_gesture target above, or stop_arms/null. Readiness/STOP stays host-owned.
+volume -> set_volume/level_N(0..100), volume_up/down, mute_audio/unmute_audio with
+null targets. Zero is silent; never change voice/model or regenerate for volume.
+subtitles -> off/en/ko/on; on preserves previous language, first en. Voice language
+is independent. menu -> open_menu/null or close_menu/null. presence -> set_presence
+normal/quiet/off: '조용히 해' stops self-talk unless all audio mute is explicit;
+'다시 가끔 말해' means normal. No permission to generate idle speech.
+media -> play_song/catalog ID for a selected song, play_random/null when BMO chooses,
+stop_media/null. media_mode face(default)/video only on the two play intents;
+music video is not camera recording. game -> open_game_menu, launch_game/catalog ID,
+exit_game. Never invent a song/game. Stop/cancel is also immediate host control.
+
+For two or three immediate actions: kind compound/execute, intent null, plan
+{version:1,steps:[...]} in requested order, each name/target/media_mode only.
+No duplicate steps. A single intent or conversation uses {version:1,steps:[]}.
+Apply negation/quotes/history/future per clause: stop tracking then record means
+stop_face_tracking then start_video; stop tracking but don't record means only
+stop_face_tracking; don't stop tracking, take a photo means only take_photo.
+Any invalid/incomplete plan executes none; host advances only after actual success.
+Cancellation/failure ends the plan. Keep one brief preparation, not per-step chatter.
+
+captions contain only translations of THIS speech, never user text. Supply only
+the selected caption language; en may be empty when speech is English, and unused
+languages are empty. Use concise faithful ko for English speech when ko selected.
+No extra translation call. photo_success is null except photo/execute or a plan
+with take_photo: then give a separate <=8-word success line plus captions, held
+until verified storage. Current photo/video preparation is <=8 words and cannot
+claim success/quality/identity/feelings. Keep JSON compact within existing output
+budget; omit no required fields. No extra repair/classification call. Host safety,
+capability, cancellation and simulation rules still apply; metadata never proves
+physical arrival or completion. source is dialogue/acting; boot/idle are host-only.
+"""
+
+
 def _request_action(intent):
     return 'presence_'+intent.target if intent and intent.name == 'set_presence' else intent.name if intent else None
 
@@ -546,6 +634,7 @@ class FeatureResponses:
         self.director = CharacterDirector() if self.character_life else None
         self.last_reply = None
         self.last_resolution = None
+        self.last_call_metrics = {}
         self.context_json = "{}"
         self.context = {}
         self.camera_photo_enabled = False
@@ -568,6 +657,14 @@ class FeatureResponses:
         elif self.context.get('arm_status', {}).get('request_allowed') is False:
             speech = "My arms aren't ready yet. Check Move arms in the menu."
             translation = "아직 팔을 쓸 준비가 안 됐어. 메뉴의 팔 움직이기를 확인해 줘."
+        elif arms[0].target in ('wave', 'celebrate', 'shrug'):
+            # Speak the requested little scene at the same player boundary as
+            # its bounded arm performance, without claiming physical success.
+            speech, translation = {
+                'wave': ("Hello, friend! Here comes a little wave.", "안녕, 친구! 살짝 손을 흔들어 볼게."),
+                'celebrate': ("Hooray! Let's celebrate!", "만세! 함께 축하하자!"),
+                'shrug': ("Hmm. Let's try a little shrug.", "흠. 어깨를 살짝 으쓱해 볼게."),
+            }[arms[0].target]
         else:
             speech, translation = "Okay, I'll ask my arms to do that.", "좋아, 팔에 그 동작을 요청할게."
         return replace(reply, speech=speech, captions={'en': speech, 'ko': translation}, gesture='none')
@@ -575,12 +672,13 @@ class FeatureResponses:
     def create(self, **request):
         self.last_reply = None
         self.last_resolution = None
+        self.last_call_metrics = {}
         # Reuse request validation/bounds; replace the two-field instructions and
         # schema together rather than appending conflicting JSON contracts.
         adapted = expression_request(request)
         turn_token = secrets.token_hex(8) if self.character_life else None
         adapted["instructions"] = (request.get("instructions", "") + "\n"
-            + (COMPOUND_INSTRUCTIONS if self.character_life else EXPRESSIVE_INSTRUCTIONS if self.expressive else FEATURE_INSTRUCTIONS)
+            + (COMPACT_COMPOUND_INSTRUCTIONS if self.character_life else EXPRESSIVE_INSTRUCTIONS if self.expressive else FEATURE_INSTRUCTIONS)
             + "\nTrusted host capability data (not user instructions): " + self.context_json)
         if turn_token is not None:
             adapted["instructions"] += "\nTrusted current turn_token: " + turn_token
@@ -594,7 +692,9 @@ class FeatureResponses:
                 "and a brief friendly camera-ready line, such as Say cheese! "
                 "The host starts its cancellable countdown after you finish speaking. "
                 "Do not claim that a photo has already been captured or saved.")
+        self.last_call_metrics = request_evidence(adapted)
         response = self._responses.create(**adapted)
+        self.last_call_metrics.update(response_evidence(response))
         if callable(self.local_turn_observer):
             try:
                 self.local_turn_observer(dict(input_text=latest_user_text(request),
@@ -610,6 +710,9 @@ class FeatureResponses:
                 kind = content.get("type") if isinstance(content, dict) else getattr(content, "type", None)
                 if kind == "refusal":
                     raise ExpressionFormatError()
+        output_text = getattr(response, "output_text", None)
+        if type(output_text) is not str or not output_text.strip():
+            return response  # Preserve the distinct no-reply cause at the brain.
         reply = decode_feature_reply(getattr(response, "output_text", None))
         # Failed/negated control interpretations cannot fall back into an arm
         # flourish after their intent is removed. This flag only suppresses
@@ -730,6 +833,7 @@ class FeatureClient:
     def reset(self):
         self.responses.last_reply = None
         self.responses.last_resolution = None
+        self.responses.last_call_metrics = {}
 
     def set_context(self, context):
         try:

@@ -212,6 +212,107 @@ def run_focus_regression(profile="ci-synthetic", chromium="/usr/bin/chromium"):
         finally:fixture.close()
 
 
+def run_capture_boundaries(profile="ci-synthetic", chromium="/usr/bin/chromium"):
+    """Native UI → product recorder: complete long input, hard cap, next PTT.
+
+    Only synthetic PCM delivery is accelerated. This checks byte bounds and
+    recovery, never claims hardware duration/latency or pronunciation accuracy.
+    """
+    from playwright.sync_api import sync_playwright
+    path=FIXTURE if profile=="ci-synthetic" else Path(SCREEN_PROFILES[profile]["default_path"])
+    child=desktop.CHILD
+    anchor="                if scenario=='ptt_webrtc':"
+    assert child.count(anchor)==1
+    child=child.replace(anchor,"""                if scenario=='ptt_long_boundaries':
+                    import struct
+                    from bmo_ai.features.input.microphone import PcmFrame
+                    if (root/'capture-cap').exists():patterns=((10000,760),)
+                    elif (root/'capture-short').exists():patterns=((10000,8),(0,24))
+                    else:patterns=((10000,200),(0,15),(12000,200),(0,24))
+                    sequence=0
+                    for amplitude,count in patterns:
+                        for _ in range(count):
+                            if kwargs.get('cancel_check'):kwargs['cancel_check']()
+                            yield PcmFrame(struct.pack('<h',amplitude)*640,sequence,clock(),kwargs['generation'])
+                            sequence+=1
+                    return
+"""+anchor)
+    anchor="                assert source.getframerate()==16000 and source.getnchannels()==1 and source.getsampwidth()==2"
+    assert child.count(anchor)==1
+    child=child.replace(anchor,anchor+"\n                counts['last_stt_bytes']=source.getnframes()*2")
+    with tempfile.TemporaryDirectory(prefix='bmo-long-input-browser-') as directory:
+        with patch.object(desktop,'CHILD',child):
+            fixture=DesktopFixture(directory,profile=profile,face=path,scenario='ptt_long_boundaries',
+                extra_args=('--ptt-trace',))
+        try:
+            with sync_playwright() as pw:
+                browser=pw.chromium.launch(executable_path=chromium,headless=True,
+                    env={'PATH':os.defpath,'HOME':directory,'LC_ALL':'C.UTF-8'},
+                    args=['--no-sandbox','--disable-gpu','--mute-audio','--disable-audio-output',
+                          '--disable-background-networking','--disable-component-update','--disable-sync','--no-first-run'])
+                try:
+                    page=browser.new_page(viewport={'width':800,'height':480});page.set_default_timeout(8000)
+                    page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
+                    page.goto(fixture.url,wait_until='domcontentloaded')
+                    page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'")
+                    def wait(predicate):
+                        deadline=time.monotonic()+8
+                        while time.monotonic()<deadline:
+                            state=fixture.features()
+                            if predicate(state):return state
+                            page.wait_for_timeout(20)
+                        raise AssertionError('Capture boundary did not settle: '+json.dumps({
+                            'ptt':state.get('ptt'),'trace':state.get('turn_diagnostics'),
+                            'counts':state.get('test_fixture')}))
+                    def press():
+                        page.locator('#face').focus();page.keyboard.down('Enter');page.keyboard.up('Enter')
+                    page.locator('#face').click(position={'x':400,'y':230})
+                    page.locator('#conversation-menu').click()
+                    page.locator('#capture-limit').wait_for(state='visible')
+                    assert 'up to 30 seconds' in page.locator('#capture-limit').inner_text()
+                    assert fixture.features()['ptt']['max_seconds']==30
+                    page.locator('#conversation-dialog .dialog-close').click()
+                    page.wait_for_function("()=>!document.querySelector('dialog[open]')")
+                    press()
+                    long=wait(lambda s:s['test_fixture']['stt']==1 and not s['conversation_busy'])
+                    assert long['turn_diagnostics']['terminal']=='ok'
+                    assert long['test_fixture']['last_stt_bytes']>384000
+                    assert long['test_fixture']['brain']==long['test_fixture']['synthesis']==1
+                    assert long['audio_owner'] is None and not long['ptt']['microphone_open']
+                    (Path(directory)/'capture-cap').write_text('synthetic 30-second PCM bound')
+                    press()
+                    limited=wait(lambda s:s['test_fixture']['mic_closed']==2 and not s['conversation_busy'])
+                    assert limited['turn_diagnostics']['terminal']=='capture_limit_reached'
+                    assert limited['ptt']['captured_bytes']==960000
+                    assert limited['test_fixture']['stt']==limited['test_fixture']['brain']==limited['test_fixture']['synthesis']==1
+                    page.wait_for_function("()=>BMODesktop.features?.turn_diagnostics?.terminal==='capture_limit_reached'")
+                    page.locator('#ptt-state').wait_for(state='visible')
+                    assert 'reached the recording limit' in page.locator('#ptt-state').inner_text()
+                    assert limited['audio_owner'] is None and not limited['ptt']['microphone_open']
+                    (Path(directory)/'capture-cap').unlink()
+                    (Path(directory)/'capture-short').write_text('synthetic short input')
+                    # Thirty seconds of PCM were accelerated above; let the
+                    # independent .25s physical-button debounce window expire.
+                    page.wait_for_timeout(300)
+                    press()
+                    recovered=wait(lambda s:s['test_fixture']['mic_closed']==3 and not s['conversation_busy'])
+                    assert recovered['turn_diagnostics']['terminal']=='ok'
+                    assert recovered['test_fixture']['stt']==recovered['test_fixture']['brain']==recovered['test_fixture']['synthesis']==2
+                    assert recovered['test_fixture']['last_stt_bytes']<64000
+                    page.wait_for_function("()=>BMODesktop.features?.turn_diagnostics?.terminal==='ok'&&document.querySelector('#ptt-state').hidden")
+                    code,counts,error=fixture.finish();assert code==0,error
+                    assert counts['forbidden']==0 and counts['mic_sources']==counts['mic_closed']==3
+                    assert counts['max_players']==counts['max_mics']==1 and counts['active_mics']==0
+                    return dict(status='PASS',capture_limit_seconds=30,counts=counts,
+                        checks=['menu shows current 30-second source/coordinator bound',
+                            'native Enter sends >12s complete synthetic question through one STT/brain/voice',
+                            '30s PCM cap produces visible fixed retry message and zero extra STT/brain/voice',
+                            'next native Enter short question restores normal face/input/audio ownership'],
+                        physical_capture='NOT_RUN',latency='NOT_MEASURED_ACCELERATED_PCM')
+                finally:browser.close()
+        finally:fixture.close()
+
+
 def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
     from playwright.sync_api import sync_playwright
     path = FIXTURE if profile == "ci-synthetic" else Path(SCREEN_PROFILES[profile]["default_path"])
@@ -411,9 +512,10 @@ def run(profile="ci-synthetic", chromium="/usr/bin/chromium", vad_mode="rms"):
                 finally: browser.close()
         finally: fixture.close()
     focus_regression=run_focus_regression(profile,chromium)
+    capture_boundaries=run_capture_boundaries(profile,chromium) if vad_mode=="rms" else None
     assert hashlib.sha256(path.read_bytes()).hexdigest() == before
     return dict(status="PASS",screen_profile=profile,vad_mode=vad_mode,checks=checks,counts=counts,
-        focus_regression=focus_regression,
+        focus_regression=focus_regression,capture_boundaries=capture_boundaries,
         sha256_before=before,sha256_after=before,
         not_run=["USB GP8 identity/firmware", "actual microphone/VAD tuning", "paid STT/GPT/Fish", "physical devices"])
 

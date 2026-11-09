@@ -63,7 +63,8 @@ class IntegrationApp(ConversationApp):
 
     def _trace(self, stage, code="ok", outcome="ok"):
         if self.trace_stage is not None:
-            self.trace_stage(stage, code, outcome=outcome)
+            metrics = getattr(self.brain, "last_call_metrics", {}) if stage == "ai" and outcome != "started" else {}
+            self.trace_stage(stage, code, outcome=outcome, **metrics)
     def _notice(self, error):
         if self.config.offline_voice and error.code in ("connection", "timeout", "server", "rate_limit"):
             try:
@@ -600,6 +601,12 @@ class IntegrationSession:
                             played_reaction=fields.get('played_reaction', fields.get('reaction')) if fields.get('played_reaction', fields.get('reaction')) in REACTION_IDS else None,
                             cached_reaction=fields.get('cached_reaction') is True,
                             cached_reaction_id=fields.get('cached_reaction_id') if type(fields.get('cached_reaction_id')) is str and fields['cached_reaction_id'] in reaction_clips else None)
+                        from .character_director import DELIVERIES
+                        for key, allowed in (('tts_model', {'s2.1-pro-free', 's2.1-pro', 'drama-3'}),
+                                ('tts_delivery_id', DELIVERIES),
+                                ('tts_fallback_reason', {'none', 'offline', 'unsupported_model', 'unvalidated', 'invalid_plan', 'plain_policy'})):
+                            trace[key] = fields.get(key) if fields.get(key) in allowed else None
+                        trace['tts_soft_applied'] = fields.get('tts_soft_applied') if type(fields.get('tts_soft_applied')) is bool else None
                         mechanisms = {'plain_fallback','fish_s2_allowlist_v1','fish_character_drama3_v1','fish_character_s2_v1'}
                         trace.update(tts_requested_emotion=fields.get('tts_requested_emotion') if fields.get('tts_requested_emotion') in EMOTIONS else None,
                             tts_mechanism=fields.get('tts_mechanism') if fields.get('tts_mechanism') in mechanisms else None,

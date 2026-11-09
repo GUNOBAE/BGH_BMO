@@ -95,13 +95,13 @@ class PcmInputTests(unittest.TestCase):
         self.now += 100
         self.assertEqual(gate.poll(), ())
 
-    def test_maximum_duration_completes_speech_without_sleep(self):
+    def test_maximum_duration_discards_incomplete_speech_without_sleep(self):
         gate = self.gate(max_duration=.5, no_speech_timeout=.3, silence_timeout=.1)
         gate.start_ptt("ptt:1", generation=1)
         self.feed(gate, 4)
         self.now = 20.5
         result, = gate.poll()
-        self.assertEqual((result.status, result.code), ("ready", "max_duration"))
+        self.assertEqual((result.status, result.code), ("cancelled", "max_duration"))
         self.assertLessEqual(len(result.pcm), gate.max_buffer_bytes)
 
     def test_byte_budget_bounds_even_fast_injected_frames_and_pending_count(self):
@@ -109,8 +109,8 @@ class PcmInputTests(unittest.TestCase):
         gate.start_ptt("ptt:1", generation=1)
         self.feed(gate, 26, advance=False)
         result, = gate.poll()
-        self.assertEqual((result.status, result.code), ("ready", "max_buffer"))
-        self.assertEqual(len(result.pcm), gate.max_buffer_bytes)
+        self.assertEqual((result.status, result.code), ("cancelled", "max_buffer"))
+        self.assertEqual(result.pcm, b"")
         self.assertEqual(gate.poll(), ())
         self.assertEqual(gate.snapshot()["buffered_bytes"], 0)
 

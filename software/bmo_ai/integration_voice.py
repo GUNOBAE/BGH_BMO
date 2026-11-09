@@ -498,6 +498,17 @@ class IntegrationVoice:
                              cached_reaction=False, reaction_clip=None):
         expression = self._expression(notice=notice, metadata=metadata)
         if delivery is not None:
+            from .character_director import DELIVERIES
+            plan = metadata.get('character_plan')
+            delivery_id = plan.get('delivery_id') if type(plan) is dict else None
+            fallback = ('offline' if source == 'piper' else
+                delivery.reaction_reason if delivery.mechanism == 'plain_fallback'
+                    and delivery.reaction_reason in ('unsupported_model', 'unvalidated', 'invalid_plan')
+                else 'plain_policy' if delivery.mechanism == 'plain_fallback' else 'none')
+            expression.update(tts_model=self.config.fish_model if source == 'fish' else None,
+                tts_delivery_id=delivery_id if delivery_id in DELIVERIES else None,
+                tts_soft_applied=source == 'fish' and self.config.fish_delivery == 'soft' and not delivery.override_soft,
+                tts_fallback_reason=fallback)
             expression.update(
                 voice_emotion=delivery.emotion if source == "fish" else "neutral",
                 reaction=delivery.reaction if source == "fish" else "none",
