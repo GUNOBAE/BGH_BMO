@@ -19,7 +19,7 @@ from .private_credentials import CredentialError, _close, _private_file
 
 MAX_BYTES = 4096
 _FILE = "preferences.json"
-_FIELDS = frozenset(("volume", "subtitle_mode", "presence_mode"))
+_FIELDS = frozenset(("volume", "subtitle_mode", "presence_mode", "imu_reactions"))
 
 
 def default_directory():
@@ -45,6 +45,8 @@ def _validated(values):
     if "presence_mode" in result and (type(result["presence_mode"]) is not str
             or result["presence_mode"] not in ("normal", "quiet", "sleep", "off")):
         raise ValueError("invalid presence")
+    if "imu_reactions" in result and type(result["imu_reactions"]) is not bool:
+        raise ValueError("invalid IMU preference")
     return result
 
 

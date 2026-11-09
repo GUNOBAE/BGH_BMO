@@ -12,7 +12,7 @@ let photoReviewKeyHeld=false,photoPreviewContext=null,photoPreviewAcknowledged=n
 let videoKeyHeld=false,videoPreviewContext=null,videoPreviewAcknowledged=null,videoActionPending=false,videoReviewId=null;
 let volumePending=null,volumeSerial=0,volumeRequest=null,volumeQueue=Promise.resolve(),armCatalogKey=null,voiceCatalogKey=null;
 let faceVolumeTimer=null,uiActivityTimer=null,uiActivitySent=false,uiMenuSequence=null;
-let noticeUntil=0,noticeText='',presenceTestPending=false,presenceTestSeen=null,armPreferencePending=false,armRequest=null;
+let noticeUntil=0,noticeText='',presenceTestPending=false,presenceTestSeen=null,armPreferencePending=false,armRequest=null,imuPreferencePending=null,imuTrialPending=null;
 let mediaKeyHeld=false,mediaVideoKey=null,mediaSeekPending=false,mediaVideoFailure=null,mediaSyncRequired=false,mediaPlayPending=null;
 let mediaHoldTimer=null,mediaHoldStarted=0,mediaHoldTriggered=false,mediaStopping=false,mediaControlsTimer=null,musicErrorTimer=null;
 let previewRun=null,previewSerial=0,previewTimer=null,previewAbort=null,previewBitmap=null,previewDraw=null,previewBusy=false,previewSuppressedKey=null;
@@ -367,7 +367,7 @@ function renderFeatures(next){
  if(next.camera?.tracking_suspended===true||Array.isArray(next.camera?.tracking_suspended)&&next.camera.tracking_suspended.length)
   $('camera-readiness').textContent+=' 사진·영상이 끝나면 이전 시선 추적으로 돌아가요.';
  syncPreview(next);
- renderVolume(next);renderArms(next);renderVoiceBank(next);
+ renderVolume(next);renderArms(next);renderVoiceBank(next);renderIMU(next);
  renderMusic(next);
  const gameReady=next.games_readiness||{};
  $('games-readiness').textContent='게임 '+(next.games?.catalog?.length||0)+'개 · '+(gameReady.status||'확인 전')+' · '+(gameReady.code||next.game_setup_error||'game_status_unavailable');
@@ -415,6 +415,47 @@ function renderFeatures(next){
  $('provider-readiness').textContent=provider?(providerReasons[provider.code]||provider.code||'음성 상태 확인 전')+(provider.blocked?' · 자동 재시도 중지':''):'음성 provider 상태는 아직 관측하지 않았어요.';
  $('provider-recheck').disabled=!provider?.blocked&&(!cloud?.blocked||cloud.recovery==='restart_required');
  $('gamepad-readiness').textContent=next.usb_gamepad?.enabled?'USB 패드 입력 사용: 표준 매핑의 게임·게임 목록에만 전달해요. 실제 패드 검수는 별도예요.':'USB 패드는 기본으로 꺼져 있어요. GP8 대화 입력은 그대로 사용할 수 있어요.';
+}
+function renderIMU(next){
+ const imu=next.imu||{},source=['real','synthetic'].includes(imu.source)?imu.source:'unavailable';
+ const pending=imuPreferencePending;
+ const receipt=pending?.request_id&&(next.requests||[]).find(item=>item.request_id===pending.request_id);
+ if(receipt&&!['accepted','running'].includes(receipt.status)){
+  imuPreferencePending=null;
+  if(['failed','rejected','unknown'].includes(receipt.status))error('움직임 설정을 저장하지 못했어요. 준비 상태를 확인해 주세요.');
+ }
+ $('imu-reactions').checked=imuPreferencePending?.value??imu.enabled===true;
+ $('imu-reactions').disabled=imuPreferencePending!==null;
+ const available=source==='real'&&imu.capabilities?.motion_reaction===true;
+ const sourceText={real:'실제 센서',synthetic:'합성 데모',unavailable:'센서 연결 전'}[source];
+ const reasons={off:'반응은 꺼져 있어요.',disabled:'반응은 꺼져 있어요.',no_samples:'새 센서 값을 기다려요.',
+  profile_required:'실제 축 테스트와 반응 검수가 필요해요.',profile_missing:'실제 축 테스트와 반응 검수가 필요해요.',
+  physical_unverified:'실제 축 테스트와 반응 검수가 필요해요.',stale_sample:'새 센서 값이 들어오지 않아요.',
+  stale:'새 센서 값이 들어오지 않아요.',controller_restart:'다시 연결한 센서 값을 확인하고 있어요.',
+  sensor_disconnected:'센서 연결을 확인해 주세요.'};
+ $('imu-status').textContent=sourceText+' · '+(source==='synthetic'?'실물 검증이 아닌 합성 검사예요.':
+  imu.enabled!==true?'반응은 꺼져 있어요.':available?'검증한 상대 움직임에 반응할 수 있어요.':reasons[imu.reason_code]||'사용 가능한 축과 연결을 준비 상태에서 확인해 주세요.');
+ $('imu-capability').textContent=available?(imu.capabilities?.voice_reaction===true?
+  '가능한 기능: 짧은 표정·저장 음성 반응. 다른 소리가 재생 중이면 끼어들지 않아요. 방향 시선은 사용하지 않아요.':
+  '가능한 기능: 짧은 표정 반응. 준비된 반응 음성이 없어 표정으로 반응해요. 방향 시선은 사용하지 않아요.'):
+  '실제로 검증한 축만 움직임 반응에 사용해요. 이 설정만으로 센서 검수가 완료되지는 않아요.';
+ const trialReceipt=imuTrialPending?.request_id&&(next.requests||[]).find(item=>item.request_id===imuTrialPending.request_id);
+ if(trialReceipt&&!['accepted','running'].includes(trialReceipt.status)){
+  imuTrialPending=null;
+  if(['failed','rejected','unknown'].includes(trialReceipt.status))error('센서 기록을 시작하거나 마치지 못했어요. 연결 상태를 확인해 주세요.');
+ }
+ const capture=imu.capture||{},recording=['recording','running','capturing'].includes(capture.status);
+ // A start receipt may remain running for the whole capture. Once the owner
+ // reports recording, its Finish/Cancel controls must be usable immediately.
+ if(recording&&imuTrialPending?.action==='start')imuTrialPending=null;
+ $('imu-trial-start').disabled=recording||imuTrialPending!==null;
+ $('imu-trial-finish').disabled=!recording||imuTrialPending!==null;
+ $('imu-trial-cancel').disabled=!recording||imuTrialPending!==null;
+ $('imu-trial-label').disabled=recording||imuTrialPending!==null;
+ $('imu-trial-status').textContent=recording?'축 값을 기록하고 있어요 · '+(Number.isInteger(capture.samples)?capture.samples:0)+'개':
+  ['complete','completed','saved'].includes(capture.status)?'기록을 저장했어요. 반복 실물 검수 후 사용 가능한 축을 확인해 주세요.':
+  capture.status==='cancelled'||capture.code==='imu_trial_cancelled'?'기록을 취소했어요.':capture.status==='failed'||capture.status==='blocked'?'기록할 센서 값을 확인해 주세요.':'실제 연결을 확인한 뒤 상태별로 기록해 주세요.';
+ $('imu-readiness').textContent=$('system-dialog').open?JSON.stringify(imu,null,2):'';
 }
 function stopVideoReview(){
  const player=$('video-review-player');player.pause();
@@ -1004,6 +1045,31 @@ $('talk').onclick=()=>{if(pttEnabled)ptt();else control('question','A manually r
 $('ptt-finish').onclick=()=>{if(pttFinishPending)return;pttFinishPending=true;$('ptt-finish').disabled=true;control('ptt_finish').catch(()=>error('녹음 마침 상태를 확인해 주세요.')).finally(()=>{pttFinishPending=false;});};
 $('repeat').onclick=()=>control('repeat').catch(()=>error('다시 들을 답변이 없어요.'));$('stop').onclick=()=>control('stop').catch(()=>error('정지 상태를 확인해 주세요.'));
 $('presence-mode').onchange=()=>desktop('presence_mode',$('presence-mode').value).catch(()=>error('대기 음성 설정을 확인해 주세요.'));
+$('imu-reactions').onchange=async()=>{
+ if(imuPreferencePending!==null)return;
+ const pending={value:$('imu-reactions').checked,request_id:null};imuPreferencePending=pending;
+ $('imu-reactions').disabled=true;
+ try{
+  const receipt=await control('imu_reactions',pending.value);
+  if(imuPreferencePending!==pending)return;
+  if(['accepted','running'].includes(receipt.status))pending.request_id=receipt.request_id;
+  else{imuPreferencePending=null;if(['failed','rejected','unknown'].includes(receipt.status))throw Error('imu_setting_failed');}
+ }catch(_){imuPreferencePending=null;error('움직임 설정을 저장하지 못했어요. 준비 상태를 확인해 주세요.');}
+ finally{if(featureState)renderIMU(featureState);}
+};
+async function imuTrial(action){
+ if(imuTrialPending!==null)return;
+ const pending={action,request_id:null};imuTrialPending=pending;
+ if(featureState)renderIMU(featureState);
+ try{
+  const result=await control('imu_trial',{label:$('imu-trial-label').value,action});
+  if(imuTrialPending!==pending)return;
+  if(['accepted','running'].includes(result.status))pending.request_id=result.request_id;
+  else{imuTrialPending=null;if(['failed','rejected','unknown'].includes(result.status))throw Error('imu_trial_failed');}
+ }catch(_){imuTrialPending=null;error('센서 기록과 연결 상태를 확인해 주세요.');}
+ finally{if(featureState)renderIMU(featureState);}
+}
+for(const action of ['start','finish','cancel'])$('imu-trial-'+action).onclick=()=>imuTrial(action);
 $('presence-test').onclick=async()=>{
  if(presenceTestPending||$('presence-test').disabled)return;
  presenceTestPending=true;$('presence-test').disabled=true;
@@ -1018,7 +1084,7 @@ $('presence-test').onclick=async()=>{
  finally{presenceTestPending=false;if(state)renderPresenceTest(state);}
 };
 $('subtitle-mode').onchange=()=>control('subtitles',$('subtitle-mode').value).catch(()=>error('자막 설정을 확인해 주세요.'));
-$('system-dialog').addEventListener('close',()=>{$('turn-diagnostics').textContent='';});
+$('system-dialog').addEventListener('close',()=>{$('turn-diagnostics').textContent='';$('imu-readiness').textContent='';});
 $('wake-off').onclick=()=>desktop('wake_off').catch(()=>error('호출어 종료 상태를 확인해 주세요.'));
 $('wake-on').onclick=()=>{if($('wake-on').disabled)return;control('wake',true).catch(()=>error('현재 실행에 준비한 호출어 모델을 확인해 주세요. GP8은 계속 사용할 수 있어요.'));};
 $('games').onclick=()=>{intent('open_game_menu').catch(()=>error('게임 목록을 열지 못했어요.'));$('menu').close();};$('greeting-retry').onclick=()=>desktop('retry_greeting').catch(()=>error('인사 캐시를 확인해 주세요.'));

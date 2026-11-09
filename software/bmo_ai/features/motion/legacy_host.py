@@ -4,6 +4,8 @@ import math
 from pathlib import Path
 import re
 import time
+from collections import deque
+from threading import Event, RLock
 
 from bmo_ai.features.contracts import FeatureError, FeatureEvent, HostResult, request_id_ok
 from .arm_serial_posix_v2 import MOUNT
@@ -66,7 +68,7 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
     expected_digest = hashlib.sha256(template.replace(
         b"REMOTE_ENABLED = False", b"REMOTE_ENABLED = True", 1)).hexdigest()
     if expected_digest != reviewed_sha and root.name == "bmo_arm_legacy_bridge_v1":
-        for name in ("bmo_arm_legacy_bridge_v2", "bmo_arm_legacy_bridge_v3"):
+        for name in ("bmo_arm_legacy_bridge_v2", "bmo_arm_legacy_bridge_v3", "bmo_arm_legacy_bridge_v4"):
             candidate = root.with_name(name)
             if candidate.is_dir():
                 candidate_bytes = (candidate/"code.py").read_bytes().replace(
@@ -80,6 +82,9 @@ def validate_legacy_install(firmware_root, reviewed_sha, mount=MOUNT):
             or expected != (Path(mount) / "code.py").read_bytes()
             or (root / "bmo_arm_bridge.py").read_bytes() != (Path(mount) / "bmo_arm_bridge.py").read_bytes()):
         raise LegacyArmError("bridge_sha_or_dependency_mismatch")
+    if root.name == 'bmo_arm_legacy_bridge_v4':
+        if (root/'bmo_imu.py').read_bytes() != (Path(mount)/'bmo_imu.py').read_bytes():
+            raise LegacyArmError('bridge_sha_or_dependency_mismatch')
     boot = (Path(mount) / "boot.py").read_text(encoding="utf-8")
     if "usb_cdc.enable(console=True, data=True)" not in boot:
         raise LegacyArmError("dedicated_data_disabled")
@@ -110,8 +115,72 @@ class LegacyArmLink:
         self.last_request_id = None
         self.prepare_code = None
         self.performance_supported = None
+        self._port_lock = RLock()
+        self._motor_waiting = Event()
+        self._imu_counter = 0
+        self._imu_ids = deque(maxlen=8)
+
+    def _read_arm_reply(self):
+        # A timed-out sensor query can arrive after its 25ms budget. Route only
+        # that exact known request away from a later arm ACK, never arbitrary
+        # unknown serial traffic. Keep the original arm IO deadline overall.
+        bound = 256 if self._imu_ids else REPLY_MAX
+        deadline = time.monotonic()+getattr(self.port,'timeout',.45)
+        for _ in range(5):
+            bounded = getattr(self.port,'read_until_budget',None)
+            raw = (bounded(b'\n',bound,deadline) if callable(bounded)
+                   else self.port.read_until(b'\n',bound))
+            fields = raw.split(b' ',3) if type(raw) is bytes else ()
+            if (len(fields)==4 and fields[:2]==[b'B1',b'IMU']
+                    and fields[2] in tuple(value.encode('ascii') for value in self._imu_ids)):
+                continue
+            return raw
+        raise LegacyArmError('invalid_ack')
+
+    def imu_snapshot(self):
+        """Read cached sensor registers without changing any motor state."""
+        from .imu_transport import IMUTransportError,parse_imu_reply
+        if self.closed:raise IMUTransportError('imu_port_closed')
+        if self._motor_waiting.is_set() or not self._port_lock.acquire(blocking=False):
+            raise IMUTransportError('imu_arm_transaction_priority')
+        try:
+            exchange = getattr(self.port,'exchange_imu',None)
+            if not callable(exchange):raise IMUTransportError('imu_port_budget_unavailable')
+            self._imu_counter += 1
+            rid='imu_'+str(self._imu_counter)
+            self._imu_ids.append(rid)
+            deadline=time.monotonic()+.025
+            raw=exchange(('B1 IMU '+rid+'\n').encode('ascii'))
+            for _ in range(4):
+                fields=raw.split(b' ',3) if type(raw) is bytes else ()
+                if (len(fields)==4 and fields[:2]==[b'B1',b'IMU']
+                        and fields[2].decode('ascii','ignore') in self._imu_ids
+                        and fields[2]!=rid.encode('ascii')):
+                    read=getattr(self.port,'read_until_budget',None)
+                    if not callable(read) or time.monotonic()>=deadline:
+                        raise IMUTransportError('imu_reply_stale')
+                    raw=read(b'\n',256,deadline)
+                    continue
+                return parse_imu_reply(raw,rid)
+            raise IMUTransportError('imu_reply_stale')
+        except IMUTransportError:
+            raise
+        except Exception as error:
+            code=getattr(error,'code',None)
+            raise IMUTransportError(code if code in ('imu_write_timeout','imu_partial_write',
+                'imu_invalid_query','imu_port_closed') else 'imu_transport_error') from None
+        finally:
+            self._port_lock.release()
 
     def _request(self, command, *, is_hello=False, before_write=None, recovery=False):
+        self._motor_waiting.set()
+        try:
+            with self._port_lock:
+                return self._request_locked(command,is_hello=is_hello,before_write=before_write,recovery=recovery)
+        finally:
+            self._motor_waiting.clear()
+
+    def _request_locked(self, command, *, is_hello=False, before_write=None, recovery=False):
         known_stop = self.stopped and self.last_response_code == "STOPPED"
         if self.closed or (self.unknown and not (recovery and known_stop)) or (self.stopped and not recovery):
             raise LegacyArmError("bridge_unavailable")
@@ -140,7 +209,7 @@ class LegacyArmLink:
         try:
             if self.port.write(data) != len(data):
                 raise LegacyArmError("partial_write")
-            raw = self.port.read_until(b"\n", REPLY_MAX)
+            raw = self._read_arm_reply()
             if (type(raw) is not bytes or not 1 <= len(raw) <= REPLY_MAX or
                     not raw.endswith(b"\n") or b"\r" in raw or b"\n" in raw[:-1]):
                 raise LegacyArmError("ack_missing_or_incomplete")
@@ -303,7 +372,8 @@ class LegacyArmLink:
 
 class LegacyMotionFeature:
     """Plug into FeatureHost without altering model/GPT or approved R10."""
-    def __init__(self, link, *, clock=None, ttl=1.0, cooldown=2.0):
+    def __init__(self, link, *, clock=None, ttl=1.0, cooldown=2.0,
+                 telemetry_only=False, imu_binding=None):
         if not isinstance(link, LegacyArmLink):
             raise FeatureError("legacy_arm_link_required")
         if (not _finite_time(ttl) or not 0 < ttl <= 5
@@ -329,6 +399,37 @@ class LegacyMotionFeature:
         self.last_error = None
         self.performance = None
         self.last_performance = None
+        if type(telemetry_only) is not bool:raise FeatureError('invalid_motion_configuration')
+        self.telemetry_only=telemetry_only
+        self.imu_binding=imu_binding
+        self._imu_poller=None
+
+    def configure_imu(self, enabled=True, *, binding=None):
+        from .imu_transport import IMUPoller,validated_binding
+        if type(enabled) is not bool:raise FeatureError('invalid_imu_configuration')
+        if binding is not None:self.imu_binding=validated_binding(binding)
+        if enabled:
+            self.imu_binding=validated_binding(self.imu_binding)
+            if self.closed:raise FeatureError('feature_closed')
+            if self._imu_poller is None:self._imu_poller=IMUPoller(self.link,clock=self.clock)
+        elif self._imu_poller is not None:
+            self._imu_poller.close();self._imu_poller=None
+
+    def poll_imu(self):
+        if self._imu_poller is None or self.closed:return
+        if self.pending is not None:return
+        if self.performance is not None:
+            if (self.performance['phase']=='queued'
+                    or self.performance['next_pulse']-self.clock()<.05):return
+        if self.active_until is not None and self.next_ping-self.clock()<.05:return
+        self._imu_poller.request()
+
+    def drain_imu(self):
+        return self._imu_poller.drain() if self._imu_poller is not None else ()
+
+    def imu_transport_snapshot(self):
+        return (self._imu_poller.snapshot() if self._imu_poller is not None else
+                dict(enabled=False,code='imu_not_requested',shared_b1_owner=True,synthetic=False))
 
     def set_context(self, session_id, turn_id, mode_generation):
         if type(turn_id) is int and turn_id >= 0:
@@ -346,6 +447,8 @@ class LegacyMotionFeature:
                mode_generation, started_at, explicit=False):
         if not request_id_ok(request_id):
             raise FeatureError("invalid_request_id")
+        if self.telemetry_only:
+            return HostResult(request_id,'rejected','imu_read_only_transport',simulated=False)
         if (self.closed or self.stopped or self.fault or self.pending is not None
                 or self.active_until is not None or self.performance is not None or request_id in self.seen):
             return HostResult(request_id, "rejected", "arm_unavailable", simulated=False)
@@ -504,6 +607,7 @@ class LegacyMotionFeature:
         self._active_pending = None
 
     def poll(self):
+        self.poll_imu()
         if self.closed or self.stopped or self.fault:
             result, self.events = tuple(self.events), []
             return result
@@ -632,6 +736,9 @@ class LegacyMotionFeature:
         self._clear_active()
 
     def stop(self):
+        if self.telemetry_only:
+            self.stopped=True
+            return
         if self.stopped:
             return
         if self.performance is not None:
@@ -652,6 +759,7 @@ class LegacyMotionFeature:
             self.last_error = error.code
 
     def prepare(self):
+        if self.telemetry_only:raise FeatureError('imu_read_only_transport')
         if self.closed or self.pending is not None or self.active_until is not None or self._inflight_pending is not None or self.performance is not None:
             raise FeatureError("arm_prepare_busy_or_closed")
         try:
@@ -668,6 +776,8 @@ class LegacyMotionFeature:
 
     def close(self):
         if not self.closed:
+            if self._imu_poller is not None:
+                self._imu_poller.close();self._imu_poller=None
             self.stop()
             try:
                 self.link.close()

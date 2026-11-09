@@ -58,6 +58,12 @@ class HostControl:
             valid = type(self.value) is str and self.value in (*EMOTIONS, "auto", "manual")
         elif self.action == "subtitles":
             valid = type(self.value) is str and self.value in ('off', 'en', 'ko')
+        elif self.action == 'imu_reactions':
+            valid = type(self.value) is bool
+        elif self.action == 'imu_trial':
+            valid = (type(self.value) is dict and set(self.value) == {'label','action'}
+                and self.value['label'] in ('stationary','move','still','fan','speaker','arms')
+                and self.value['action'] in ('start','finish','cancel'))
         elif self.action == "photo_preview_ready":
             valid = (type(self.value) is dict and set(self.value) == {'generation', 'request_id', 'preview_token'}
                 and type(self.value['generation']) is int and self.value['generation'] >= 0
@@ -171,6 +177,7 @@ class FeatureHost(ProductVideoFlow):
                  session_request_limit=None, estimated_request_cost=None, estimated_session_cost_limit=None,
                  completed_turn_store=None, arm_supervision_requested=None, emotion_arms_requested=None,
                  arm_usage=None, preferences=None, media_diagnostics=None,
+                 imu_monitor=None, imu_transport_factory=None, imu_profile_directory=None,
                  native_supertux=False, native_gamepad_profile=None, native_game_feature=None):
         from .games import GamesFeature
         from .media import MediaFeature, FakeMediaBackend, make_fixture_media
@@ -526,6 +533,13 @@ class FeatureHost(ProductVideoFlow):
                    if ptt_vad_profile != "baseline" else {}),
                 **self._ptt_settings(ptt_ambient_profile, ptt_speech_safe))
         self.motion.set_context(self.session.session_id, "idle", self.modes.generation)
+        from ..imu_reactions import IMUReactions
+        self.imu_reactions = IMUReactions(self, monitor=imu_monitor,
+            transport_factory=imu_transport_factory, profile_directory=imu_profile_directory)
+        self.imu_reactions.set_enabled(bool(preferences.load().get('imu_reactions', False))
+            if preferences is not None else False, persist=False)
+        if self.imu_reactions.enabled and not self.runtime.simulate:
+            self.runtime = replace(self.runtime, imu_observation=True)
         self._refresh()
 
     def _broker_allowed(self):
@@ -1674,6 +1688,17 @@ class FeatureHost(ProductVideoFlow):
                 return self._remember(HostResult(request, 'simulated' if self.runtime.simulate else 'succeeded',
                     'volume_applied', simulated=self.runtime.simulate, executed=not self.runtime.simulate,
                     completed=True, completion='output_setting_applied'))
+            elif action == 'imu_reactions':
+                self.imu_reactions.set_enabled(value)
+                self.runtime = replace(self.runtime, imu_observation=not self.runtime.simulate and value)
+                return self._remember(HostResult(request, 'succeeded', 'imu_preference_saved',
+                    completed=True, completion='setting_saved'))
+            elif action == 'imu_trial':
+                self.imu_reactions.trial(value)
+                self.runtime = replace(self.runtime, imu_observation=not self.runtime.simulate and
+                    (self.imu_reactions.enabled or self.imu_reactions.capture['status']=='recording'))
+                return self._remember(HostResult(request, 'succeeded', 'imu_trial_updated',
+                    completed=True, completion='read_only_sensor_trial'))
             elif action == 'arm_prepare':
                 # A replayed preparation is never a new permission to clear a
                 # later STOP. Reserve the explicit user request before any IO.
@@ -2063,6 +2088,7 @@ class FeatureHost(ProductVideoFlow):
         return None
 
     def _begin_conversation(self, *, message=None, input_provider=None):
+        self.imu_reactions.interrupt('new_question')
         if self._closed or self._photo_job is not None or self.session.busy or self._ptt_cleanup_fault or self.video.snapshot()["recording"]:
             return False
         self.compound.cancel('plan_new_turn')
@@ -2324,6 +2350,7 @@ class FeatureHost(ProductVideoFlow):
         return False
 
     def cancel_conversation(self):
+        self.imu_reactions.interrupt('user_input', cancel_audio=False)
         if self._arm_turn_state.get('stage') not in ('idle', 'ended', 'cancelled', 'error'):
             self._arm_turn_state.update(stage='cancelled', eligible_at_player_start=False)
         self._retire_music_preparation('music_preparation_cancelled')
@@ -2405,7 +2432,7 @@ class FeatureHost(ProductVideoFlow):
                     phase="speaking" if cue["playing"] else "idle", playback="started",
                     source="provided_media_cues", position=0., emotion="happy",
                     cues=[{"time": 0., "mouth": cue["mouth"]}])
-        return value
+        return self.imu_reactions.project(value)
 
     def poll(self):
         if self._closed:
@@ -2489,6 +2516,7 @@ class FeatureHost(ProductVideoFlow):
             generation = self._turn_generations.get(turn)
             if generation != self.modes.generation:
                 continue
+            self.imu_reactions.playback(kind, turn, at)
             pending = self._pending_photo
             if (kind == 'started' and pending and self._photo_phase == 'countdown_audio_start'
                     and pending.get('countdown_turn') == turn and not self._photo_cancelled(pending)):
@@ -2854,12 +2882,15 @@ class FeatureHost(ProductVideoFlow):
         self.compound.tick()
         self._tick_idle_gaze()
         self._tick_local_events()
+        self.imu_reactions.poll()
         self._save_subtitle_preference()
         self._refresh()
 
     def _refresh(self):
+        self.runtime = replace(self.runtime, imu_observation=not self.runtime.simulate and
+            (self.imu_reactions.enabled or self.imu_reactions.capture['status']=='recording'))
         self._state_sequence += 1
-        face = self.session.snapshot()
+        face = self.imu_reactions.project(self.session.snapshot())
         camera = self.camera.snapshot()
         motion = self.motion.snapshot()
         game_state = self.games.snapshot()
@@ -2953,7 +2984,7 @@ class FeatureHost(ProductVideoFlow):
             "photo_refocus_used": bool(self._pending_photo and self._pending_photo.get('refocus_used')),
             "photo_preview_token": self._pending_photo['preview_token'] if self._pending_photo else None,
             "subtitles": self.session.subtitle_snapshot(),
-            "motion": motion, "imu": self.imu.snapshot(),
+            "motion": motion, "imu": self.imu_reactions.snapshot(),
             "input": self.input_adapter.snapshot() if self.input_adapter else
                      {"enabled": False, "real_input": "NOT_RUN", "device_opens": 0},
             "usb_gamepad": self.gamepad.snapshot(),
@@ -3037,6 +3068,8 @@ class FeatureHost(ProductVideoFlow):
         self.record_media_observation('stop', 'app_close')
         self._closed = True
         errors = []
+        try:self.imu_reactions.close()
+        except Exception:errors.append('imu_cleanup_failed')
         try:
             self.gamepad.close()
             self.game_keyboard.close()

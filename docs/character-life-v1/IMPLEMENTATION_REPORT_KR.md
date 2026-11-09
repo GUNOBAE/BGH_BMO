@@ -1,5 +1,65 @@
 # BMO Character Life v1 구현·검증 기록
 
+## 2026-11-09 MPU6050 상대 움직임 반응 후속
+
+이 후속은 음악·답변·B1 발화 연출 후보 `8c3de0d`를 보존한다. exact 후속 SHA와
+그 SHA의 필수 CI는 PR #40 최신 IMU READY 인계를 따른다. 센서 수집·호스트 입력·
+기존 얼굴/저장 음성 연결의 코드 검증과 Pi 설치·축 검수·사용자 실기는 별도다.
+
+- 기존 센서는 과거 ±2g에서 AX 포화, 여러 축의 큰 정지 편향 및 self-test 실패
+  기록이 있다. GX 평균 약 +151.5°/s도 **과거 기록**이며 현재 값이 아니다.
+  [기존 근거](../hardware.md#existing-mpu6050-fault-evidence)를 보존한다. AX만
+  제외하면 나머지가 정상이라고 승인하지 않는다. 기록상 배선은 RP2040 GP0=SDA,
+  GP1=SCL, INT GP9이며 Pi GPIO I²C로 직접 읽지 않는다. 현재 배선·전원·센서
+  상태는 Pi가 확인해야 한다.
+- 별도 `firmware/staging/bmo_arm_legacy_bridge_v4` 후보는 원래 HID/GP7/GP8,
+  팔 핀·보정·좌우 반전·B1 v3 발화 연출을 보존하면서 MPU6050을 읽는다. sensor
+  task는 시간·step budget이 있는 cooperative GPIO I²C이며 센서 대기/오류를
+  버튼·팔 heartbeat의 무한 대기로 연결하지 않는다. 설정 주기는 실제 센서
+  표본 빈도·지연의 실측값이 아니다. 실제 배선/타이밍 검수는 남아 있다.
+- `B1 IMU`는 같은 dedicated data CDC 소유자의 읽기 전용 snapshot 요청이다.
+  비동기 unsolicited frame이나 두 번째 serial 프로세스를 만들지 않는다. 팔 OFF/
+  STOP과 센서 수집을 구분하고, 센서 timeout/불량 응답은 IMU만 차단한다. 센서
+  register 응답 `READY`는 센서 건강·유효한 축·서보 위치의 승인이 아니다.
+- AX/AY/AZ/GX/GY/GZ의 누락·포화·고정·편향·제외 이유와 실제 입력 신선도,
+  boot/sequence/timestamp·재연결을 개별 관리한다. 빠진 축을0으로 채우거나
+  부분 축으로3축 norm/전체 자세를 계산하지 않는다. 큰 gyro bias가 있어도
+  검증된 상대 변화만 후보이며 offset 차감으로 방향/장기 각도를 복구했다고
+  보고하지 않는다. 전체 건강 상태와 `relative_motion` 기능 적격성은 별개다.
+- 실제 같은 장치/펌웨어·의존성에 묶인 private 반복 검수가 없으면 제품 반응은
+  비활성이다. 가만히 두기·살짝 움직이기·다시 안정되기·팬·스피커·팔 진동을
+  각각 두 번 이상 기록해 움직임과 배경 진동의 축별 분리를 검증한다. WHO_AM_I/
+  I²C 주소는 고유 센서 serial이 아니며 알려진 센서 교체·배선 변경 후에는 재검수한다.
+  합성 데모와 실제 검수 자료를 구분하며 합성 trace를 실물 승인으로 등록하지 않는다.
+- 첫 제품 반응은 연속 움직임을 한 episode로 묶은 짧은 놀람/호기심 얼굴과
+  사용 가능한 기존 영어 저장 반응이다. 같은 voice-pack 선택·SHA 검증·단일
+  audio owner·MasterVolume·player-start·입/자막 경로를 사용한다. 새 GPT/Fish
+  호출은 없다. 음성 자산이 없으면 얼굴 반응만 가능하다고 표시한다. 안정·OFF·
+  신호 상실·새 질문에서는 기본 감정으로 복귀하며 대화/음악/녹음/메뉴/mute/
+  팔 진동 중에는 끼어들지 않는다. 방향 시선은 검수 전 OFF이며3D 자세·낙하·
+  높이·팔 안전 제어를 제공하지 않는다.
+- 같은 아이콘의 `설정 → 움직임 반응 → IMU 반응 사용`에 선호를 저장한다.
+  `설정 → 준비 상태 → IMU 축 검수`에서 현재 축 상태·가능한 기능·제외 이유와
+  가만히 두기/살짝 움직이기/다시 안정되기/진동별 기록을 확인한다. 체크박스는
+  사용 선호이며 센서 건강·검수·장치 권한 승인을 만들어 내지 않는다.
+
+설치 도구는 `PYTHONPATH=software .venv-device/bin/python -m bmo_ai.imu_candidate`다.
+기본은 읽기 전용이며 `--prepare --work-directory <별도 private 폴더>`만 후보를
+생성한다. `code.py`·`bmo_arm_bridge.py`·`bmo_imu.py`의 exact 세 SHA를 검토한 뒤,
+현재 입회·서보 전원 격리·공간·물리 차단·auto-reload 위험 확인이 실제 충족될 때만
+Pi가 apply한다. 쓰기 중 원래 부팅 PWM이 실행될 수 있다. 기본 후보는
+`REMOTE_ENABLED=False`이며, `--keep-reviewed-motors`는 현재 exact-known True의
+선호를 보존할 때만 허용하고 OFF 보드를 새로 활성화하지 않는다. 검수·입회 사실을
+설정에 영구 true로 저장하지 않는다.
+
+도구는 v1/v2/v3 원본 세 파일과 해시를 먼저 private `backup-previous`에 동기 저장한다.
+센서 모듈→호환 bridge→code 순서로 쓰며 여러 파일은 한 번에 원자 교체되지 않는다.
+실패 시 전원 격리를 유지하고 같은 검토 폴더/세 SHA/현재 감독 조건에서 명시적
+rollback한다. 알려진 old/new 파일 조합만 복구하고 원래 없던 센서 모듈은 exact
+후보 bytes일 때만 제거한다. 알 수 없는 변경·손상·다른 helper를 덮지 않는다.
+실물 설치·현재 axis 품질·팬/스피커/팔의 실제 오반응 분리·얼굴/청취 승인은
+Pi 인수 대기이며 Cloud 합성 회귀로 PASS 처리하지 않는다.
+
 ## 2026-11-09 음악 중단·답변 재생·발화 팔 연출
 
 이 절은 아래 과거 기록보다 최신이다. exact 후보와 같은 SHA의 push/PR CI는

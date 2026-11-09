@@ -68,12 +68,24 @@ class DailyPreferencesTests(unittest.TestCase):
         self.assertEqual(DailyPreferences(self.directory).load(), dict(
             volume=dict(level=.4, muted=False), subtitle_mode="en", presence_mode="quiet"))
 
+    def test_imu_preference_survives_restart_without_granting_sensor_validation(self):
+        store = DailyPreferences(self.directory)
+        self.assertNotIn('imu_reactions', store.load())
+        self.assertTrue(store.update(imu_reactions=True))
+        restarted = DailyPreferences(self.directory)
+        self.assertEqual(restarted.load(), {'imu_reactions': True})
+        # A preference is not a sensor profile, commissioning or permission.
+        self.assertFalse(restarted.update(imu_verified=True))
+        self.assertTrue(restarted.update(imu_reactions=False))
+        self.assertEqual(DailyPreferences(self.directory).load(), {'imu_reactions': False})
+
     def test_invalid_updates_never_replace_good_preferences(self):
         store = DailyPreferences(self.directory)
         self.assertTrue(store.update(presence_mode="normal"))
         before = (self.directory / "preferences.json").read_bytes()
         invalid = (
             dict(api_key="not a supported field"), dict(arms_enabled=True),
+            dict(imu_reactions=1), dict(imu_reactions="true"), dict(imu_reactions=None),
             dict(subtitle_mode="auto"), dict(subtitle_mode=None), dict(presence_mode=True),
             dict(presence_mode="frequent"), dict(volume=dict(level=True, muted=False)),
             dict(volume=dict(level=-.1, muted=False)), dict(volume=dict(level=1.1, muted=False)),

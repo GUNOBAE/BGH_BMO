@@ -22,12 +22,13 @@ class RuntimePolicy:
     arms_commissioned: bool = False  # reviewed daily B1 profile; current link still required
     music_supervised: bool = False  # explicit reviewed local WAV output only
     native_supertux: bool = False  # explicit fixed distro game; never arbitrary commands
+    imu_observation: bool = False  # read-only shared B1; relative reaction evidence is separate
 
     def __post_init__(self):
         if any(type(value) is not bool for value in (self.simulate, self.conversation_ptt_microphone,
                                                     self.camera_supervised, self.camera_video_supervised,
                                                     self.arms_supervised, self.arms_commissioned,
-                                                    self.music_supervised, self.native_supertux)):
+                                                    self.music_supervised, self.native_supertux, self.imu_observation)):
             raise FeatureError("invalid_runtime")
         if ((self.camera_supervised or self.camera_video_supervised or self.arms_enabled
              or self.music_supervised or self.native_supertux) and self.simulate
@@ -47,6 +48,8 @@ class RuntimePolicy:
         if capability not in DEVICE_CAPABILITIES:
             raise FeatureError("unknown_capability")
         if capability == "arms" and self.arms_enabled:
+            return
+        if capability == 'imu' and self.imu_observation:
             return
         if capability == "music" and self.music_supervised:
             return
@@ -70,5 +73,6 @@ class RuntimePolicy:
                 **({"arms": "explicit_commissioned"} if self.arms_commissioned else {}),
                 **({"music": "explicit_supervised"} if self.music_supervised else {}),
                 **({'external_games': 'explicit_supertux_only'} if self.native_supertux else {}),
-                "real_features_enabled": self.camera_supervised or self.arms_enabled or self.music_supervised or self.native_supertux,
+                **({'imu':'explicit_read_only'} if self.imu_observation else {}),
+                "real_features_enabled": self.camera_supervised or self.arms_enabled or self.music_supervised or self.native_supertux or self.imu_observation,
                 "pi_live_verified": False}

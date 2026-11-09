@@ -6,6 +6,7 @@ and STOP state are checked again by the existing adapter on the next request.
 No constructor opens a port, writes firmware or releases a latched stop.
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -104,7 +105,8 @@ def current_device_identity():
 def _hash_files(mount):
     import hashlib
     hashes = {}
-    for name in ('code.py', 'bmo_arm_bridge.py', 'boot.py'):
+    names=['code.py', 'bmo_arm_bridge.py', 'boot.py']
+    for name in names:
         path = Path(mount)/name
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
@@ -115,6 +117,8 @@ def _hash_files(mount):
             if len(data) != info.st_size:
                 raise ArmUsageError('arm_firmware_evidence_invalid')
             hashes[name] = hashlib.sha256(data).hexdigest()
+            if name=='code.py' and b'from bmo_imu import ' in data:
+                names.append('bmo_imu.py')
         finally:
             os.close(fd)
     return hashes
@@ -133,7 +137,9 @@ def _record(value):
             or value.get('checks') != list(CHECKS)):
         raise ArmUsageError('arm_commissioning_record_invalid')
     hashes = value.get('board_files_sha256')
-    if (type(hashes) is not dict or set(hashes) != {'code.py','bmo_arm_bridge.py','boot.py'}
+    if (type(hashes) is not dict or set(hashes) not in (
+                {'code.py','bmo_arm_bridge.py','boot.py'},
+                {'code.py','bmo_arm_bridge.py','bmo_imu.py','boot.py'})
             or any(type(v) is not str or not _HASH.fullmatch(v) for v in hashes.values())
             or hashes['code.py'] != value['reviewed_code_sha256']):
         raise ArmUsageError('arm_commissioning_record_invalid')
@@ -217,31 +223,37 @@ class _DailyPort:
         self.identity_reader, self.firmware_root, self.mount = identity_reader, firmware_root, mount
         self.port = None
         self.attempted = self.closed = False
+        self.motor_admitted = False
+        self.imu_binding = None
         self.code = 'arm_connection_not_requested'
 
     def _open(self):
         if self.closed or self.attempted:
             raise LegacyArmError('daily_connection_unavailable')
         self.attempted = True
+        created = False
         try:
             validate_legacy_install(self.firmware_root, self.record['reviewed_code_sha256'], mount=self.mount)
             if _hash_files(self.mount) != self.record['board_files_sha256']:
                 raise ArmUsageError('arm_firmware_changed')
             if self.identity_reader() != self.record['device_identity']:
                 raise ArmUsageError('arm_device_changed')
-            self.port = self.port_factory()
-            self.port.open()
+            if self.port is None:
+                self.port = self.port_factory()
+                created = True
+                self.port.open()
+            self.motor_admitted = True
             self.code = 'arm_connection_open'
         except Exception as error:
             code = getattr(error, 'code', None)
             self.code = code if type(code) is str and re.fullmatch(r'[a-z][a-z0-9_]{0,95}', code) else 'arm_connection_failed'
-            if self.port is not None:
+            if created and self.port is not None:
                 try: self.port.close()
                 except Exception: self.code = 'arm_cleanup_unverified'
             raise LegacyArmError('daily_admission_failed') from None
 
     def write(self, data):
-        if self.port is None:
+        if not self.motor_admitted:
             self._open()
         if self.closed:
             raise LegacyArmError('daily_connection_unavailable')
@@ -251,6 +263,40 @@ class _DailyPort:
         if self.port is None or self.closed:
             raise LegacyArmError('daily_connection_unavailable')
         return self.port.read_until(delimiter, bound)
+
+    def read_until_budget(self, delimiter, bound, deadline):
+        if self.port is None or self.closed:
+            raise LegacyArmError('daily_connection_unavailable')
+        bounded=getattr(self.port,'read_until_budget',None)
+        return (bounded(delimiter,bound,deadline) if callable(bounded)
+                else self.port.read_until(delimiter,bound))
+
+    def exchange_imu(self, message):
+        """Read-only v4 admission is separate from the commissioned arm build.
+
+        An older arm receipt cannot authorize motor writes after a v4 update,
+        but does not prevent observing the separately verified current sensor.
+        Both paths reserve one port; readonly success never marks motor-ready.
+        """
+        from .imu_transport import validate_imu_install,validated_binding,IMUTransportError
+        if self.closed:raise IMUTransportError('imu_port_closed')
+        if self.port is None:
+            binding=dict(validate_imu_install(mount=self.mount))
+            identity=self.identity_reader()
+            binding['source_id']=hashlib.sha256(json.dumps(identity,sort_keys=True,
+                separators=(',',':')).encode('ascii')).hexdigest()
+            candidate=self.port_factory()
+            try:
+                candidate.open()
+                after=validate_imu_install(mount=self.mount)
+                if (after!={k:v for k,v in binding.items() if k!='source_id'}
+                        or self.identity_reader()!=identity):
+                    raise IMUTransportError('imu_binding_changed')
+                self.imu_binding=validated_binding(binding)
+                self.port=candidate
+            except Exception:
+                candidate.close();raise
+        return self.port.exchange_imu(message)
 
     def close(self):
         if self.port is not None:

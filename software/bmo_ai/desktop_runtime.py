@@ -851,6 +851,10 @@ class DesktopRuntime:
                     self._state("ready", result[1])
         if self.host is not None and not (self.character_life and self._worker is not None and self._pending_user_input):
             input_epoch = self._input_epoch
+            imu = getattr(self.host, 'imu_reactions', None)
+            if imu is not None:
+                imu.presentation_allowed = (self._ready and self._worker is None
+                    and not self._pending_user_input and self.clock() >= self._ui_active_until)
             self.host.poll()
             if self._worker is None:
                 with self._lock:

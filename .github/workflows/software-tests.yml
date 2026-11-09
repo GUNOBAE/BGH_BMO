@@ -1,9 +1,9 @@
 name: Software tests
 on:
   push:
-    paths: ['software/**', 'firmware/staging/bmo_arm_legacy_bridge_v1/**', 'firmware/staging/bmo_arm_legacy_bridge_v2/**', 'firmware/staging/bmo_arm_legacy_bridge_v3/**', '.github/workflows/software-tests.yml']
+    paths: ['software/**', 'firmware/staging/bmo_arm_legacy_bridge_v1/**', 'firmware/staging/bmo_arm_legacy_bridge_v2/**', 'firmware/staging/bmo_arm_legacy_bridge_v3/**', 'firmware/staging/bmo_arm_legacy_bridge_v4/**', '.github/workflows/software-tests.yml']
   pull_request:
-    paths: ['software/**', 'firmware/staging/bmo_arm_legacy_bridge_v1/**', 'firmware/staging/bmo_arm_legacy_bridge_v2/**', 'firmware/staging/bmo_arm_legacy_bridge_v3/**', '.github/workflows/software-tests.yml']
+    paths: ['software/**', 'firmware/staging/bmo_arm_legacy_bridge_v1/**', 'firmware/staging/bmo_arm_legacy_bridge_v2/**', 'firmware/staging/bmo_arm_legacy_bridge_v3/**', 'firmware/staging/bmo_arm_legacy_bridge_v4/**', '.github/workflows/software-tests.yml']
 permissions:
   contents: read
 jobs:
@@ -25,7 +25,7 @@ jobs:
       - run: python -m compileall -q bmo_ai tests
         working-directory: software
       # Syntax only: compiling does not import board/PWM/USB or deploy firmware.
-      - run: python -m compileall -q firmware/staging/bmo_arm_legacy_bridge_v1 firmware/staging/bmo_arm_legacy_bridge_v2 firmware/staging/bmo_arm_legacy_bridge_v3
+      - run: python -m compileall -q firmware/staging/bmo_arm_legacy_bridge_v1 firmware/staging/bmo_arm_legacy_bridge_v2 firmware/staging/bmo_arm_legacy_bridge_v3 firmware/staging/bmo_arm_legacy_bridge_v4
   public-browser:
     runs-on: ubuntu-latest
     steps:
@@ -81,6 +81,9 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: '1'
       - run: python -B software/checks/check_daily_controls_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_imu_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
       - run: python -B software/checks/check_playable_games_browser.py --chromium
