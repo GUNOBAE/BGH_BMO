@@ -74,6 +74,33 @@ class FakeHost:
 
 
 class FeatureHTTPTests(unittest.TestCase):
+    def test_passive_media_route_through_actual_desktop_runtime(self):
+        from bmo_ai.desktop_runtime import DesktopRuntime
+        app=DesktopRuntime(simulate=True)
+        server=FeatureServer(app,'synthetic-face-only',port=0,desktop=app).start()
+        try:
+            def get(headers=None):
+                connection=http.client.HTTPConnection('127.0.0.1',server._server.server_port,timeout=4)
+                try:
+                    connection.request('GET','/api/diagnostics/media',headers=headers or {})
+                    response=connection.getresponse()
+                    return response.status,response.read()
+                finally:connection.close()
+            self.assertEqual(get()[0],503)  # Engine not ready, not a fabricated receipt.
+            app.set_host(self.host,None)
+            self.host.media_diagnostics.record('failed','media_backend',media={
+                'active_id':'fixture_song','state':'failed'},error_code='media_output_underrun')
+            for _ in range(4):
+                status,body=get()
+                self.assertEqual(status,200)
+                self.assertEqual(json.loads(body)['latest']['error_code'],'media_output_underrun')
+            self.assertEqual(self.host.beats,0)
+            self.assertEqual(self.host.queued,[])
+            self.assertIsNone(app._worker)
+            self.assertEqual(get({'Origin':'https://example.invalid'})[0],403)
+            self.assertEqual(self.host.beats,0)
+        finally:server.close()
+
     def test_media_diagnostic_get_is_passive_and_keeps_origin_protection(self):
         self.host.media_diagnostics.record('pause', 'gp8_short', media={
             'active_id':'fixture_song', 'variant':'face', 'state':'paused'})

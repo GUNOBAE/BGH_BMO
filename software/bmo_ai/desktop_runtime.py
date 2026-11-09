@@ -390,6 +390,13 @@ class DesktopRuntime:
         if self.host is not None:
             self.host.heartbeat()
 
+    @property
+    def media_diagnostics(self):
+        """Passive delegate to the engine, without a liveness/device poll."""
+        if self.host is None:
+            raise FeatureError('host_not_ready')
+        return self.host.media_diagnostics
+
     def face_snapshot(self):
         self.heartbeat()
         value = (self.host.face_snapshot() if self.host is not None else

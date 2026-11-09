@@ -71,6 +71,9 @@ jobs:
       - run: python -B software/checks/check_v10_media_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
+      - run: python -B software/checks/check_pcm_process_browser.py --chromium
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
       - run: xvfb-run -a python -B software/checks/check_music_lifecycle_browser.py --chromium
         env:
           PYTHONDONTWRITEBYTECODE: '1'
