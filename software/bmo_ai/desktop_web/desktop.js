@@ -14,7 +14,7 @@ let volumePending=null,volumeSerial=0,volumeRequest=null,volumeQueue=Promise.res
 let faceVolumeTimer=null,uiActivityTimer=null,uiActivitySent=false,uiMenuSequence=null;
 let noticeUntil=0,noticeText='',presenceTestPending=false,presenceTestSeen=null,armPreferencePending=false,armRequest=null,imuPreferencePending=null,imuTrialPending=null;
 let mediaKeyHeld=false,mediaVideoKey=null,mediaSeekPending=false,mediaVideoFailure=null,mediaSyncRequired=false,mediaPlayPending=null;
-let mediaHoldTimer=null,mediaHoldStarted=0,mediaHoldTriggered=false,mediaStopping=false,mediaControlsTimer=null,musicErrorTimer=null;
+let mediaHoldTimer=null,mediaHoldStarted=0,mediaHoldTriggered=false,mediaStopping=false,mediaControlsTimer=null,musicErrorTimer=null,mediaNextPending=null,mediaStopPending=null;
 let previewRun=null,previewSerial=0,previewTimer=null,previewAbort=null,previewBitmap=null,previewDraw=null,previewBusy=false,previewSuppressedKey=null;
 const previewEvidence={target_fps:20,active:false,pending:0,max_pending:0,requests:0,received:0,decoded:0,displayed:0,
  dropped:0,not_displayed:0,duplicates:0,errors:0,last_received_id:null,last_decoded_id:null,last_displayed_id:null,
@@ -579,6 +579,7 @@ function mediaObservation(event,error_code=null){
   hidden:document.hidden,focused:document.hasFocus(),error_code}).catch(()=>{});
 }
 function mediaCommand(action,source,value=null){
+ if(action!=='stop'&&(mediaNextPending!==null||mediaStopping))return Promise.resolve({status:'rejected',code:'music_transition_pending'});
  if(action==='resume'||action==='replay'){
   mediaVideoFailure=null;mediaSyncRequired=true;
   if($('notice').dataset.musicError){noticeUntil=0;noticeText='';clearTimeout(musicErrorTimer);delete $('notice').dataset.musicError;$('notice').hidden=true;}
@@ -605,9 +606,69 @@ function stopMusic(source='touch_stop'){
  $('music-surface').dataset.controlsVisible='false';
  clearCaption();stopMediaVideo();
  for(const dialog of document.querySelectorAll('dialog[open]'))dialog.close();
- return mediaCommand('stop',source).catch(()=>{mediaStopping=false;error('음악 종료를 확인해 주세요.');});
+ if(mediaNextPending){mediaNextPending.stopSource=source;return Promise.resolve();}
+ return dispatchMusicStop(source,featureState);
+}
+function musicCommandFailed(message){
+ mediaStopping=false;mediaStopPending=null;showMusicControls();
+ if(featureState)renderMusic(featureState);
+ error(message);
+}
+function dispatchMusicStop(source,next){
+ if(next?.mode!=='music'){mediaStopping=false;return Promise.resolve();}
+ const pending={modeGeneration:next.mode_generation,generation:next.media?.playback_generation,request_id:null};
+ mediaStopPending=pending;
+ return control('media_command',{action:'stop',source,generation:pending.generation,value:null}).then(receipt=>{
+  if(mediaStopPending!==pending)return;
+  if(['accepted','running'].includes(receipt.status))pending.request_id=receipt.request_id;
+  else if(['rejected','failed','unknown','cancelled'].includes(receipt.status))musicCommandFailed('음악 종료를 확인해 주세요. 다시 눌러 요청할 수 있어요.');
+ }).catch(()=>{if(mediaStopPending===pending)musicCommandFailed('음악 종료를 확인해 주세요. 다시 눌러 요청할 수 있어요.');});
+}
+function nextMusic(){
+ if(mediaNextPending||mediaStopping||featureState?.mode!=='music')return;
+ const pending={modeGeneration:featureState.mode_generation,generation:featureState.media?.playback_generation,request_id:null,stopSource:null};
+ mediaNextPending=pending;renderMusic(featureState);
+ control('next').then(receipt=>{
+  if(mediaNextPending!==pending)return;
+  pending.request_id=receipt.request_id;
+  if(['rejected','failed','unknown','cancelled'].includes(receipt.status)){
+   mediaNextPending=null;musicCommandFailed('다음 음악 요청을 확인해 주세요. 종료하려면 다시 눌러 주세요.');
+  }
+ }).catch(()=>{if(mediaNextPending===pending){mediaNextPending=null;musicCommandFailed('다음 음악 요청을 확인해 주세요. 종료하려면 다시 눌러 주세요.');}});
+}
+function syncMusicCommands(next){
+ const receipt=id=>(next.requests||[]).find(item=>item.request_id===id)
+  ||(next.last_result?.request_id===id?next.last_result:null);
+ for(const pending of [mediaNextPending,mediaStopPending]){
+  if(pending&&(next.mode!=='music'||next.mode_generation!==pending.modeGeneration)){
+   mediaNextPending=mediaStopPending=null;mediaStopping=false;return;
+  }
+ }
+ const change=mediaNextPending,ack=change?.request_id&&receipt(change.request_id);
+ if(change&&ack){
+  const rejected=['rejected','failed','unknown','cancelled'].includes(ack.status);
+  const applied=['running','simulated','succeeded'].includes(ack.status)
+   &&next.media?.request_id===change.request_id&&next.media.playback_generation>change.generation;
+  if(rejected||applied){
+   mediaNextPending=null;
+   if(change.stopSource){
+    // Defer once, only within this activity. A newer mode or track invalidates
+    // the intention rather than retrying a stop against unrelated playback.
+    const generation=next.media?.playback_generation;
+    queueMicrotask(()=>{
+     if(featureState?.mode==='music'&&featureState.mode_generation===change.modeGeneration
+       &&featureState.media?.playback_generation===generation)dispatchMusicStop(change.stopSource,featureState);
+     else{mediaStopping=false;mediaStopPending=null;}
+    });
+   }else if(rejected)error('다음 음악 요청을 완료하지 못했어요. 다시 선택해 주세요.');
+  }
+ }
+ const stop=mediaStopPending,result=stop?.request_id&&receipt(stop.request_id);
+ if(result&&['rejected','failed','unknown','cancelled'].includes(result.status))
+  musicCommandFailed('음악 종료를 확인해 주세요. 다시 눌러 요청할 수 있어요.');
 }
 function renderMusic(next){
+ syncMusicCommands(next);
  const media=next.media||{},active=next.mode==='music',live=next.capabilities?.music==='explicit_supervised';
  const catalog=media.catalog||[];
  $('music-readiness').textContent=catalog.length?(live?'검증된 로컬 음악을 선택한 출력 장치에서 재생해요.':next.simulation?'합성 자료로 앱 연결을 검사해요. 실제 음원·출력은 별도 검수가 필요해요.':'음악을 가져왔어요. 재생에는 현재 실행의 명시적 허가가 필요해요.'):'사용자 음악을 private 목록에 가져오면 여기서 선택할 수 있어요.';
@@ -626,8 +687,10 @@ function renderMusic(next){
   }
   $('music-list').append(row);
  }}
- for(const [id,capability] of [['music-pause','pause'],['music-resume','resume']])$(id).disabled=!active||!media.capabilities?.includes(capability);
- for(const id of ['music-next','music-stop'])$(id).disabled=!active;
+ const transition=mediaNextPending!==null||mediaStopping;
+ for(const [id,capability] of [['music-pause','pause'],['music-resume','resume']])$(id).disabled=!active||transition||!media.capabilities?.includes(capability);
+ $('music-next').disabled=!active||transition;$('music-stop').disabled=!active||mediaStopping;$('music-back').disabled=!active||mediaStopping;
+ $('music-surface').dataset.nextPending=String(mediaNextPending!==null);$('music-surface').dataset.stopping=String(mediaStopping);
  const wasActive=!$('music-surface').hidden;
  $('music-surface').hidden=!active;document.body.dataset.musicScreen=String(active);
  if(!active){
@@ -636,7 +699,7 @@ function renderMusic(next){
  }else if(!wasActive){
   mediaStopping=false;$('music-surface').dataset.controlsVisible='false';
  }
- const variant=media.display_mode||media.variant||'face',video=active&&variant==='video'&&next.audio_owner==='music';
+ const variant=media.display_mode||media.variant||'face',video=active&&!mediaStopping&&variant==='video'&&next.audio_owner==='music';
  $('music-video-view').hidden=!video;
  const item=catalog.find(item=>item.id===media.active_id);
  const position=Number.isFinite(media.position_seconds)?media.position_seconds:Number.isFinite(media.position)?media.position:0;
@@ -644,11 +707,11 @@ function renderMusic(next){
  const format=value=>Math.floor(Math.max(0,value)/60)+':'+String(Math.floor(Math.max(0,value)%60)).padStart(2,'0');
  $('music-current').textContent=active?(item?.title||media.active_id||'음악')+' · '+(variant==='video'?'영상':'BMO가 부르기')+' · '+format(position)+' / '+format(duration):'';
  $('music-toggle').textContent=media.state==='playing'?'Pause':'Play';
- $('music-toggle').disabled=!active||!media.capabilities?.includes(media.state==='playing'?'pause':'resume');
+ $('music-toggle').disabled=!active||transition||!media.capabilities?.includes(media.state==='playing'?'pause':'resume');
  $('music-seek').max=String(Math.max(.01,duration));
  if(!mediaSeekPending&&document.activeElement!==$('music-seek'))$('music-seek').value=String(Math.min(duration,Math.max(0,position)));
- $('music-seek').disabled=!active||!media.capabilities?.includes('seek')||duration<=0;
- $('music-replay').disabled=!active||!media.capabilities?.includes('replay');
+ $('music-seek').disabled=!active||transition||!media.capabilities?.includes('seek')||duration<=0;
+ $('music-replay').disabled=!active||transition||!media.capabilities?.includes('replay');
  const player=$('music-video');player.muted=true;player.volume=0;
  const url=typeof media.video_url==='string'&&media.video_url.startsWith('/api/')?media.video_url:null;
  const identity=video&&url?JSON.stringify([media.active_id,url,media.playback_generation]):null;
@@ -1198,7 +1261,7 @@ $('master-volume').onchange=setVolume;$('master-mute').onchange=setVolume;
 $('music-volume').oninput=()=>{$('music-volume-value').textContent=Math.round(Number($('music-volume').value)*100)+'%';};
 $('music-volume').onchange=()=>setVolume('music');$('music-mute').onchange=()=>setVolume('music');
 for(const [id,action] of [['music-pause','pause'],['music-resume','resume']])$(id).onclick=()=>mediaCommand(action,'touch_'+action).catch(()=>error('음악 상태를 확인해 주세요.'));
-$('music-next').onclick=()=>control('next').catch(()=>error('음악 상태를 확인해 주세요.'));
+$('music-next').onclick=nextMusic;
 $('music-stop').onclick=()=>stopMusic('touch_stop');
 $('music-toggle').onclick=()=>{const action=featureState?.media?.state==='playing'?'pause':'resume';return mediaCommand(action,'touch_'+action).catch(()=>error('음악 상태를 확인해 주세요.'));};
 $('music-replay').onclick=()=>mediaCommand('replay','touch_replay').catch(()=>error('음악을 다시 시작하지 못했어요.'));
