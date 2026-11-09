@@ -240,6 +240,25 @@ def run_capture_boundaries(profile="ci-synthetic", chromium="/usr/bin/chromium")
     anchor="                assert source.getframerate()==16000 and source.getnchannels()==1 and source.getsampwidth()==2"
     assert child.count(anchor)==1
     child=child.replace(anchor,anchor+"\n                counts['last_stt_bytes']=source.getnframes()*2")
+    # Expose the exact stale-public-snapshot/live-counter interval that the
+    # former mic_closed/!busy predicate could mistake for turn completion.
+    anchor="    host=FeatureHost(**settings,client=client);hosts.append(host)"
+    assert child.count(anchor)==1
+    child=child.replace(anchor,anchor+"""
+    original_begin=host._begin_conversation
+    def gated_begin(**kwargs):
+        result=original_begin(**kwargs)
+        if result and host.session.worker.turn==3:
+            marker=root/'hold-new-turn-publication'
+            if marker.exists():
+                (root/'new-turn-admitted').write_text('third worker admitted before owner refresh')
+                deadline=time.monotonic()+3
+                while marker.exists():
+                    if time.monotonic()>deadline:raise AssertionError('Turn publication fixture gate expired')
+                    time.sleep(.002)
+        return result
+    host._begin_conversation=gated_begin
+""")
     with tempfile.TemporaryDirectory(prefix='bmo-long-input-browser-') as directory:
         with patch.object(desktop,'CHILD',child):
             fixture=DesktopFixture(directory,profile=profile,face=path,scenario='ptt_long_boundaries',
@@ -255,17 +274,39 @@ def run_capture_boundaries(profile="ci-synthetic", chromium="/usr/bin/chromium")
                     page.route('**/*',lambda r:r.continue_() if r.request.url.startswith(fixture.url) else r.abort())
                     page.goto(fixture.url,wait_until='domcontentloaded')
                     page.wait_for_function("()=>BMODesktop.state?.code==='greeting_completed'")
+                    def brief(state):
+                        trace=state.get('turn_diagnostics',{})
+                        counts=state.get('test_fixture',{})
+                        return dict(run_id=trace.get('run_id'),turn_id=trace.get('turn_id'),
+                            revision=trace.get('runtime_revision'),turn=trace.get('turn'),
+                            terminal=trace.get('terminal'),failure=trace.get('failure'),
+                            busy=state.get('conversation_busy'),audio_owner=state.get('audio_owner'),
+                            ptt={k:state.get('ptt',{}).get(k) for k in ('state','reason_code','captured_bytes')},
+                            counts={k:counts.get(k) for k in ('mic_sources','mic_closed','stt','brain','synthesis')},
+                            requests=[{k:r.get(k) for k in ('request_id','status','code','completed')}
+                                for r in state.get('requests',[])[-3:]])
                     def wait(predicate):
                         deadline=time.monotonic()+8
                         while time.monotonic()<deadline:
                             state=fixture.features()
                             if predicate(state):return state
                             page.wait_for_timeout(20)
-                        raise AssertionError('Capture boundary did not settle: '+json.dumps({
-                            'ptt':state.get('ptt'),'trace':state.get('turn_diagnostics'),
-                            'counts':state.get('test_fixture')}))
+                        raise AssertionError('Capture boundary did not settle: '+json.dumps(brief(state)))
                     def press():
-                        page.locator('#face').focus();page.keyboard.down('Enter');page.keyboard.up('Enter')
+                        page.locator('#face').focus()
+                        with page.expect_response(lambda r:r.url.endswith('/api/control')
+                                and r.request.method=='POST' and r.request.post_data_json['payload']['action']=='ptt') as sent:
+                            page.keyboard.down('Enter');page.keyboard.up('Enter')
+                        assert sent.value.status==202
+                        return sent.value.json()['request_id']
+                    def settled(state,turn,request):
+                        trace=state.get('turn_diagnostics',{})
+                        receipt=next((r for r in state.get('requests',[]) if r.get('request_id')==request),{})
+                        return (trace.get('turn')==turn and trace.get('turn_id','').endswith(':'+str(turn))
+                            and trace.get('terminal') is not None and receipt.get('status')
+                            in ('simulated','succeeded','failed','cancelled','rejected','unknown'))
+                    def receipt(state,request):
+                        return next(r for r in state['requests'] if r['request_id']==request)
                     page.locator('#face').click(position={'x':400,'y':230})
                     page.locator('#conversation-menu').click()
                     page.locator('#capture-limit').wait_for(state='visible')
@@ -273,16 +314,18 @@ def run_capture_boundaries(profile="ci-synthetic", chromium="/usr/bin/chromium")
                     assert fixture.features()['ptt']['max_seconds']==30
                     page.locator('#conversation-dialog .dialog-close').click()
                     page.wait_for_function("()=>!document.querySelector('dialog[open]')")
-                    press()
-                    long=wait(lambda s:s['test_fixture']['stt']==1 and not s['conversation_busy'])
-                    assert long['turn_diagnostics']['terminal']=='ok'
+                    first_request=press()
+                    long=wait(lambda s:settled(s,1,first_request))
+                    assert long['turn_diagnostics']['terminal']=='ok',brief(long)
+                    assert receipt(long,first_request)['code']=='voice_completed',brief(long)
                     assert long['test_fixture']['last_stt_bytes']>384000
                     assert long['test_fixture']['brain']==long['test_fixture']['synthesis']==1
                     assert long['audio_owner'] is None and not long['ptt']['microphone_open']
                     (Path(directory)/'capture-cap').write_text('synthetic 30-second PCM bound')
-                    press()
-                    limited=wait(lambda s:s['test_fixture']['mic_closed']==2 and not s['conversation_busy'])
-                    assert limited['turn_diagnostics']['terminal']=='capture_limit_reached'
+                    cap_request=press()
+                    limited=wait(lambda s:settled(s,2,cap_request))
+                    assert limited['turn_diagnostics']['terminal']=='capture_limit_reached',brief(limited)
+                    assert receipt(limited,cap_request)['code']=='voice_failed',brief(limited)
                     assert limited['ptt']['captured_bytes']==960000
                     assert limited['test_fixture']['stt']==limited['test_fixture']['brain']==limited['test_fixture']['synthesis']==1
                     page.wait_for_function("()=>BMODesktop.features?.turn_diagnostics?.terminal==='capture_limit_reached'")
@@ -294,9 +337,24 @@ def run_capture_boundaries(profile="ci-synthetic", chromium="/usr/bin/chromium")
                     # Thirty seconds of PCM were accelerated above; let the
                     # independent .25s physical-button debounce window expire.
                     page.wait_for_timeout(300)
-                    press()
-                    recovered=wait(lambda s:s['test_fixture']['mic_closed']==3 and not s['conversation_busy'])
-                    assert recovered['turn_diagnostics']['terminal']=='ok'
+                    hold=Path(directory)/'hold-new-turn-publication'
+                    hold.write_text('hold the third owner publication')
+                    try:
+                        recovery_request=press()
+                        old=wait(lambda s:(Path(directory)/'new-turn-admitted').exists()
+                            and s['test_fixture']['mic_closed']==3)
+                        # The old predicate returns prematurely: live fixture
+                        # counters have advanced but public state is turn2.
+                        assert not old['conversation_busy'],brief(old)
+                        assert old['turn_diagnostics']['turn']==2,brief(old)
+                        assert old['turn_diagnostics']['terminal']=='capture_limit_reached',brief(old)
+                        assert not settled(old,3,recovery_request),brief(old)
+                    finally:
+                        hold.unlink(missing_ok=True)
+                    recovered=wait(lambda s:settled(s,3,recovery_request))
+                    assert recovered['turn_diagnostics']['terminal']=='ok',brief(recovered)
+                    assert receipt(recovered,recovery_request)['code']=='voice_completed',brief(recovered)
+                    assert not recovered['conversation_busy'] and recovered['audio_owner'] is None,brief(recovered)
                     assert recovered['test_fixture']['stt']==recovered['test_fixture']['brain']==recovered['test_fixture']['synthesis']==2
                     assert recovered['test_fixture']['last_stt_bytes']<64000
                     page.wait_for_function("()=>BMODesktop.features?.turn_diagnostics?.terminal==='ok'&&document.querySelector('#ptt-state').hidden")
@@ -307,7 +365,8 @@ def run_capture_boundaries(profile="ci-synthetic", chromium="/usr/bin/chromium")
                         checks=['menu shows current 30-second source/coordinator bound',
                             'native Enter sends >12s complete synthetic question through one STT/brain/voice',
                             '30s PCM cap produces visible fixed retry message and zero extra STT/brain/voice',
-                            'next native Enter short question restores normal face/input/audio ownership'],
+                            'held owner publication proves live counters cannot complete a stale prior-turn snapshot',
+                            'next native Enter short question reaches its exact terminal voice_completed receipt'],
                         physical_capture='NOT_RUN',latency='NOT_MEASURED_ACCELERATED_PCM')
                 finally:browser.close()
         finally:fixture.close()
