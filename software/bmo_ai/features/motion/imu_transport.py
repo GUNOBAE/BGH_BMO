@@ -13,6 +13,8 @@ import stat
 from threading import Event, Lock, Thread
 import time
 
+from .reviewed_boot import reviewed_boot_sha256
+
 AXES = ('AX', 'AY', 'AZ', 'GX', 'GY', 'GZ')
 STATUSES = frozenset(('WARMUP', 'READY', 'ABSENT', 'BUS_ERROR', 'STALE'))
 TOKEN = re.compile(r'[A-Za-z0-9_]{1,32}\Z', re.ASCII)
@@ -97,8 +99,13 @@ def validate_imu_install(firmware_root=None, *, mount=None):
         for filename,key in (('bmo_arm_bridge.py','helper_sha256'),('bmo_imu.py','sensor_sha256'),
                              ('boot.py','boot_sha256')):
             expected=read(root/filename)
-            if expected!=read(installed/filename):raise ValueError()
-            hashes[key]=hashlib.sha256(expected).hexdigest()
+            actual=read(installed/filename)
+            if filename == 'boot.py':
+                reviewed_boot_sha256(expected)
+                hashes[key]=reviewed_boot_sha256(actual)
+            else:
+                if expected!=actual:raise ValueError()
+                hashes[key]=hashlib.sha256(actual).hexdigest()
         return hashes
     except (OSError,ValueError):
         raise IMUTransportError('imu_firmware_unverified') from None

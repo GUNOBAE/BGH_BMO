@@ -11,6 +11,8 @@ from bmo_ai.features.motion.imu_transport import (
     AXES,IMUTransportError,parse_imu_reply,validate_imu_install,imu_source_identity)
 from bmo_ai.features.motion.legacy_host import LegacyArmLink,LegacyMotionFeature,LegacyArmError
 from bmo_ai.features.motion.arm_serial_posix_v2 import OwnedCdcDataPort
+from bmo_ai.features.motion.reviewed_boot import (
+    CANONICAL_BOOT_SHA256,SUPERVISED_BOOT_SHA256)
 
 
 def reply(rid,values='-32768 120 16300 4 n -5',status='READY',boot='board_1'):
@@ -190,6 +192,56 @@ class IMUTransportTests(unittest.TestCase):
             (target/'bmo_imu.py').symlink_to(root/'bmo_imu.py')
             with self.assertRaisesRegex(IMUTransportError,'imu_firmware_unverified'):
                 validate_imu_install(root,mount=target)
+
+    def test_actual_known_boot_hash_survives_transport_capture_profile_and_monitor(self):
+        from bmo_ai.imu_profile import CaptureRecorder,IMUProfileStore
+        from bmo_ai.features.motion.imu_relative import RelativeIMUMonitor
+        from test_imu_profile import evidence
+        root=Path(__file__).resolve().parents[2]/'firmware/staging/bmo_arm_legacy_bridge_v4'
+        for supervised in (False,True):
+            for enabled in (False,True):
+                with self.subTest(supervised=supervised,enabled=enabled),tempfile.TemporaryDirectory() as directory:
+                    target=Path(directory)/'board';target.mkdir()
+                    for name in ('code.py','bmo_arm_bridge.py','bmo_imu.py','boot.py'):
+                        source=root/name
+                        if supervised and name=='boot.py':
+                            source=root.with_name('bmo_arm_supervised_v1')/name
+                        raw=source.read_bytes()
+                        if name=='code.py' and enabled:
+                            raw=raw.replace(b'REMOTE_ENABLED = False',b'REMOTE_ENABLED = True',1)
+                        (target/name).write_bytes(raw)
+                    actual=validate_imu_install(root,mount=target)
+                    expected=SUPERVISED_BOOT_SHA256 if supervised else CANONICAL_BOOT_SHA256
+                    self.assertEqual(actual['boot_sha256'],expected)
+                    item=evidence()
+                    item['binding'].update(actual)
+                    recorder=CaptureRecorder(item['binding'])
+                    for trial in item['trials']:
+                        recorder.start_trial(trial['kind'],trial['trial_id'])
+                        for sample in trial['observations']:
+                            recorder.append(sample,binding=item['binding'],source='real_b1')
+                        recorder.finish_trial()
+                    captured=recorder.dataset()
+                    self.assertEqual(captured['binding']['boot_sha256'],expected)
+                    store=IMUProfileStore(Path(directory)/'private')
+                    profile=store.install(captured,physical_trials_confirmed=True)
+                    self.assertEqual(store.load()['binding']['boot_sha256'],expected)
+                    now=[0.]
+                    monitor=RelativeIMUMonitor(clock=lambda:now[0],profile=profile)
+                    monitor.bind(**profile['binding']);monitor.set_enabled(True)
+                    for sample in item['trials'][0]['observations']:
+                        now[0]+=.1;monitor.ingest(sample)
+                    self.assertTrue(monitor.snapshot()['reaction_ready'])
+                    alternate=CANONICAL_BOOT_SHA256 if supervised else SUPERVISED_BOOT_SHA256
+                    monitor.bind(**dict(profile['binding'],boot_sha256=alternate))
+                    for sample in item['trials'][1]['observations']:
+                        now[0]+=.1;monitor.ingest(sample)
+                    self.assertFalse(monitor.snapshot()['reaction_ready'])
+                    self.assertEqual(monitor.snapshot()['reason_code'],'imu_profile_binding_mismatch')
+                    # A documentation-only unknown modification is still rejected.
+                    (target/'boot.py').write_bytes((target/'boot.py').read_bytes()+b'\n# not reviewed\n')
+                    with self.assertRaisesRegex(IMUTransportError,'imu_firmware_unverified'):
+                        validate_imu_install(root,mount=target)
 
     def test_v4_daily_receipt_pins_sensor_dependency_and_detects_change(self):
         from bmo_ai.features.motion.daily_usage import ArmUsageStore,DailyArmController,CHECKS,DEVICE

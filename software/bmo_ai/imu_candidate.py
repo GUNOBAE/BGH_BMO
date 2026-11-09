@@ -11,6 +11,8 @@ from pathlib import Path
 
 from . import arm_candidate as base
 from .arm_recovery_candidate import _replace
+from .features.motion.reviewed_boot import (
+    CANONICAL_BOOT_SHA256, SUPERVISED_BOOT_SHA256, reviewed_boot_sha256)
 
 ROOT = base._ROOT.with_name('bmo_arm_legacy_bridge_v4')
 SCHEMA = 'bmo.imu_candidate.v4'
@@ -20,6 +22,11 @@ FILES = (*OLD_FILES, 'bmo_imu.py')
 
 def _templates():
     off, _, _ = base._templates()
+    canonical_boot = base._read(base._ROOT/'boot.py')
+    supervised_boot = base._read(base._ROOT.with_name('bmo_arm_supervised_v1')/'boot.py')
+    if (base._sha(canonical_boot) != CANONICAL_BOOT_SHA256
+            or base._sha(supervised_boot) != SUPERVISED_BOOT_SHA256):
+        raise base.ArmCandidateError('imu_reviewed_boot_template_mismatch')
     previous = []
     for version in (1, 2, 3):
         root = base._ROOT.with_name('bmo_arm_legacy_bridge_v'+str(version))
@@ -31,10 +38,11 @@ def _templates():
                 or (code != off if version == 1 else code.split(b'\n', 1)[-1] != off)):
             raise base.ArmCandidateError('imu_previous_template_mismatch')
         for enabled in (False, True):
-            data = dict(files)
-            if enabled:
-                data['code.py'] = code.replace(b'REMOTE_ENABLED = False', b'REMOTE_ENABLED = True', 1)
-            previous.append((version, enabled, data))
+            for boot in (canonical_boot, supervised_boot):
+                data = dict(files, **{'boot.py':boot})
+                if enabled:
+                    data['code.py'] = code.replace(b'REMOTE_ENABLED = False', b'REMOTE_ENABLED = True', 1)
+                previous.append((version, enabled, data))
     candidate = {name:base._read(ROOT/name) for name in FILES}
     if (candidate['code.py'].count(b'\nREMOTE_ENABLED = False\n') != 1
             or candidate['boot.py'] != base._read(base._ROOT/'boot.py')
@@ -94,6 +102,9 @@ def candidate_transition(*, action='dry_run', mount=base.MOUNT, work_directory=N
     if keep_reviewed_motors and not old_enabled:
         raise base.ArmCandidateError('imu_cannot_grant_motor_permission')
     desired = dict(template)
+    # boot.py is backed up, reviewed and verified, but never rewritten. Preserve
+    # the exact admitted variant instead of substituting the canonical source.
+    desired['boot.py'] = old_files['boot.py']
     if keep_reviewed_motors:
         desired['code.py'] = desired['code.py'].replace(b'REMOTE_ENABLED = False', b'REMOTE_ENABLED = True', 1)
     old_hashes, candidate_hashes = _hashes(old_files), _hashes(desired)
@@ -108,6 +119,7 @@ def candidate_transition(*, action='dry_run', mount=base.MOUNT, work_directory=N
         board_write_performed=False, transport_status='NOT_OPENED',
         physical_verified=False, sensor_health_verified=False,
         board_files_sha256=_hashes(board), candidate_files_sha256=candidate_hashes,
+        preserved_boot_sha256=reviewed_boot_sha256(old_files['boot.py']),
         operator_declarations=declarations, reload_may_move_servos=True,
         candidate_reviewed=False, backup_directory=None, changed_files=[], status='REVIEW_REQUIRED')
     if action == 'dry_run':

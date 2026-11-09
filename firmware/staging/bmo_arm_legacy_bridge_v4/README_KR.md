@@ -60,8 +60,20 @@ PREPARE 계약은 유지되며 IMU 실패가 bridge fault를 만들지 않는다
 - `bmo_imu.py`:
   `f49fe1672375bbac38fa2f3fc4ae54a87740f6314eae0638a374dabeb32fcc0d`
 
-`boot.py`와`original_code.py`는 기존 v3와 같다. Pi용 `bmo_ai.imu_candidate`의
-기본 dry-run/prepare로 현재 정확한 v1/v2/v3 조합과 차이를 검토한다. 기존 파일과
+저장소의 `boot.py`와`original_code.py`는 기존 v3와 같다. 설치 도구와 실제 IMU
+backend는 다음 **두 정확한 boot 변형만** 지원하며 현재 설치된 바이트를 보존한다.
+
+- canonical legacy v1–v4: `1540f755a400f40babdf0457481b77559855ee95018092901b42d44baeacdbea`
+- 기존 supervised v1: `f59e20f97feef6eab364bdb305cb3d7d0639c7f3aa88a0f5e3ff517912c122eb`
+  (`firmware/staging/bmo_arm_supervised_v1/boot.py`의 원본 바이트)
+
+두 파일의 차이는 검토된 주석/docstring이다. 일반 주석 제거·정규화로 다른 파일을
+허용하지 않는다. `review.json`, prepare된 `boot.py`, backup, 적용 후 검증과
+실제 IMU profile binding에는 **현재 설치된 boot의 해시**를 사용한다. apply와
+rollback은 boot를 덮어쓰지 않으며, 검토 뒤 다른 known 변형으로 바뀌어도 거부한다.
+
+Pi용 `bmo_ai.imu_candidate`의 기본 dry-run/prepare로 현재 정확한 v1/v2/v3 조합과
+차이를 검토한다. v1에서 v4로 바로 준비할 수 있으며 v3 선행 설치는 필요 없다. 기존 파일과
 해시를 private backup에 남기고 새 센서 helper→bridge→code 순으로 적용한다.
 여러 파일의 교체는 원자적이지 않다. 일부 실패 시 전원 격리를 유지하고 같은
 검토 후보의 명시적 rollback으로 기존 정확한 조합을 되돌린다. 모르는 파일이나

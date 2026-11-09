@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from bmo_ai import imu_candidate as candidate
 from bmo_ai.arm_candidate import ArmCandidateError
+from bmo_ai.features.motion.reviewed_boot import (
+    CANONICAL_BOOT_SHA256, SUPERVISED_BOOT_SHA256)
 
 
 class IMUCandidateTests(unittest.TestCase):
@@ -23,13 +25,15 @@ class IMUCandidateTests(unittest.TestCase):
         self.enterContext(patch('subprocess.Popen',side_effect=AssertionError('reset/process forbidden')))
         self.install_old()
 
-    def install_old(self, version=3, enabled=True):
+    def install_old(self, version=3, enabled=True, supervised_boot=False):
         old = candidate.base._ROOT.with_name('bmo_arm_legacy_bridge_v'+str(version))
         for path in self.mount.iterdir():path.unlink()
         for name in candidate.OLD_FILES:
             raw = (old/name).read_bytes()
             if name == 'code.py' and enabled:
                 raw = raw.replace(b'REMOTE_ENABLED = False',b'REMOTE_ENABLED = True',1)
+            if name == 'boot.py' and supervised_boot:
+                raw = (candidate.base._ROOT.with_name('bmo_arm_supervised_v1')/'boot.py').read_bytes()
             (self.mount/name).write_bytes(raw)
         self.before = self.board()
 
@@ -74,20 +78,32 @@ class IMUCandidateTests(unittest.TestCase):
 
     def test_known_v1_v2_v3_off_and_on_round_trip_back_to_exact_original(self):
         for version in (1,2,3):
-            for keep in (False,True):
-                with self.subTest(version=version,keep=keep):
-                    self.install_old(version,enabled=keep)
-                    self.work = self.root/('review-'+str(version)+'-'+str(keep))
-                    settings = self.prepare(keep_reviewed_motors=keep)
-                    result = self.invoke('apply',**settings,**self.flags)
-                    self.assertEqual(result['status'],'STATIC_UPDATED_NOT_SENSOR_TESTED')
-                    self.assertFalse(result['physical_verified'])
-                    self.assertEqual((self.mount/'bmo_imu.py').read_bytes(),(candidate.ROOT/'bmo_imu.py').read_bytes())
-                    self.assertEqual(b'REMOTE_ENABLED = True' in (self.mount/'code.py').read_bytes(),keep)
-                    self.assertEqual({p.name:p.read_bytes() for p in (self.work/'backup-previous').iterdir()
-                        if p.name!='SHA256.json'},self.before)
-                    self.invoke('rollback',**settings,**self.flags)
-                    self.assertEqual(self.board(),self.before)
+            for supervised in (False,True):
+                for enabled,keep in ((False,False),(True,False),(True,True)):
+                    with self.subTest(version=version,supervised=supervised,enabled=enabled,keep=keep):
+                        self.install_old(version,enabled=enabled,supervised_boot=supervised)
+                        self.work = self.root/f'review-{version}-{supervised}-{enabled}-{keep}'
+                        settings = self.prepare(keep_reviewed_motors=keep)
+                        boot_sha = SUPERVISED_BOOT_SHA256 if supervised else CANONICAL_BOOT_SHA256
+                        audit = json.loads((self.work/'review.json').read_bytes())
+                        self.assertEqual(audit['board_files_sha256']['boot.py'],boot_sha)
+                        self.assertEqual(audit['candidate_files_sha256']['boot.py'],boot_sha)
+                        self.assertEqual((self.work/'boot.py').read_bytes(),self.before['boot.py'])
+                        boot_info = (self.mount/'boot.py').stat()
+                        result = self.invoke('apply',**settings,**self.flags)
+                        self.assertEqual(result['status'],'STATIC_UPDATED_NOT_SENSOR_TESTED')
+                        self.assertEqual(result['preserved_boot_sha256'],boot_sha)
+                        self.assertFalse(result['physical_verified'])
+                        self.assertEqual((self.mount/'boot.py').read_bytes(),self.before['boot.py'])
+                        self.assertNotIn('boot.py',result['changed_files'])
+                        self.assertEqual((self.mount/'boot.py').stat().st_mtime_ns,boot_info.st_mtime_ns)
+                        self.assertEqual((self.mount/'bmo_imu.py').read_bytes(),(candidate.ROOT/'bmo_imu.py').read_bytes())
+                        self.assertEqual(b'REMOTE_ENABLED = True' in (self.mount/'code.py').read_bytes(),keep)
+                        self.assertEqual({p.name:p.read_bytes() for p in (self.work/'backup-previous').iterdir()
+                            if p.name!='SHA256.json'},self.before)
+                        self.invoke('rollback',**settings,**self.flags)
+                        self.assertEqual(self.board(),self.before)
+                        self.assertEqual((self.mount/'boot.py').stat().st_mtime_ns,boot_info.st_mtime_ns)
 
     def test_motor_preservation_is_not_permission_to_enable_an_off_board(self):
         self.install_old(enabled=False)
@@ -142,10 +158,10 @@ class IMUCandidateTests(unittest.TestCase):
         self.assertEqual(self.board(),before)
 
     def test_interrupted_file_migration_recovers_from_verified_backup(self):
-        for fail_name in ('bmo_arm_bridge.py','code.py'):
-            with self.subTest(fail_name=fail_name):
-                self.install_old(1,True)
-                self.work = self.root/('failure-'+fail_name)
+        for supervised,fail_name in ((s,n) for s in (False,True) for n in ('bmo_arm_bridge.py','code.py')):
+            with self.subTest(supervised=supervised,fail_name=fail_name):
+                self.install_old(1,True,supervised_boot=supervised)
+                self.work = self.root/f'failure-{supervised}-{fail_name}'
                 settings = self.prepare(keep_reviewed_motors=True)
                 replace = candidate._replace
                 def fail(mount,name,expected,replacement):
@@ -158,6 +174,33 @@ class IMUCandidateTests(unittest.TestCase):
                 self.assertTrue((self.mount/'bmo_imu.py').exists())
                 self.invoke('rollback',**settings,**self.flags)
                 self.assertEqual(self.board(),self.before)
+
+    def test_documentation_change_outside_exact_known_variants_is_rejected(self):
+        for supervised in (False,True):
+            self.install_old(supervised_boot=supervised)
+            (self.mount/'boot.py').write_bytes(self.before['boot.py']+b'\n# another comment\n')
+            with self.subTest(supervised=supervised),self.assertRaisesRegex(ArmCandidateError,'board_source_mismatch'):
+                self.invoke()
+
+    def test_changing_between_known_boot_variants_after_review_is_not_authorized(self):
+        self.install_old(supervised_boot=True)
+        settings = self.prepare()
+        (self.mount/'boot.py').write_bytes((candidate.ROOT/'boot.py').read_bytes())
+        before = self.board()
+        with self.assertRaisesRegex(ArmCandidateError,'candidate_changed|audit_mismatch'):
+            self.invoke('apply',**settings,**self.flags)
+        self.assertEqual(self.board(),before)
+        self.assertFalse((self.work/'backup-previous').exists())
+
+    def test_rollback_rejects_a_different_known_boot_and_preserves_board(self):
+        self.install_old(supervised_boot=True)
+        settings = self.prepare()
+        self.invoke('apply',**settings,**self.flags)
+        (self.mount/'boot.py').write_bytes((candidate.ROOT/'boot.py').read_bytes())
+        before = self.board()
+        with self.assertRaisesRegex(ArmCandidateError,'board_source_mismatch'):
+            self.invoke('rollback',**settings,**self.flags)
+        self.assertEqual(self.board(),before)
 
     def test_corrupted_backup_cannot_be_used_for_rollback(self):
         settings = self.prepare()
