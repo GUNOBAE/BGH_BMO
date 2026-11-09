@@ -111,6 +111,13 @@ def _receipt(event, source, media, lifecycle, *, sequence, at, revision, run_id,
         value = media.get(name)
         if _number(value, upper):
             result[name] = value
+    producer=media.get('producer')
+    if producer in ('isolated_process','injected_sink_thread'):
+        result['producer']=producer
+    pid=media.get('worker_pid')
+    if type(pid) is int and 0 < pid <= 4194304:result['worker_pid']=pid
+    code=media.get('worker_exit_code')
+    if type(code) is int and -255 <= code <= 255:result['worker_exit_code']=code
     for name in ("hidden", "focused", "connected"):
         value = lifecycle.get(name)
         result["lifecycle"][name] = value if type(value) is bool else None

@@ -93,6 +93,19 @@ class MediaDiagnosticsTests(unittest.TestCase):
         self.assertIsNone(invalid["catalog_id"])
         self.assertIsNone(invalid["playback_generation"])
 
+    def test_producer_and_owned_child_identity_are_bounded_and_persisted(self):
+        store=self.store(run_id=RUN,persist=True)
+        event=store.record('failed','media_backend',dict(self.media(),producer='isolated_process',
+            worker_pid=1234,worker_exit_code=-9,error_code='media_output_failed'))
+        self.assertEqual((event['producer'],event['worker_pid'],event['worker_exit_code']),
+            ('isolated_process',1234,-9))
+        restarted=self.store(run_id='c'*32,persist=True)
+        self.assertEqual(restarted.snapshot()['latest'],event)
+        bad=store.record('failed','media_backend',dict(self.media(),producer='secret/path/token',
+            worker_pid=True,worker_exit_code=99999))
+        for name in ('producer','worker_pid','worker_exit_code'):self.assertNotIn(name,bad)
+        self.assertNotIn('secret/path/token',json.dumps(store.snapshot()))
+
     def test_private_persistence_rotates_and_keeps_prior_run_identity(self):
         store = self.store(persist=True)
         self.assertTrue(store.bind_runtime(RUN))

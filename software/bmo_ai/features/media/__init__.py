@@ -242,6 +242,7 @@ class MediaFeature:
     def snapshot(self):
         position = self.backend.position() if self._handle and hasattr(self.backend, "position") else 0
         duration = self._handle.duration if self._handle else None
+        producer=self._producer_evidence(self._output_evidence()) if self._handle else {}
         return dict(state=self._state, active_id=self._active.id if self._active else None,
                     position=position, position_seconds=position, duration=duration, duration_seconds=duration,
                     variant=self._variant, display_mode=self._variant,
@@ -254,7 +255,18 @@ class MediaFeature:
                     capabilities=list(self.backend.capabilities) if self.backend else [],
                     simulated=bool(self.backend and self.backend.simulated),
                     cue_kind=self._handle.asset.cue_kind if self._handle and self._handle.cues else "none",
-                    last_terminal=dict(self._last_terminal) if self._last_terminal else None)
+                    last_terminal=dict(self._last_terminal) if self._last_terminal else None,**producer)
+
+    @staticmethod
+    def _producer_evidence(output):
+        value={}
+        if output.get('producer') in ('isolated_process','injected_sink_thread'):
+            value['producer']=output['producer']
+        pid=output.get('worker_pid')
+        if type(pid) is int and 0 < pid <= 4194304:value['worker_pid']=pid
+        code=output.get('worker_exit_code')
+        if type(code) is int and -255 <= code <= 255:value['worker_exit_code']=code
+        return value
 
     def _output_evidence(self):
         read = getattr(self.backend, 'diagnostics', None)
@@ -289,11 +301,13 @@ class MediaFeature:
             observed = output.get(key)
             if type(observed) in (int, float) and math.isfinite(observed) and 0 <= observed <= 1e12:
                 value[key] = observed
+        value.update(self._producer_evidence(output))
         return value
 
     def _record_terminal(self, value, released):
         # Observe again after cleanup, retaining the original output failure.
         output = self._output_evidence() if value['duration_seconds'] is not None else {}
+        value.update(self._producer_evidence(output))
         primary = output.get('error_code')
         cleanup = output.get('cleanup_error')
         if value['error_code'] is None and valid_id(primary):

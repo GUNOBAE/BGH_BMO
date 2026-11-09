@@ -11,6 +11,10 @@ import ctypes.util
 import errno
 import math
 import os
+import mmap
+from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 import wave
@@ -96,6 +100,13 @@ class SampleClockWavBackend:
     position; resume opens at that exact source frame. Volume changes do the
     same. This works on devices lacking native snd_pcm_pause support and never
     starts old/new output concurrently. Failure to stop retains ownership.
+
+    Production WAV/scaling/ALSA work lives in one owned subprocess so Desktop
+    Python/GIL work cannot starve the feeder. Latest-value bounded shared memory
+    carries only controls and sample counters; a paused parent cannot fill a
+    status pipe and block PCM. Explicit in-memory sink injection keeps a thread
+    boundary for deterministic legacy tests; process tests use a silent clock
+    sink and never open a physical output.
     """
     simulated = False
     supported_types = frozenset({"audio/wav"})
@@ -103,7 +114,8 @@ class SampleClockWavBackend:
     clock_quality = "alsa_submitted_minus_delay"
 
     def __init__(self, *, device=None, enabled=False, volume_reviewed=False,
-                 clock=time.monotonic, volume=None, sink_factory=None):
+                 clock=time.monotonic, volume=None, sink_factory=None,
+                 _process_test_sink=False):
         from ...audio import _device_args
         _device_args(device)
         if type(enabled) is not bool or type(volume_reviewed) is not bool:
@@ -124,6 +136,119 @@ class SampleClockWavBackend:
         self._ready = threading.Event()
         self._output_started = False
         self._retained_sink = None
+        self._use_process = sink_factory is None
+        self._process_test_sink = _process_test_sink
+        self._process = self._process_memory = self._process_fd = None
+        self._process_status = self._process_control = None
+        self._process_snapshot = None
+        self._process_guard = threading.RLock()
+        self._last_worker_pid = self._worker_exit_code = None
+
+    def _level(self):
+        return self.volume.snapshot()['effective_level'] if self.volume is not None else 1.
+
+    def _command_process(self, *, stop=False):
+        with self._process_guard:
+            if self._process_control is not None:
+                self._process_control.publish(dict(stop=stop,level=self._level()))
+
+    def _launch_process(self):
+        with self._process_guard:return self._launch_process_locked()
+
+    def _launch_process_locked(self):
+        from .pcm_process import LatestRecord,PAGE,SIZE
+        self._process_fd=os.memfd_create('bmo-owned-pcm',os.MFD_CLOEXEC)
+        os.ftruncate(self._process_fd,SIZE)
+        self._process_memory=mmap.mmap(self._process_fd,SIZE)
+        self._process_status=LatestRecord(self._process_memory)
+        self._process_control=LatestRecord(self._process_memory,PAGE)
+        self._process_snapshot=None
+        self._command_process()
+        command=[sys.executable,'-B','-m','bmo_ai.features.media.pcm_process',
+            '--wave-fd',str(self._handle.fd),'--state-fd',str(self._process_fd),
+            '--parent',str(os.getpid()),'--duration',repr(self._handle.duration),
+            '--frame',str(self._frame),'--sink','synthetic' if self._process_test_sink else 'alsa']
+        if self.device:command+=['--device',self.device]
+        env={'PATH':os.defpath,'LC_ALL':'C.UTF-8',
+            'PYTHONPATH':str(Path(__file__).resolve().parents[3])}
+        for name in ('HOME','XDG_CONFIG_HOME','XDG_RUNTIME_DIR','ALSA_CONFIG_PATH','ALSA_CONFIG_DIR','PULSE_SERVER'):
+            if name in os.environ:env[name]=os.environ[name]
+        try:
+            self._process=subprocess.Popen(command,pass_fds=(self._handle.fd,self._process_fd),
+                stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+                env=env,close_fds=True)
+            self._last_worker_pid=self._process.pid
+            self._worker_exit_code=None
+            deadline=time.monotonic()+2.
+            while time.monotonic()<deadline:
+                self._sync_process()
+                if self._error is not None:raise FeatureError(self._error)
+                if self._process_snapshot and self._process_snapshot.get('ready'):return
+                if self._process.poll() is not None:break
+                time.sleep(.005)
+            raise FeatureError('media_output_start_timeout')
+        except BaseException as error:
+            if self._error is None:
+                with self._guard:
+                    self._error=error.code if isinstance(error,FeatureError) else 'media_output_failed'
+                    self._terminal='failed';self._capture_failure()
+            self._halt_process()
+            raise
+
+    def _sync_process(self):
+        with self._process_guard:return self._sync_process_locked()
+
+    def _sync_process_locked(self):
+        if self._process_status is None:return
+        value=self._process_status.read()
+        if value is not None:
+            self._process_snapshot=value
+            with self._guard:
+                self._frame=value['frame'];self._rate=value['rate']
+                self._submitted_frame=value['submitted'];self._queued_frames=value['queued']
+                self._output_started=value['output_started']
+                self._terminal=value.get('terminal');self._error=value.get('error_code')
+                self._cleanup_error=value.get('cleanup_error')
+                self._failure_evidence={key:value[key] for key in (
+                    'error_frame','error_submitted_frame','error_queued_frames','error_rate','error_at_monotonic') if key in value}
+        if (self._process is not None and self._process.poll() is not None
+                and self._terminal is None and (value is None or not value.get('resources_cleaned'))):
+            with self._guard:
+                self._terminal='failed';self._error='media_output_failed';self._capture_failure()
+        if self._process is not None:self._worker_exit_code=self._process.poll()
+
+    def _halt_process(self):
+        with self._process_guard:return self._halt_process_locked()
+
+    def _halt_process_locked(self):
+        if self._process is not None:
+            original=self._error
+            self._command_process(stop=True)
+            forced=False
+            try:self._process.wait(timeout=1.5)
+            except subprocess.TimeoutExpired:
+                forced=True
+                self._process.terminate()
+                try:self._process.wait(timeout=.25)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    try:self._process.wait(timeout=.25)
+                    except subprocess.TimeoutExpired:
+                        # Retain the exact owned child and lease if even a
+                        # kill cannot be reaped. Never start another output.
+                        raise FeatureError('cleanup_failed') from None
+            self._sync_process()
+            if forced:
+                with self._guard:
+                    self._cleanup_error='media_output_cleanup_failed'
+                    self._error=original or 'media_output_cleanup_failed'
+                    self._terminal='failed';self._capture_failure()
+            self._process=None
+        if self._process_memory is not None:
+            self._process_memory.close();self._process_memory=None
+        if self._process_fd is not None:
+            os.close(self._process_fd);self._process_fd=None
+        self._process_status=self._process_control=None
 
     def start(self, handle):
         if not self.verified:
@@ -135,6 +260,7 @@ class SampleClockWavBackend:
         self._failure_evidence = {}
         self._submitted_frame = self._queued_frames = 0
         self._paused = False
+        self._last_worker_pid = self._worker_exit_code = None
         try:
             self._launch()
         except BaseException:
@@ -142,6 +268,9 @@ class SampleClockWavBackend:
             raise
 
     def _launch(self):
+        if self._use_process:
+            self._output_started=False
+            return self._launch_process()
         self._stop.clear(); self._ready.clear()
         self._output_started = False
         self._thread = threading.Thread(target=self._run, name="bmo-owned-music-pcm", daemon=True)
@@ -232,6 +361,7 @@ class SampleClockWavBackend:
             self._ready.set()
 
     def _halt(self):
+        if self._use_process:return self._halt_process()
         self._stop.set()
         if self._thread is not None:
             self._thread.join(2.)
@@ -246,24 +376,30 @@ class SampleClockWavBackend:
             self._retained_sink = None
 
     def position(self):
+        self._sync_process()
         with self._guard:
             return self._frame / self._rate if self._rate else 0.
 
     @property
     def output_started(self):
+        self._sync_process()
         with self._guard:
             return self._output_started
 
     def poll(self):
+        self._sync_process()
         with self._guard:
             return self._terminal
 
     def diagnostics(self):
         """Retain original finite output failure through stop/drop cleanup."""
+        self._sync_process()
         with self._guard:
             return dict(error_code=self._error, cleanup_error=self._cleanup_error,
                         terminal=self._terminal, output_started=self._output_started,
                         position_seconds=self._frame/self._rate if self._rate else 0.,
+                        producer='isolated_process' if self._use_process else 'injected_sink_thread',
+                        worker_pid=self._last_worker_pid,worker_exit_code=self._worker_exit_code,
                         **self._failure_evidence)
 
     def _capture_failure(self):
@@ -284,6 +420,8 @@ class SampleClockWavBackend:
             raise FeatureError("media_inactive")
         if not self._paused:
             self._halt()
+            if self._use_process and self._terminal=='failed':
+                raise FeatureError(self._error or 'media_output_failed')
             self._paused = True
 
     def resume(self):
@@ -315,6 +453,9 @@ class SampleClockWavBackend:
         # drops queued output and resumes from its consumed source frame.
         if self._handle is None:
             return False
+        if self._use_process:
+            self._command_process()
+            return True
         if self.volume is not None and self.volume.snapshot()["effective_level"] == 0:
             self._halt()
             if not self._paused and self._terminal != "ended":
