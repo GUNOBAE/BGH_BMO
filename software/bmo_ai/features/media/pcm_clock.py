@@ -143,6 +143,8 @@ class SampleClockWavBackend:
         self._process_snapshot = None
         self._process_guard = threading.RLock()
         self._last_worker_pid = self._worker_exit_code = None
+        self._process_fault = None
+        self._process_progress_frame = self._process_progress_at = None
 
     def _level(self):
         return self.volume.snapshot()['effective_level'] if self.volume is not None else 1.
@@ -163,6 +165,8 @@ class SampleClockWavBackend:
         self._process_status=LatestRecord(self._process_memory)
         self._process_control=LatestRecord(self._process_memory,PAGE)
         self._process_snapshot=None
+        self._process_fault=None
+        self._process_progress_frame=self._process_progress_at=None
         self._command_process()
         command=[sys.executable,'-B','-m','bmo_ai.features.media.pcm_process',
             '--wave-fd',str(self._handle.fd),'--state-fd',str(self._process_fd),
@@ -203,18 +207,34 @@ class SampleClockWavBackend:
         value=self._process_status.read()
         if value is not None:
             self._process_snapshot=value
-            with self._guard:
-                self._frame=value['frame'];self._rate=value['rate']
-                self._submitted_frame=value['submitted'];self._queued_frames=value['queued']
-                self._output_started=value['output_started']
-                self._terminal=value.get('terminal');self._error=value.get('error_code')
-                self._cleanup_error=value.get('cleanup_error')
-                self._failure_evidence={key:value[key] for key in (
-                    'error_frame','error_submitted_frame','error_queued_frames','error_rate','error_at_monotonic') if key in value}
+            if self._process_fault is None:
+                with self._guard:
+                    self._frame=value['frame'];self._rate=value['rate']
+                    self._submitted_frame=value['submitted'];self._queued_frames=value['queued']
+                    self._output_started=value['output_started']
+                    self._terminal=value.get('terminal');self._error=value.get('error_code')
+                    self._cleanup_error=value.get('cleanup_error')
+                    self._failure_evidence={key:value[key] for key in (
+                        'error_frame','error_submitted_frame','error_queued_frames','error_rate','error_at_monotonic') if key in value}
+        observed=self._process_snapshot
+        if observed is not None and self._terminal is None and not observed.get('resources_cleaned'):
+            now=time.monotonic()
+            frame=observed.get('frame')
+            if self._process_progress_at is None or frame>self._process_progress_frame:
+                self._process_progress_at=now;self._process_progress_frame=frame
+            stamp=observed.get('status_at')
+            if (type(stamp) in (int,float) and now-stamp>3.
+                    or now-self._process_progress_at>3.):
+                self._process_fault=self._process_fault or 'media_output_stalled'
         if (self._process is not None and self._process.poll() is not None
                 and self._terminal is None and (value is None or not value.get('resources_cleaned'))):
+            self._process_fault=self._process_fault or 'media_output_failed'
+        if self._process_fault is not None:
+            # A frozen child cannot run its own progress guard. Retain the
+            # first parent observation; a later old/resumed publication cannot
+            # erase the failure or advance a clock whose continuity was lost.
             with self._guard:
-                self._terminal='failed';self._error='media_output_failed';self._capture_failure()
+                self._terminal='failed';self._error=self._process_fault;self._capture_failure()
         if self._process is not None:self._worker_exit_code=self._process.poll()
 
     def _halt_process(self):

@@ -129,6 +129,41 @@ class MusicProcessTests(unittest.TestCase):
         self.assertEqual(backend.diagnostics()['error_code'],'media_output_cleanup_failed')
         with self.assertRaises(ProcessLookupError):os.kill(pid,0)
 
+    def test_frozen_child_expires_same_three_second_guard_and_cannot_clear_fault(self):
+        backend=self.backend();backend.start(self.handle)
+        self.wait(lambda:backend.output_started)
+        pid=backend._process.pid
+        os.kill(pid,signal.SIGSTOP)
+        try:
+            # The child cannot run its own progress guard while stopped. Its
+            # last genuine status timestamp must expire on the live parent.
+            time.sleep(3.05)
+            self.assertEqual(backend.poll(),'failed')
+            first=backend.diagnostics()
+            self.assertEqual(first['error_code'],'media_output_stalled')
+            frozen=backend.position()
+            self.assertEqual(backend.poll(),'failed')
+            self.assertEqual(backend.position(),frozen)
+            self.assertEqual(backend.diagnostics()['error_at_monotonic'],first['error_at_monotonic'])
+        finally:os.kill(pid,signal.SIGCONT)
+        self.wait(lambda:backend._process.poll() is not None)
+        self.assertEqual(backend.poll(),'failed')
+        self.assertEqual(backend.diagnostics()['error_code'],'media_output_stalled')
+        self.assertEqual(backend.position(),frozen)
+        backend.stop()
+        self.assertEqual(backend.diagnostics()['error_code'],'media_output_stalled')
+
+    def test_fresh_worker_status_without_sample_progress_still_expires(self):
+        backend=self.backend();backend.start(self.handle)
+        self.wait(lambda:backend.output_started)
+        current=dict(backend._process_snapshot)
+        backend._process_progress_frame=current['frame']
+        backend._process_progress_at=time.monotonic()-3.1
+        def fresh_but_stalled():return dict(current,status_at=time.monotonic())
+        with patch.object(backend._process_status,'read',side_effect=fresh_but_stalled):
+            self.assertEqual(backend.poll(),'failed')
+            self.assertEqual(backend.diagnostics()['error_code'],'media_output_stalled')
+
     def test_latest_record_is_bounded_and_rejects_torn_payload(self):
         memory=mmap.mmap(-1,SIZE)
         self.addCleanup(memory.close)
